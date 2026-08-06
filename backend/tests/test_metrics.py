@@ -12,7 +12,7 @@ def test_daily_metrics_is_idempotent(monkeypatch, tmp_path: Path):
     engine = create_engine(f"sqlite:///{tmp_path / 'metrics.db'}")
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(module, "engine", engine)
-    monkeypatch.setattr(module, "fetch_metrics", lambda account, video_id: (100, 10, 2))
+    monkeypatch.setattr(module, "fetch_metrics", lambda account, video_id: {"views": 100, "likes": 10, "comments": 2, "watch_time_seconds": 3600, "estimated_revenue": 4.5, "rpm": 45.0})
     with Session(engine) as session:
         account = Account(platform="youtube", name="数据号", account_type="official")
         session.add(account); session.commit(); session.refresh(account)
@@ -22,4 +22,4 @@ def test_daily_metrics_is_idempotent(monkeypatch, tmp_path: Path):
     assert second["created"] == 0 and second["skipped"] == 1 and not second["errors"]
     with Session(engine) as session:
         row = session.exec(select(MetricSnapshot)).one()
-        assert (row.views, row.likes, row.comments) == (100, 10, 2)
+        assert (row.views, row.likes, row.comments, row.watch_time_seconds, row.estimated_revenue) == (100, 10, 2, 3600, 4.5)

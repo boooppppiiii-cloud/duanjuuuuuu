@@ -14,7 +14,7 @@ def metrics(session:Session=Depends(get_session)):
     rows=[]
     for snapshot in session.exec(select(MetricSnapshot).order_by(MetricSnapshot.date.desc(),MetricSnapshot.views.desc())).all():
         job=session.get(PublishJob,snapshot.publish_job_id);post=session.get(Post,job.post_id) if job else None;clip=session.get(Clip,post.clip_id) if post else None;account=session.get(Account,job.account_id) if job else None
-        rows.append({"id":snapshot.id,"date":snapshot.date,"views":snapshot.views,"likes":snapshot.likes,"comments":snapshot.comments,"followers":snapshot.followers,"post_title":post.title if post else "","account_name":account.name if account else "","account_type":account.account_type if account else "","cover_fallback":post.cover_fallback if post else False,"clip_id":clip.id if clip else None})
+        rows.append({"id":snapshot.id,"date":snapshot.date,"views":snapshot.views,"likes":snapshot.likes,"comments":snapshot.comments,"followers":snapshot.followers,"impressions":snapshot.impressions,"clicks":snapshot.clicks,"ctr":snapshot.ctr,"watch_time_seconds":snapshot.watch_time_seconds,"estimated_revenue":snapshot.estimated_revenue,"rpm":snapshot.rpm,"subscribers_gained":snapshot.subscribers_gained,"post_title":post.title if post else "","account_name":account.name if account else "","account_type":account.account_type if account else "","cover_fallback":post.cover_fallback if post else False,"clip_id":clip.id if clip else None})
     return rows
 
 @router.post("/collect")

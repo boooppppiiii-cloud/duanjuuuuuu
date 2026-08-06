@@ -82,14 +82,14 @@ def oauth_start(platform: str, session: Session = Depends(get_session)):
     _oauth_states[state] = (platform, time.time() + 600)
     callback = callbacks()[platform]
     if platform == "youtube":
-        query = urlencode({"client_id": item.client_id, "redirect_uri": callback, "response_type": "code", "access_type": "offline", "prompt": "consent", "include_granted_scopes": "true", "scope": "openid email https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.force-ssl", "state": state})
+        query = urlencode({"client_id": item.client_id, "redirect_uri": callback, "response_type": "code", "access_type": "offline", "prompt": "consent", "include_granted_scopes": "true", "scope": "openid email https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/yt-analytics.readonly https://www.googleapis.com/auth/yt-analytics-monetary.readonly", "state": state})
         url = f"https://accounts.google.com/o/oauth2/v2/auth?{query}"
     elif platform == "tiktok":
         query = urlencode({"client_key": item.client_id, "redirect_uri": callback, "response_type": "code", "scope": "user.info.basic,user.info.stats,video.list,video.publish", "state": state})
         url = f"https://www.tiktok.com/v2/auth/authorize/?{query}"
     else:
         graph = get_settings().meta_graph_version
-        query = urlencode({"client_id": item.client_id, "redirect_uri": callback, "response_type": "code", "scope": "pages_show_list,pages_read_engagement,pages_manage_posts,pages_manage_engagement,instagram_basic,instagram_content_publish,instagram_manage_comments,business_management", "state": state})
+        query = urlencode({"client_id": item.client_id, "redirect_uri": callback, "response_type": "code", "scope": "pages_show_list,pages_read_engagement,pages_manage_posts,pages_manage_engagement,read_insights,instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,business_management", "state": state})
         url = f"https://www.facebook.com/{graph}/dialog/oauth?{query}"
     return {"authorization_url": url, "expires_in": 600}
 

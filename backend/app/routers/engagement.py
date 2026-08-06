@@ -186,6 +186,7 @@ def sync_youtube(payload: YouTubeSyncRequest, session: Session = Depends(get_ses
                     values = {
                         "platform": "youtube", "account_id": account_id, "video_id": video_id,
                         "video_title": video.get("snippet", {}).get("title", ""), "author_name": snippet.get("authorDisplayName", ""),
+                        "video_url": f"https://www.youtube.com/watch?v={video_id}",
                         "author_handle": snippet.get("authorChannelId", {}).get("value", ""),
                         "text_original": snippet.get("textOriginal") or snippet.get("textDisplay") or "",
                         "like_count": int(snippet.get("likeCount") or 0), "published_at": _youtube_datetime(snippet.get("publishedAt")),

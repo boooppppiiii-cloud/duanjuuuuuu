@@ -24,10 +24,10 @@ def collect_daily_metrics() -> dict:
                 errors.append({"job_id": job.id, "account": "", "error": "发布账号不存在"})
                 continue
             try:
-                views, likes, comments = fetch_metrics(account, job.platform_video_id)
+                values = fetch_metrics(account, job.platform_video_id)
             except Exception as exc:
                 errors.append({"job_id": job.id, "account": account.name, "error": str(exc)[:500]})
                 continue
-            session.add(MetricSnapshot(publish_job_id=job.id, date=today, views=views, likes=likes, comments=comments, followers=account.follower_count)); created += 1
+            session.add(MetricSnapshot(publish_job_id=job.id, date=today, followers=account.follower_count, **values)); created += 1
         session.commit()
     return {"created": created, "skipped": skipped, "errors": errors}

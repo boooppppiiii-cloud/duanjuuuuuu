@@ -316,9 +316,11 @@ class CommentImportItem(BaseModel):
     account_id: Optional[int] = None
     video_id: str = ""
     video_title: str = ""
+    video_url: str = ""
     author_name: str = ""
     author_handle: str = ""
     text_original: str = Field(min_length=1)
+    text_zh: str = ""
     like_count: int = 0
     published_at: Optional[datetime] = None
 

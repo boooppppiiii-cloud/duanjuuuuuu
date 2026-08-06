@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+import re
 from typing import Any
 
 import httpx
@@ -151,6 +152,44 @@ def tiktok_creator_info(account: Account) -> dict[str, Any]:
     }
 
 
+def _duration_seconds(value: str) -> int | None:
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", value or "")
+    if not match:
+        return None
+    hours, minutes, seconds = (int(item or 0) for item in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _youtube_analytics(token: str, video_ids: list[str]) -> dict[str, dict[str, float]]:
+    """Return only metrics the authorized channel actually exposes."""
+    if not video_ids:
+        return {}
+    common = {
+        "ids": "channel==MINE", "startDate": "2005-01-01", "endDate": date.today().isoformat(),
+        "dimensions": "video", "filters": f"video=={','.join(video_ids)}", "maxResults": len(video_ids),
+    }
+    result: dict[str, dict[str, float]] = {}
+    metric_groups = [
+        "views,estimatedMinutesWatched,averageViewDuration,subscribersGained,impressions,impressionClickThroughRate",
+        "estimatedRevenue",
+    ]
+    for metrics in metric_groups:
+        response = httpx.get(
+            "https://youtubeanalytics.googleapis.com/v2/reports",
+            params={**common, "metrics": metrics}, headers=bearer_headers(token), timeout=30,
+        )
+        if response.is_error:
+            continue
+        payload = response.json()
+        headers = [str(item.get("name") or "") for item in payload.get("columnHeaders", [])]
+        for values in payload.get("rows", []):
+            row = dict(zip(headers, values))
+            video_id = str(row.pop("video", ""))
+            if video_id:
+                result.setdefault(video_id, {}).update({key: float(value) for key, value in row.items() if value is not None})
+    return result
+
+
 def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any]]:
     limit = max(1, min(limit, 50))
     if account.platform == "youtube":
@@ -166,22 +205,55 @@ def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any
         ids = [item for item in ids if item]
         if not ids:
             return []
-        details = httpx.get(f"{YOUTUBE_API}/videos", params={"part": "snippet,statistics,status", "id": ",".join(ids)}, headers=bearer_headers(token), timeout=30)
+        details = httpx.get(f"{YOUTUBE_API}/videos", params={"part": "snippet,statistics,status,contentDetails", "id": ",".join(ids)}, headers=bearer_headers(token), timeout=30)
         _raise(details, "YouTube")
-        return [{"id": str(item["id"]), "title": str(item.get("snippet", {}).get("title") or ""), "published_at": item.get("snippet", {}).get("publishedAt"), "views": int(item.get("statistics", {}).get("viewCount") or 0), "likes": int(item.get("statistics", {}).get("likeCount") or 0), "comments": int(item.get("statistics", {}).get("commentCount") or 0), "url": f"https://www.youtube.com/watch?v={item['id']}"} for item in details.json().get("items", [])]
+        analytics = _youtube_analytics(token, ids)
+        rows = []
+        for item in details.json().get("items", []):
+            video_id = str(item["id"]); snippet = item.get("snippet", {}); stats = item.get("statistics", {}); extra = analytics.get(video_id, {})
+            views = int(stats.get("viewCount") or 0); revenue = extra.get("estimatedRevenue")
+            rows.append({
+                "id": video_id, "title": str(snippet.get("title") or ""), "published_at": snippet.get("publishedAt"),
+                "views": views, "likes": int(stats.get("likeCount") or 0), "comments": int(stats.get("commentCount") or 0),
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "thumbnail_url": str(snippet.get("thumbnails", {}).get("medium", {}).get("url") or snippet.get("thumbnails", {}).get("default", {}).get("url") or ""),
+                "duration_seconds": _duration_seconds(str(item.get("contentDetails", {}).get("duration") or "")),
+                "impressions": int(extra["impressions"]) if "impressions" in extra else None,
+                "clicks": None, "ctr": extra.get("impressionClickThroughRate"),
+                "watch_time_seconds": round(extra["estimatedMinutesWatched"] * 60) if "estimatedMinutesWatched" in extra else None,
+                "estimated_revenue": revenue, "rpm": revenue / views * 1000 if revenue is not None and views else None,
+                "subscribers_gained": int(extra["subscribersGained"]) if "subscribersGained" in extra else None,
+            })
+        return rows
     token = tiktok_access_token(account) if account.platform == "tiktok" else resolve_account_secret(account, "access_token")
     if account.platform == "tiktok":
-        response = httpx.post(f"{TIKTOK_API}/v2/video/list/", params={"fields": "id,title,video_description,create_time,view_count,like_count,comment_count,share_url"}, headers=bearer_headers(token), json={"max_count": min(limit, 20)}, timeout=30)
+        response = httpx.post(f"{TIKTOK_API}/v2/video/list/", params={"fields": "id,title,video_description,create_time,view_count,like_count,comment_count,share_url,cover_image_url,duration"}, headers=bearer_headers(token), json={"max_count": min(limit, 20)}, timeout=30)
         _raise(response, "TikTok")
-        return [{"id": str(item["id"]), "title": str(item.get("title") or item.get("video_description") or ""), "published_at": datetime.fromtimestamp(int(item.get("create_time") or 0)).isoformat() if item.get("create_time") else None, "views": int(item.get("view_count") or 0), "likes": int(item.get("like_count") or 0), "comments": int(item.get("comment_count") or 0), "url": str(item.get("share_url") or "")} for item in response.json().get("data", {}).get("videos", [])]
+        return [{
+            "id": str(item["id"]), "title": str(item.get("title") or item.get("video_description") or ""),
+            "published_at": datetime.fromtimestamp(int(item.get("create_time") or 0)).isoformat() if item.get("create_time") else None,
+            "views": int(item.get("view_count") or 0), "likes": int(item.get("like_count") or 0), "comments": int(item.get("comment_count") or 0),
+            "url": str(item.get("share_url") or ""), "thumbnail_url": str(item.get("cover_image_url") or ""),
+            "duration_seconds": int(item.get("duration") or 0) or None, "impressions": None, "clicks": None, "ctr": None,
+            "watch_time_seconds": None, "estimated_revenue": None, "rpm": None, "subscribers_gained": None,
+        } for item in response.json().get("data", {}).get("videos", [])]
     node = str(account.credentials_json.get("page_id" if account.platform == "facebook" else "ig_user_id") or account.platform_user_id)
     edge = "videos" if account.platform == "facebook" else "media"
-    fields = "id,title,description,created_time,permalink_url,views,likes.summary(true),comments.summary(true)" if account.platform == "facebook" else "id,caption,timestamp,permalink,like_count,comments_count,media_type"
+    fields = "id,title,description,created_time,permalink_url,picture,views,likes.summary(true),comments.summary(true)" if account.platform == "facebook" else "id,caption,timestamp,permalink,thumbnail_url,media_url,like_count,comments_count,media_type"
     response = httpx.get(f"{META_GRAPH}/{graph_version(account)}/{node}/{edge}", params={"fields": fields, "limit": limit, "access_token": token}, timeout=30)
     _raise(response, "Meta")
     rows = []
     for item in response.json().get("data", []):
-        rows.append({"id": str(item["id"]), "title": str(item.get("title") or item.get("caption") or item.get("description") or "")[:160], "published_at": item.get("timestamp") or item.get("created_time"), "views": int(item.get("views") or 0), "likes": int(item.get("like_count") or item.get("likes", {}).get("summary", {}).get("total_count") or 0), "comments": int(item.get("comments_count") or item.get("comments", {}).get("summary", {}).get("total_count") or 0), "url": str(item.get("permalink") or item.get("permalink_url") or "")})
+        rows.append({
+            "id": str(item["id"]), "title": str(item.get("title") or item.get("caption") or item.get("description") or "")[:160],
+            "published_at": item.get("timestamp") or item.get("created_time"), "views": int(item.get("views") or 0),
+            "likes": int(item.get("like_count") or item.get("likes", {}).get("summary", {}).get("total_count") or 0),
+            "comments": int(item.get("comments_count") or item.get("comments", {}).get("summary", {}).get("total_count") or 0),
+            "url": str(item.get("permalink") or item.get("permalink_url") or ""),
+            "thumbnail_url": str(item.get("thumbnail_url") or item.get("picture") or item.get("media_url") or ""),
+            "duration_seconds": None, "impressions": None, "clicks": None, "ctr": None, "watch_time_seconds": None,
+            "estimated_revenue": None, "rpm": None, "subscribers_gained": None,
+        })
     return rows
 
 
@@ -202,13 +274,13 @@ def list_comments(account: Account, limit: int = 100) -> list[dict[str, Any]]:
             for thread in response.json().get("items", []):
                 top = thread.get("snippet", {}).get("topLevelComment", {})
                 snippet = top.get("snippet", {})
-                rows.append({"external_id": str(top.get("id") or ""), "video_id": video["id"], "video_title": video["title"], "author_name": str(snippet.get("authorDisplayName") or ""), "author_handle": str(snippet.get("authorChannelId", {}).get("value") or ""), "text_original": str(snippet.get("textOriginal") or snippet.get("textDisplay") or ""), "like_count": int(snippet.get("likeCount") or 0), "published_at": snippet.get("publishedAt")})
+                rows.append({"external_id": str(top.get("id") or ""), "video_id": video["id"], "video_title": video["title"], "video_url": video.get("url", ""), "author_name": str(snippet.get("authorDisplayName") or ""), "author_handle": str(snippet.get("authorChannelId", {}).get("value") or ""), "text_original": str(snippet.get("textOriginal") or snippet.get("textDisplay") or ""), "like_count": int(snippet.get("likeCount") or 0), "published_at": snippet.get("publishedAt")})
         else:
             fields = "id,from,message,like_count,created_time" if account.platform == "facebook" else "id,text,username,timestamp,like_count"
             response = httpx.get(f"{META_GRAPH}/{graph_version(account)}/{video['id']}/comments", params={"fields": fields, "limit": min(100, limit - len(rows)), "access_token": token}, timeout=30)
             _raise(response, "Meta")
             for item in response.json().get("data", []):
-                rows.append({"external_id": str(item.get("id") or ""), "video_id": video["id"], "video_title": video["title"], "author_name": str(item.get("username") or item.get("from", {}).get("name") or ""), "author_handle": str(item.get("username") or ""), "text_original": str(item.get("text") or item.get("message") or ""), "like_count": int(item.get("like_count") or 0), "published_at": item.get("timestamp") or item.get("created_time")})
+                rows.append({"external_id": str(item.get("id") or ""), "video_id": video["id"], "video_title": video["title"], "video_url": video.get("url", ""), "author_name": str(item.get("username") or item.get("from", {}).get("name") or ""), "author_handle": str(item.get("username") or ""), "text_original": str(item.get("text") or item.get("message") or ""), "like_count": int(item.get("like_count") or 0), "published_at": item.get("timestamp") or item.get("created_time")})
     return rows[:limit]
 
 

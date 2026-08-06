@@ -14,7 +14,7 @@ from .credentials import resolve_account_secret
 from .finalizer import finalize_video
 from .publish import CHANNEL_REGISTRY
 from .publish.base import PublishPayload
-from .social_integrations import TIKTOK_API, bearer_headers, graph_version, tiktok_access_token, youtube_access_token
+from .social_integrations import TIKTOK_API, _youtube_analytics, bearer_headers, graph_version, tiktok_access_token, youtube_access_token
 
 
 def notify_serverchan(message: str) -> None:
@@ -130,13 +130,28 @@ def refresh_publish_status(session: Session, job: PublishJob) -> PublishJob:
     return job
 
 
-def fetch_metrics(account: Account, video_id: str) -> tuple[int, int, int]:
+def fetch_metrics(account: Account, video_id: str) -> dict[str, int | float | None]:
+    result: dict[str, int | float | None] = {
+        "views": 0, "likes": 0, "comments": 0, "impressions": None, "clicks": None, "ctr": None,
+        "watch_time_seconds": None, "estimated_revenue": None, "rpm": None, "subscribers_gained": None,
+    }
     if account.platform == "youtube":
-        result = build("youtube", "v3", credentials=Credentials(token=youtube_access_token(account)), cache_discovery=False).videos().list(part="statistics", id=video_id).execute()
-        if not result.get("items"):
+        token = youtube_access_token(account)
+        response = build("youtube", "v3", credentials=Credentials(token=token), cache_discovery=False).videos().list(part="statistics", id=video_id).execute()
+        if not response.get("items"):
             raise RuntimeError("YouTube 视频不存在或无权访问")
-        stats = result["items"][0].get("statistics", {})
-        return int(stats.get("viewCount", 0)), int(stats.get("likeCount", 0)), int(stats.get("commentCount", 0))
+        stats = response["items"][0].get("statistics", {})
+        result.update({"views": int(stats.get("viewCount", 0)), "likes": int(stats.get("likeCount", 0)), "comments": int(stats.get("commentCount", 0))})
+        analytics = _youtube_analytics(token, [video_id]).get(video_id, {})
+        result.update({
+            "impressions": int(analytics["impressions"]) if "impressions" in analytics else None,
+            "ctr": analytics.get("impressionClickThroughRate"),
+            "watch_time_seconds": round(analytics["estimatedMinutesWatched"] * 60) if "estimatedMinutesWatched" in analytics else None,
+            "estimated_revenue": analytics.get("estimatedRevenue"),
+            "subscribers_gained": int(analytics["subscribersGained"]) if "subscribersGained" in analytics else None,
+        })
+        result["rpm"] = float(result["estimated_revenue"]) / int(result["views"] or 0) * 1000 if result["estimated_revenue"] is not None and result["views"] else None
+        return result
     if account.platform == "tiktok":
         token = tiktok_access_token(account)
         response = httpx.post(f"{TIKTOK_API}/v2/video/query/", params={"fields": "id,view_count,like_count,comment_count"}, headers=bearer_headers(token), json={"filters": {"video_ids": [video_id]}}, timeout=30)
@@ -144,7 +159,8 @@ def fetch_metrics(account: Account, video_id: str) -> tuple[int, int, int]:
         if not videos:
             raise RuntimeError("TikTok 视频不存在或 video.list 未授权")
         item = videos[0]
-        return int(item.get("view_count") or 0), int(item.get("like_count") or 0), int(item.get("comment_count") or 0)
+        result.update({"views": int(item.get("view_count") or 0), "likes": int(item.get("like_count") or 0), "comments": int(item.get("comment_count") or 0)})
+        return result
     token = resolve_account_secret(account, "access_token")
     if account.platform == "facebook":
         response = httpx.get(f"https://graph.facebook.com/{graph_version(account)}/{video_id}", params={"fields": "likes.summary(true),comments.summary(true)", "access_token": token}, timeout=30)
@@ -153,7 +169,15 @@ def fetch_metrics(account: Account, video_id: str) -> tuple[int, int, int]:
         insight.raise_for_status(); metrics = insight.json().get("data") or []
         metric = metrics[0] if metrics else {}; values = metric.get("values") or []
         views = int((values[-1] if values else {}).get("value") or metric.get("value") or 0)
-        return views, int(data.get("likes", {}).get("summary", {}).get("total_count", 0)), int(data.get("comments", {}).get("summary", {}).get("total_count", 0))
+        result.update({"views": views, "likes": int(data.get("likes", {}).get("summary", {}).get("total_count", 0)), "comments": int(data.get("comments", {}).get("summary", {}).get("total_count", 0))})
+        extra = httpx.get(f"https://graph.facebook.com/{graph_version(account)}/{video_id}/video_insights", params={"metric": "total_video_view_total_time,total_video_impressions", "access_token": token}, timeout=30)
+        if not extra.is_error:
+            values = {}
+            for metric in extra.json().get("data") or []:
+                samples = metric.get("values") or []; values[str(metric.get("name") or "")] = (samples[-1] if samples else {}).get("value") or metric.get("value")
+            result["impressions"] = int(values["total_video_impressions"]) if values.get("total_video_impressions") is not None else None
+            result["watch_time_seconds"] = round(float(values["total_video_view_total_time"]) / 1000) if values.get("total_video_view_total_time") is not None else None
+        return result
     if account.platform == "instagram":
         response = httpx.get(f"https://graph.facebook.com/{graph_version(account)}/{video_id}", params={"fields": "like_count,comments_count", "access_token": token}, timeout=30)
         response.raise_for_status(); data = response.json(); views = 0
@@ -161,5 +185,11 @@ def fetch_metrics(account: Account, video_id: str) -> tuple[int, int, int]:
         if not insight.is_error:
             metric = (insight.json().get("data") or [{}])[0]; values = metric.get("values") or []
             views = int((values[-1] if values else {}).get("value") or metric.get("total_value", {}).get("value") or metric.get("value") or 0)
-        return views, int(data.get("like_count") or 0), int(data.get("comments_count") or 0)
+        result.update({"views": views, "likes": int(data.get("like_count") or 0), "comments": int(data.get("comments_count") or 0)})
+        watch = httpx.get(f"https://graph.facebook.com/{graph_version(account)}/{video_id}/insights", params={"metric": "total_watch_time", "access_token": token}, timeout=30)
+        if not watch.is_error:
+            metric = (watch.json().get("data") or [{}])[0]; values = metric.get("values") or []
+            total_ms = (values[-1] if values else {}).get("value") or metric.get("total_value", {}).get("value") or metric.get("value")
+            result["watch_time_seconds"] = round(float(total_ms) / 1000) if total_ms is not None else None
+        return result
     raise RuntimeError(f"平台 {account.platform} 不支持指标回收")

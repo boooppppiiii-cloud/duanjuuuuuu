@@ -53,9 +53,20 @@ def create_db_and_tables() -> None:
                     connection.execute(text(f"ALTER TABLE account ADD COLUMN {name} {definition}"))
     if settings.database_url.startswith("sqlite") and "metricsnapshot" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("metricsnapshot")}
-        if "followers" not in existing:
-            with engine.begin() as connection:
-                connection.execute(text("ALTER TABLE metricsnapshot ADD COLUMN followers INTEGER NOT NULL DEFAULT 0"))
+        additions = {
+            "followers": "INTEGER NOT NULL DEFAULT 0",
+            "impressions": "INTEGER",
+            "clicks": "INTEGER",
+            "ctr": "FLOAT",
+            "watch_time_seconds": "INTEGER",
+            "estimated_revenue": "FLOAT",
+            "rpm": "FLOAT",
+            "subscribers_gained": "INTEGER",
+        }
+        with engine.begin() as connection:
+            for name, definition in additions.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE metricsnapshot ADD COLUMN {name} {definition}"))
     if settings.database_url.startswith("sqlite") and "publishjob" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("publishjob")}
         additions = {
@@ -83,7 +94,13 @@ def create_db_and_tables() -> None:
                     connection.execute(text(f"ALTER TABLE metadeliverypackage ADD COLUMN {name} {definition}"))
     if settings.database_url.startswith("sqlite") and "socialcomment" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("socialcomment")}
-        additions = {"reply_id": "VARCHAR NOT NULL DEFAULT ''", "reply_text": "VARCHAR NOT NULL DEFAULT ''", "replied_at": "DATETIME"}
+        additions = {
+            "video_url": "VARCHAR NOT NULL DEFAULT ''",
+            "text_zh": "VARCHAR NOT NULL DEFAULT ''",
+            "reply_id": "VARCHAR NOT NULL DEFAULT ''",
+            "reply_text": "VARCHAR NOT NULL DEFAULT ''",
+            "replied_at": "DATETIME",
+        }
         with engine.begin() as connection:
             for name, definition in additions.items():
                 if name not in existing:

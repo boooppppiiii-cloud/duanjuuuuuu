@@ -18,7 +18,24 @@ def account_matrix_rows(session: Session) -> list[dict]:
     for account in session.exec(select(Account).order_by(Account.platform, Account.name)).all():
         jobs = session.exec(select(PublishJob).where(PublishJob.account_id == account.id)).all()
         job_ids = [job.id for job in jobs]
-        snapshots = session.exec(select(MetricSnapshot).where(MetricSnapshot.publish_job_id.in_(job_ids), MetricSnapshot.date >= cutoff)).all() if job_ids else []
+        snapshots = session.exec(select(MetricSnapshot).where(MetricSnapshot.publish_job_id.in_(job_ids))).all() if job_ids else []
+        latest_by_job: dict[int, MetricSnapshot] = {}
+        for snapshot in snapshots:
+            current = latest_by_job.get(snapshot.publish_job_id)
+            if current is None or snapshot.date > current.date:
+                latest_by_job[snapshot.publish_job_id] = snapshot
+        latest = list(latest_by_job.values())
+        recent_job_ids = {job.id for job in jobs if job.scheduled_at.date() >= cutoff}
+        recent = [item for item in latest if item.publish_job_id in recent_job_ids]
+        impressions = [item.impressions for item in latest if item.impressions is not None]
+        clicks = [item.clicks for item in latest if item.clicks is not None]
+        watch_time = [item.watch_time_seconds for item in latest if item.watch_time_seconds is not None]
+        revenue = [item.estimated_revenue for item in latest if item.estimated_revenue is not None]
+        subscribers_gained = [item.subscribers_gained for item in latest if item.subscribers_gained is not None]
+        total_views = sum(item.views for item in latest)
+        impression_total = sum(impressions)
+        weighted_ctr = sum((item.impressions or 0) * (item.ctr or 0) for item in latest if item.impressions is not None and item.ctr is not None)
+        revenue_total = sum(revenue) if revenue else None
         result.append({
             "id": account.id, "platform": account.platform, "name": account.name, "account_type": account.account_type,
             "status": account.status, "strategy_id": account.strategy_id,
@@ -26,9 +43,15 @@ def account_matrix_rows(session: Session) -> list[dict]:
             "last_checked_at": account.last_checked_at, "capabilities": account.capabilities,
             "configured": bool(account.credentials_json.get("access_token_encrypted") or account.credentials_json.get("access_token_env") or account.credentials_json.get("refresh_token_encrypted") or account.credentials_json.get("refresh_token_env")),
             "posts_7d": sum(job.scheduled_at.date() >= cutoff for job in jobs), "published_total": sum(job.status == "published" for job in jobs),
-            "failed_total": sum(job.status in {"failed", "partial"} for job in jobs), "views_7d": sum(item.views for item in snapshots),
-            "likes_7d": sum(item.likes for item in snapshots), "comments_7d": sum(item.comments for item in snapshots),
-            "followers": max((item.followers for item in snapshots), default=account.follower_count),
+            "failed_total": sum(job.status in {"failed", "partial"} for job in jobs), "views_7d": sum(item.views for item in recent),
+            "likes_7d": sum(item.likes for item in recent), "comments_7d": sum(item.comments for item in recent),
+            "views_total": total_views, "impressions": impression_total if impressions else None,
+            "clicks": sum(clicks) if clicks else None, "ctr": weighted_ctr / impression_total if impression_total else None,
+            "watch_time_seconds": sum(watch_time) if watch_time else None,
+            "estimated_revenue": revenue_total,
+            "rpm": revenue_total / total_views * 1000 if revenue_total is not None and total_views else None,
+            "subscribers_gained": sum(subscribers_gained) if subscribers_gained else None,
+            "followers": max((item.followers for item in latest), default=account.follower_count),
             "last_publish_at": max((job.scheduled_at for job in jobs), default=None),
         })
     return result
@@ -55,8 +78,8 @@ def summary(session: Session = Depends(get_session)):
 @router.get("/weekly.csv")
 def export_weekly(session: Session = Depends(get_session)):
     output = io.StringIO(); writer = csv.writer(output)
-    writer.writerow(["平台", "账号", "账号类型", "状态", "近7天发布", "累计成功发布", "近7天播放", "近7天点赞", "近7天评论", "当前粉丝", "失败任务", "最后排期时间"])
+    writer.writerow(["平台", "账号", "账号类型", "状态", "近7天发布", "累计成功发布", "累计播放", "点击率", "观看时长（秒）", "广告收入", "RPM", "订阅数", "失败任务", "最后排期时间"])
     for item in account_matrix_rows(session):
-        writer.writerow([item["platform"], item["name"], item["account_type"], item["status"], item["posts_7d"], item["published_total"], item["views_7d"], item["likes_7d"], item["comments_7d"], item["followers"], item["failed_total"], item["last_publish_at"] or ""])
+        writer.writerow([item["platform"], item["name"], item["account_type"], item["status"], item["posts_7d"], item["published_total"], item["views_total"], item["ctr"] if item["ctr"] is not None else "", item["watch_time_seconds"] if item["watch_time_seconds"] is not None else "", item["estimated_revenue"] if item["estimated_revenue"] is not None else "", item["rpm"] if item["rpm"] is not None else "", item["followers"], item["failed_total"], item["last_publish_at"] or ""])
     content = "\ufeff" + output.getvalue()
     return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="account-matrix-{date.today().isoformat()}.csv"'})

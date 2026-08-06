@@ -131,6 +131,13 @@ class MetricSnapshot(SQLModel, table=True):
     likes: int = 0
     comments: int = 0
     followers: int = 0
+    impressions: Optional[int] = None
+    clicks: Optional[int] = None
+    ctr: Optional[float] = None
+    watch_time_seconds: Optional[int] = None
+    estimated_revenue: Optional[float] = None
+    rpm: Optional[float] = None
+    subscribers_gained: Optional[int] = None
 
 
 class ImageQuota(SQLModel, table=True):
@@ -215,9 +222,11 @@ class SocialComment(SQLModel, table=True):
     account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
     video_id: str = Field(default="", index=True)
     video_title: str = ""
+    video_url: str = ""
     author_name: str = ""
     author_handle: str = ""
     text_original: str
+    text_zh: str = ""
     like_count: int = 0
     published_at: Optional[datetime] = Field(default=None, index=True)
     sentiment: str = Field(default="unanalyzed", index=True)
