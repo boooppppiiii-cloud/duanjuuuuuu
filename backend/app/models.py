@@ -93,6 +93,66 @@ class Clip(SQLModel, table=True):
     review_note: str = ""
     reviewed_at: Optional[datetime] = None
     error_advice: str = ""
+    hook_asset_id: Optional[int] = Field(default=None, foreign_key="hookasset.id", index=True)
+    factory_job_id: Optional[int] = Field(default=None, foreign_key="factoryjob.id", index=True)
+    asset_kind: str = "legacy"
+
+
+class FactoryJob(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    status: str = Field(default="queued", index=True)
+    current_step: str = "queued"
+    progress: int = 0
+    max_duration_seconds: int = 180
+    hook_duration_seconds: float = 3
+    publish_variant_count: int = 5
+    remove_sensitive: bool = True
+    compression_profile: str = "balanced"
+    selected_hook_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
+    source_files: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    clean_count: int = 0
+    publish_count: int = 0
+    total_duration: float = 0
+    removed_seconds: float = 0
+    output_bytes: int = 0
+    output_dir: str = ""
+    warnings: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    error_message: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class GeneratedAsset(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    factory_job_id: int = Field(foreign_key="factoryjob.id", index=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    kind: str = Field(index=True)
+    sequence: int = 1
+    file_path: str = Field(unique=True)
+    filename: str
+    duration: float = 0
+    size_bytes: int = 0
+    hook_asset_id: Optional[int] = Field(default=None, foreign_key="hookasset.id", index=True)
+    clip_id: Optional[int] = Field(default=None, foreign_key="clip.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class HookAsset(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    episode: str
+    start: float
+    end: float
+    note: str = ""
+    source: str = "manual"
+    energy_score: float = 0
+    file_path: str = ""
+    active: bool = True
+    use_count: int = 0
+    last_used_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
 class Post(SQLModel, table=True):

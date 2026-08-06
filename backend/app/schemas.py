@@ -133,6 +133,79 @@ class ClipView(BaseModel):
     review_note: str
     reviewed_at: Optional[datetime]
     error_advice: str
+    hook_asset_id: Optional[int] = None
+    factory_job_id: Optional[int] = None
+    asset_kind: str = "legacy"
+
+
+class FactoryProcessRequest(BaseModel):
+    max_duration_seconds: int = Field(default=180, ge=60, le=180)
+    hook_duration_seconds: float = Field(default=3, ge=1, le=5)
+    publish_variant_count: int = Field(default=5, ge=0, le=50)
+    remove_sensitive: bool = True
+    compression_profile: Literal["balanced", "small"] = "balanced"
+    hook_ids: list[int] = Field(default_factory=list)
+
+
+class FactoryJobView(BaseModel):
+    id: int
+    drama_id: int
+    status: str
+    current_step: str
+    progress: int
+    max_duration_seconds: int
+    hook_duration_seconds: float
+    publish_variant_count: int
+    remove_sensitive: bool
+    compression_profile: str
+    selected_hook_ids: list[int]
+    source_files: list[str]
+    clean_count: int
+    publish_count: int
+    total_duration: float
+    removed_seconds: float
+    output_bytes: int
+    output_dir: str
+    warnings: list[str]
+    error_message: str
+    created_at: datetime
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+
+
+class GeneratedAssetView(BaseModel):
+    id: int
+    factory_job_id: int
+    drama_id: int
+    kind: str
+    sequence: int
+    filename: str
+    duration: float
+    size_bytes: int
+    hook_asset_id: Optional[int]
+    clip_id: Optional[int]
+    created_at: datetime
+
+
+class HookAssetView(BaseModel):
+    id: int
+    drama_id: int
+    drama_title: str
+    episode: str
+    start: float
+    end: float
+    note: str
+    source: str
+    energy_score: float
+    active: bool
+    use_count: int
+    published_count: int
+    views: int
+    likes: int
+    comments: int
+    heat_score: int
+    last_used_at: Optional[datetime]
+    preview_ready: bool
 
 
 class ClipReviewRequest(BaseModel):

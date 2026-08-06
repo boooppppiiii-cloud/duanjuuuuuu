@@ -39,6 +39,9 @@ def create_db_and_tables() -> None:
             "error_advice": "VARCHAR NOT NULL DEFAULT ''",
             "retry_count": "INTEGER NOT NULL DEFAULT 0",
             "final_video_path": "VARCHAR NOT NULL DEFAULT ''",
+            "hook_asset_id": "INTEGER",
+            "factory_job_id": "INTEGER",
+            "asset_kind": "VARCHAR NOT NULL DEFAULT 'legacy'",
         }
         with engine.begin() as connection:
             for name, definition in additions.items():

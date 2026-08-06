@@ -42,10 +42,11 @@ export default function DramaLibrary(){
   })}</div>:!loading&&<Card className="library-empty"><Empty description="还没有剧目任务"><Button type="primary" onClick={()=>setCreateOpen(true)}>新建第一个任务</Button></Empty></Card>):(
     <Card className="table-card">{generated.length?<Table rowKey="key" dataSource={generated} pagination={false} columns={[
       {title:'剧目',render:(_,row)=>row.drama.title},
+      {title:'类型',width:100,render:(_,row)=>row.file.name.includes('_发布_')?<Tag color="blue">可发布</Tag>:<Tag>原剧分段</Tag>},
       {title:'成品文件',render:(_,row)=><Typography.Text copyable>{row.file.name}</Typography.Text>},
       {title:'大小',width:120,render:(_,row)=>`${(row.file.size/1024/1024).toFixed(1)} MB`},
       {title:'生成时间',width:190,render:(_,row)=>new Date(row.file.created_at).toLocaleString()},
-      {title:'操作',width:230,render:(_,row)=><Space><Button href={`/api/dramas/${row.drama.id}/generated/${encodeURIComponent(row.file.name)}`} target="_blank">查看</Button><Button type="primary" icon={<RocketOutlined/>} onClick={()=>navigate(`/publishing?drama=${row.drama.id}`)}>一键发布</Button></Space>},
+      {title:'操作',width:230,render:(_,row)=><Space><Button href={`/api/dramas/${row.drama.id}/generated/${encodeURIComponent(row.file.name)}`} target="_blank">下载</Button>{row.file.name.includes('_发布_')&&<Button type="primary" icon={<RocketOutlined/>} onClick={()=>navigate(`/publishing?drama=${row.drama.id}`)}>一键发布</Button>}</Space>},
     ]}/>:<Empty description="内容工厂终审通过的成品会出现在这里"/>}</Card>
   )}</Spin>
 

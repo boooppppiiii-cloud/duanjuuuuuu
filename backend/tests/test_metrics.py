@@ -20,6 +20,8 @@ def test_daily_metrics_is_idempotent(monkeypatch, tmp_path: Path):
     assert collect_daily_metrics()["created"] == 1
     second = collect_daily_metrics()
     assert second["created"] == 0 and second["skipped"] == 1 and not second["errors"]
+    refreshed = collect_daily_metrics(refresh_existing=True)
+    assert refreshed["updated"] == 1 and refreshed["skipped"] == 0
     with Session(engine) as session:
         row = session.exec(select(MetricSnapshot)).one()
         assert (row.views, row.likes, row.comments, row.watch_time_seconds, row.estimated_revenue) == (100, 10, 2, 3600, 4.5)

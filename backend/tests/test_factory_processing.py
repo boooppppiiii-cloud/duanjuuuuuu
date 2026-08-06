@@ -1,0 +1,62 @@
+import json
+from pathlib import Path
+
+from sqlmodel import Session, SQLModel, create_engine
+
+from app.models import Drama, FactoryJob
+from app.services.factory_processing import TimelinePart, balanced_lengths, natural_key, read_sensitive_ranges, resume_factory_jobs, safe_ranges, slice_timeline
+
+
+def test_natural_order_and_balanced_four_minutes():
+    names = ["episode10.mp4", "episode2.mp4", "episode1.mp4"]
+    assert sorted(names, key=natural_key) == ["episode1.mp4", "episode2.mp4", "episode10.mp4"]
+    lengths = balanced_lengths(240, 180)
+    assert len(lengths) == 2
+    assert lengths == [120, 120]
+    assert max(lengths) <= 180
+
+
+def test_sensitive_ranges_are_removed_and_merged():
+    assert safe_ranges(30, [(4, 8), (7, 10), (20, 22)]) == [(0, 4), (10, 20), (22, 30)]
+
+
+def test_timeline_slice_can_cross_episode_boundary(tmp_path: Path):
+    first = TimelinePart(tmp_path / "01.mp4", "01.mp4", 0, 100)
+    second = TimelinePart(tmp_path / "02.mp4", "02.mp4", 5, 105)
+    result = slice_timeline([first, second], 90, 30)
+    assert [(row.episode, row.start, row.end) for row in result] == [
+        ("01.mp4", 90, 100),
+        ("02.mp4", 5, 25),
+    ]
+
+
+def test_analysis_sensitive_segments_get_safety_buffer(tmp_path: Path):
+    (tmp_path / "factory_analysis.json").write_text(json.dumps({"episodes": [{"episode": "01.mp4", "sensitive": [{"start": 10, "end": 12}]}]}), encoding="utf-8")
+    assert read_sensitive_ranges(tmp_path) == {"01.mp4": [(9.75, 12.25)]}
+
+
+def test_interrupted_job_is_requeued_on_server_start(monkeypatch, tmp_path: Path):
+    import app.services.factory_processing as module
+
+    test_engine = create_engine(f"sqlite:///{tmp_path / 'resume.db'}")
+    SQLModel.metadata.create_all(test_engine)
+    monkeypatch.setattr(module.database, "engine", test_engine)
+    with Session(test_engine) as session:
+        drama = Drama(title="恢复测试", file_dir=str(tmp_path / "drama"), source_note="test")
+        session.add(drama); session.commit(); session.refresh(drama)
+        job = FactoryJob(drama_id=drama.id, status="processing", current_step="生成原剧分段")
+        session.add(job); session.commit(); session.refresh(job); job_id = job.id
+    called: list[bool] = []
+    monkeypatch.setattr(module.factory_pipeline, "process_queued", lambda: called.append(True))
+
+    class ImmediateThread:
+        def __init__(self, target, **_): self.target = target
+        def start(self): self.target()
+
+    monkeypatch.setattr(module.threading, "Thread", ImmediateThread)
+    resume_factory_jobs()
+    with Session(test_engine) as session:
+        recovered = session.get(FactoryJob, job_id)
+        assert recovered.status == "queued"
+        assert "等待恢复" in recovered.current_step
+    assert called == [True]

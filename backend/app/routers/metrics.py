@@ -18,7 +18,7 @@ def metrics(session:Session=Depends(get_session)):
     return rows
 
 @router.post("/collect")
-def collect_now():return collect_daily_metrics()
+def collect_now(refresh_existing:bool=False):return collect_daily_metrics(refresh_existing=refresh_existing)
 
 @router.get("/dashboard")
 def dashboard(start:date|None=None,end:date|None=None,session:Session=Depends(get_session)):

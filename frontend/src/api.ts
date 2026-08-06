@@ -11,6 +11,7 @@ export type Clip = {
   file_path: string; subtitle_text: string; status: string; preview_image: string
   audio_replaced: boolean; progress: number; current_step: string; error_message: string
   hit_words: string[]; review_note: string; reviewed_at: string | null; error_advice: string
+  hook_asset_id:number|null;factory_job_id:number|null;asset_kind:string
 }
 export type TextPart = { text: string; hit: boolean }
 export type ModerationResult = { hit_words: string[]; safe: boolean; highlighted_title: TextPart[]; highlighted_caption: TextPart[] }
@@ -39,6 +40,9 @@ export type EngagementSummary = { total:number;analyzed:number;pending:number;ne
 export type ScriptSegment = { start:number;end:number;text:string;energy_score:number;energy_reasons:string[];high_energy:boolean;sensitive:Record<string,string[]> }
 export type EpisodeAnalysis = { episode:string;duration:number;segment_count:number;segments:ScriptSegment[];high_energy:ScriptSegment[];sensitive:ScriptSegment[] }
 export type FactoryAnalysis = { status:'not_analyzed'|'completed';drama_id:number;title:string;source?:string;generated_at?:string;episode_count:number;total_duration:number;segment_count:number;high_energy_count:number;sensitive_count:number;episodes:EpisodeAnalysis[] }
+export type FactoryJob = { id:number;drama_id:number;status:'queued'|'processing'|'completed'|'failed';current_step:string;progress:number;max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:string;selected_hook_ids:number[];source_files:string[];clean_count:number;publish_count:number;total_duration:number;removed_seconds:number;output_bytes:number;output_dir:string;warnings:string[];error_message:string;created_at:string;started_at:string|null;completed_at:string|null }
+export type GeneratedAsset = { id:number;factory_job_id:number;drama_id:number;kind:'clean'|'publish';sequence:number;filename:string;duration:number;size_bytes:number;hook_asset_id:number|null;clip_id:number|null;created_at:string }
+export type HookAsset = { id:number;drama_id:number;drama_title:string;episode:string;start:number;end:number;note:string;source:string;energy_score:number;active:boolean;use_count:number;published_count:number;views:number;likes:number;comments:number;heat_score:number;last_used_at:string|null;preview_ready:boolean }
 export type IntegrationConfig = {vault_ready:boolean;public_media_ready:boolean;callbacks:Record<'youtube'|'meta'|'tiktok',string>;apps:Record<'youtube'|'meta'|'tiktok',{client_id:string;client_secret_set:boolean;updated_at:string|null}>}
 export type TikTokCreatorInfo = {privacy_level_options:string[];comment_disabled:boolean;duet_disabled:boolean;stitch_disabled:boolean;max_video_post_duration_sec:number}
 
@@ -111,11 +115,17 @@ export const api = {
   createPublishJob: (postId: number, accountId: number, scheduledAt: string, aiDisclosure: boolean) => request<PublishJob>('/api/publish/jobs', { method: 'POST', body: JSON.stringify({ post_id: postId, account_id: accountId, scheduled_at: scheduledAt, ai_disclosure: aiDisclosure }) }),
   runPublishJob: (id: number) => request<PublishJob>(`/api/publish/jobs/${id}/run`, { method: 'POST' }),
   metrics: () => request<Metric[]>('/api/metrics'),
-  collectMetrics: () => request<{ created: number; skipped:number; errors:{job_id:number;account:string;error:string}[] }>('/api/metrics/collect', { method: 'POST' }),
+  collectMetrics: (refreshExisting=false) => request<{ created: number; updated:number; skipped:number; errors:{job_id:number;account:string;error:string}[] }>(`/api/metrics/collect?refresh_existing=${refreshExisting}`, { method: 'POST' }),
   dashboard: (start?:string,end?:string) => request<Dashboard>(`/api/metrics/dashboard${start&&end?`?start=${start}&end=${end}`:''}`),
   workspaceSummary: () => request<WorkspaceSummary>('/api/workspace/summary'),
   factoryAnalysis: (dramaId:number) => request<FactoryAnalysis>(`/api/factory/${dramaId}/analysis`),
   analyzeFactory: (dramaId:number) => request<FactoryAnalysis>(`/api/factory/${dramaId}/analyze`,{method:'POST'}),
+  startFactoryProcessing: (dramaId:number,body:{max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:'balanced'|'small';hook_ids:number[]}) => request<FactoryJob>(`/api/factory/${dramaId}/process`,{method:'POST',body:JSON.stringify(body)}),
+  factoryJobs: (dramaId:number) => request<FactoryJob[]>(`/api/factory/${dramaId}/jobs`),
+  factoryAssets: (dramaId:number) => request<GeneratedAsset[]>(`/api/factory/${dramaId}/assets`),
+  factoryHooks: (dramaId?:number,activeOnly=false) => request<HookAsset[]>(`/api/factory/hooks${dramaId?`?drama_id=${dramaId}&active_only=${activeOnly}`:`?active_only=${activeOnly}`}`),
+  syncFactoryHooks: (dramaId:number) => request<HookAsset[]>(`/api/factory/${dramaId}/hooks/sync`,{method:'POST'}),
+  setFactoryHookActive: (hookId:number,active:boolean) => request<HookAsset>(`/api/factory/hooks/${hookId}?active=${active}`,{method:'PATCH'}),
   accountMatrix: () => request<AccountMatrixRow[]>('/api/workspace/account-matrix'),
   metaPreflight: (body:MetaSFSInput) => request<MetaPreflight>('/api/meta-sfs/preflight',{method:'POST',body:JSON.stringify(body)}),
   buildMetaPackage: (body:MetaSFSInput) => request<MetaPackage>('/api/meta-sfs/build',{method:'POST',body:JSON.stringify(body)}),
