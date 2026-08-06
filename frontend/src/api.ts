@@ -2,7 +2,9 @@ export type Highlight = { episode: string; start: number; end: number; note: str
 export type Drama = {
   id: number; title: string; genres: string[]; actor_names: string[]; source_note: string
   is_ai_generated: boolean; episode_count: number; episodes: string[]; stills: string[]; highlights: Highlight[]; file_dir:string
+  language:string;promotion_episode_count:number;total_episode_count:number;generated_files:GeneratedFile[]
 }
+export type GeneratedFile = { name:string;size:number;created_at:string }
 export type ScanLog = { path: string; status: string; message: string }
 export type Clip = {
   id: number; drama_id: number; template_name: string; source_eps: string[]; source_start: number; source_end: number; duration: number
@@ -48,6 +50,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   list: () => request<Drama[]>('/api/dramas'),
+  createDramaTask: (body:{title:string;language:string;promotion_episode_count:number;total_episode_count:number}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),
   get: (id: string) => request<Drama>(`/api/dramas/${id}`),
   update: (id: number, body: object) => request<Drama>(`/api/dramas/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -129,9 +132,9 @@ export const api = {
   batchPublish: (postIds:number[],accountIds:number[],scheduledAt:string,runNow=false,aiDisclosure=false,publishOptions:Record<string,unknown>={}) => request<PublishJob[]>('/api/publish/jobs/batch',{method:'POST',body:JSON.stringify({post_ids:postIds,account_ids:accountIds,scheduled_at:scheduledAt,run_now:runNow,ai_disclosure:aiDisclosure,publish_options:publishOptions})}),
   refreshPublishJob: (id:number) => request<PublishJob>(`/api/publish/jobs/${id}/refresh`,{method:'POST'}),
   registerDrama: (title: string, absolutePath: string, sourceNote: string) => request<Drama>('/api/dramas/register', { method: 'POST', body: JSON.stringify({ title, absolute_path: absolutePath, source_note: sourceNote }) }),
-  uploadVideo: async (dramaTitle: string, sourceNote: string, file: File, onProgress: (value: number) => void) => {
+  uploadVideo: async (dramaTitle: string, sourceNote: string, file: File, onProgress: (value: number) => void, destination:'episodes'|'stills'='episodes') => {
     const chunkSize = 8 * 1024 * 1024; const totalChunks = Math.ceil(file.size / chunkSize)
-    const init = await request<{ upload_id: string; received_chunks: number[] }>('/api/dramas/uploads/init', { method: 'POST', body: JSON.stringify({ drama_title: dramaTitle, filename: file.name, total_size: file.size, total_chunks: totalChunks, source_note: sourceNote }) })
+    const init = await request<{ upload_id: string; received_chunks: number[] }>('/api/dramas/uploads/init', { method: 'POST', body: JSON.stringify({ drama_title: dramaTitle, filename: file.name, total_size: file.size, total_chunks: totalChunks, source_note: sourceNote, destination }) })
     const received = new Set(init.received_chunks)
     for (let index = 0; index < totalChunks; index++) {
       if (!received.has(index)) {

@@ -48,6 +48,7 @@ def scan_dramas_with_logs(session: Session, media_root: Path) -> tuple[list[Dram
             continue
         drama = existing or Drama(title=folder.name, file_dir=str(folder.resolve()))
         drama.episode_count = len(episodes)
+        drama.total_episode_count = max(drama.total_episode_count, len(episodes))
         session.add(drama)
         scanned.append(drama)
         logs.append({"path": str(folder.resolve()), "status": "updated" if existing else "imported", "message": f"{'更新' if existing else '入库'}成功：发现 {len(episodes)} 个视频"})

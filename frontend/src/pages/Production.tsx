@@ -21,7 +21,6 @@ export default function Production({embedded=false,initialDramaId}:{embedded?:bo
   useEffect(()=>{void refresh();const timer=window.setInterval(()=>void refresh(),2000);return()=>window.clearInterval(timer)},[dramaId])
 
   const create=async()=>{if(!dramaId)return;setCreating(true);try{const data=await api.createClips(dramaId);msg.success(`${data.length} 条高能点已进入剪辑队列`);await refresh()}catch(e){msg.error((e as Error).message)}finally{setCreating(false)}}
-  const review=async(id:number,status:'approved'|'blocked')=>{try{await api.reviewClip(id,status);msg.success(status==='approved'?'成品已通过':'成品已拦截');await refresh()}catch(e){msg.error((e as Error).message)}}
   const columns=[
     {title:'任务',dataIndex:'id',render:(id:number,row:Clip)=><Space direction="vertical" size={0}><b>#{id}</b><Typography.Text type="secondary">{row.source_eps[0]} · {row.source_start}s–{row.source_end}s</Typography.Text></Space>},
     {title:'进度',width:270,render:(_:unknown,row:Clip)=><Space direction="vertical" className="progress-cell"><span>{stepLabel[row.current_step]??row.current_step}</span><Progress percent={row.progress} status={row.current_step==='failed'?'exception':row.current_step==='completed'?'success':'active'}/></Space>},
@@ -29,7 +28,7 @@ export default function Production({embedded=false,initialDramaId}:{embedded?:bo
     {title:'音频',render:(_:unknown,row:Clip)=>row.current_step==='queued'?'-':row.audio_replaced?<Tag color="green">BGM 已替换</Tag>:<Tag color="orange">保留原音频</Tag>},
     {title:'状态',render:(_:unknown,row:Clip)=><Space direction="vertical"><Tag color={row.current_step==='failed'?'red':row.current_step==='completed'?'green':'blue'}>{stepLabel[row.current_step]??row.current_step}</Tag>{row.error_message&&<Typography.Text type="danger">{row.error_message.slice(0,100)}</Typography.Text>}</Space>},
     {title:'产物',render:(_:unknown,row:Clip)=>row.current_step==='completed'?<Space><a href={`/api/clips/${row.id}/preview`} target="_blank">六帧预览</a><a href={`/api/clips/${row.id}/video`} target="_blank">查看视频</a></Space>:'-'},
-    {title:'终审',render:(_:unknown,row:Clip)=><Space><Button size="small" type="primary" disabled={row.current_step!=='completed'} onClick={()=>review(row.id,'approved')}>通过</Button><Button size="small" danger disabled={row.current_step!=='completed'} onClick={()=>review(row.id,'blocked')}>拦截</Button></Space>},
+    {title:'下一步',width:120,render:(_:unknown,row:Clip)=>row.current_step==='completed'?<Tag color="blue">进入成品终审</Tag>:'—'},
   ]
 
   return <div className={embedded?'factory-inner':'workspace-page'}>{context}

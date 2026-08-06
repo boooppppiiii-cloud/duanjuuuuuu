@@ -57,6 +57,9 @@ class Drama(SQLModel, table=True):
     actor_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     file_dir: str = Field(unique=True)
     episode_count: int = 0
+    language: str = "en_US"
+    promotion_episode_count: int = 1
+    total_episode_count: int = 1
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

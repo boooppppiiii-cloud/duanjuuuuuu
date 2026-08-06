@@ -1,8 +1,21 @@
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class DramaCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    language: str = Field(default="en_US", min_length=5, max_length=20)
+    promotion_episode_count: int = Field(ge=1, le=999)
+    total_episode_count: int = Field(ge=1, le=999)
+
+    @model_validator(mode="after")
+    def promotion_not_over_total(self):
+        if self.promotion_episode_count > self.total_episode_count:
+            raise ValueError("推广集数不能大于全集数")
+        return self
 
 
 class DramaUpdate(BaseModel):
@@ -30,6 +43,12 @@ class HighlightsPayload(BaseModel):
     highlights: list[Highlight]
 
 
+class GeneratedFile(BaseModel):
+    name: str
+    size: int
+    created_at: datetime
+
+
 class DramaDetail(BaseModel):
     id: int
     title: str
@@ -39,9 +58,13 @@ class DramaDetail(BaseModel):
     actor_names: list[str]
     file_dir: str
     episode_count: int
+    language: str
+    promotion_episode_count: int
+    total_episode_count: int
     episodes: list[str]
     stills: list[str]
     highlights: list[Highlight]
+    generated_files: list[GeneratedFile]
 
     @staticmethod
     def safe_relative(path: Path, root: Path) -> str:
@@ -72,6 +95,7 @@ class UploadInitRequest(BaseModel):
     total_size: int = Field(gt=0, le=2 * 1024 * 1024 * 1024)
     total_chunks: int = Field(gt=0)
     source_note: str = Field(min_length=1)
+    destination: Literal["episodes", "stills"] = "episodes"
 
 
 class UploadInitResult(BaseModel):

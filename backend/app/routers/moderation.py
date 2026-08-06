@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -6,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..models import Clip, VisualReview
+from ..models import Clip, Drama, VisualReview
 from ..config import get_settings
 from ..services.llm import assess_visual
 from ..schemas import ClipReviewRequest, ClipView, TextModerationRequest, TextModerationResult
@@ -42,6 +43,17 @@ def review_clip(clip_id: int, payload: ClipReviewRequest, session: Session = Dep
         raise HTTPException(404, "切片不存在")
     if clip.current_step not in {"completed", "failed"}:
         raise HTTPException(409, "切片仍在处理中，不能复核")
+    if payload.status == "approved" and clip.file_path:
+        source = Path(clip.file_path)
+        drama = session.get(Drama, clip.drama_id)
+        if not drama or not source.is_file():
+            raise HTTPException(422, "成品文件不存在，无法保存到剧库")
+        target_dir = Path(drama.file_dir) / "generated"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"成品_{clip.id:04d}.mp4"
+        temp = target.with_suffix(".mp4.saving")
+        shutil.copy2(source, temp)
+        temp.replace(target)
     clip.status = payload.status
     clip.review_note = payload.note.strip()
     clip.reviewed_at = datetime.now(timezone.utc).replace(tzinfo=None)

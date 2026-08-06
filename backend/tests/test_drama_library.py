@@ -73,3 +73,35 @@ def test_direct_video_upload_and_manual_register(tmp_path: Path):
         completed = client.post(f"/api/dramas/uploads/{upload_id}/complete")
         assert completed.status_code == 200
         assert completed.json()["episode_count"] == 1
+
+
+def test_task_metadata_cover_upload_and_approved_asset_library(tmp_path: Path):
+    media = tmp_path / "media"; os.environ["MEDIA_ROOT"] = str(media); os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'tasks.db'}"
+    import app.config; app.config.get_settings.cache_clear()
+    import app.database; import app.routers.dramas; import app.routers.moderation; import app.main
+    importlib.reload(app.database); importlib.reload(app.routers.dramas); importlib.reload(app.routers.moderation); importlib.reload(app.main)
+    with TestClient(app.main.app) as client:
+        invalid = client.post("/api/dramas", json={"title": "错误任务", "language": "en_US", "promotion_episode_count": 9, "total_episode_count": 3})
+        assert invalid.status_code == 422
+        created = client.post("/api/dramas", json={"title": "海外测试剧", "language": "es_MX", "promotion_episode_count": 3, "total_episode_count": 12})
+        assert created.status_code == 200
+        drama = created.json(); assert drama["episode_count"] == 0; assert drama["language"] == "es_MX"; assert drama["promotion_episode_count"] == 3; assert drama["total_episode_count"] == 12
+        folder = Path(drama["file_dir"]); assert (folder / "episodes").is_dir(); assert (folder / "stills").is_dir(); assert (folder / "generated").is_dir()
+
+        cover = b"fake-cover"
+        initialized = client.post("/api/dramas/uploads/init", json={"drama_title": drama["title"], "filename": "cover.jpg", "total_size": len(cover), "total_chunks": 1, "source_note": "Meta folder", "destination": "stills"}).json()
+        assert client.put(f"/api/dramas/uploads/{initialized['upload_id']}/chunks/0", content=cover, headers={"Content-Type": "application/octet-stream"}).status_code == 200
+        completed = client.post(f"/api/dramas/uploads/{initialized['upload_id']}/complete")
+        assert completed.status_code == 200
+        assert (folder / "stills" / "cover.jpg").read_bytes() == cover
+
+        from sqlmodel import Session
+        from app.models import Clip
+        final = media / "clips" / "final.mp4"; final.parent.mkdir(parents=True); final.write_bytes(b"real-final-video")
+        with Session(app.database.engine) as session:
+            clip = Clip(drama_id=drama["id"], template_name="suspense_hook", current_step="completed", status="pending", file_path=str(final))
+            session.add(clip); session.commit(); session.refresh(clip); clip_id = clip.id
+        reviewed = client.put(f"/api/moderation/clips/{clip_id}/review", json={"status": "approved", "note": ""})
+        assert reviewed.status_code == 200
+        refreshed = client.get(f"/api/dramas/{drama['id']}").json()
+        assert refreshed["generated_files"][0]["name"] == f"成品_{clip_id:04d}.mp4"

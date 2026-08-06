@@ -26,7 +26,7 @@ class UploadStore:
     def init(self, payload: UploadInitRequest) -> tuple[str, list[int]]:
         title = validate_title(payload.drama_title)
         filename = Path(payload.filename).name
-        upload_id = hashlib.sha256(f"{title}|{filename}|{payload.total_size}".encode()).hexdigest()[:24]
+        upload_id = hashlib.sha256(f"{title}|{payload.destination}|{filename}|{payload.total_size}".encode()).hexdigest()[:24]
         folder = self.root / upload_id; folder.mkdir(parents=True, exist_ok=True)
         manifest = folder / "manifest.json"
         expected = {**payload.model_dump(), "drama_title": title, "filename": filename}
@@ -59,7 +59,10 @@ class UploadStore:
         received = self.received(upload_id)
         expected = list(range(manifest["total_chunks"]))
         if received != expected: raise ValueError(f"分片不完整，缺少：{sorted(set(expected) - set(received))}")
-        target_dir = self.media_root / "dramas" / manifest["drama_title"] / "episodes"; target_dir.mkdir(parents=True, exist_ok=True)
+        destination = manifest.get("destination", "episodes")
+        if destination not in {"episodes", "stills"}:
+            raise ValueError("上传目标目录不合法")
+        target_dir = self.media_root / "dramas" / manifest["drama_title"] / destination; target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / Path(manifest["filename"]).name; temp = target.with_suffix(target.suffix + ".uploading")
         with temp.open("wb") as output:
             for index in expected:

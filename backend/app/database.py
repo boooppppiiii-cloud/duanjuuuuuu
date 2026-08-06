@@ -12,6 +12,17 @@ engine = create_engine(settings.database_url, connect_args=connect_args)
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
     # SQLModel 不自带迁移工具；P0 只对单机 SQLite 做向后兼容增列。
+    if settings.database_url.startswith("sqlite") and "drama" in inspect(engine).get_table_names():
+        existing = {item["name"] for item in inspect(engine).get_columns("drama")}
+        additions = {
+            "language": "VARCHAR NOT NULL DEFAULT 'en_US'",
+            "promotion_episode_count": "INTEGER NOT NULL DEFAULT 1",
+            "total_episode_count": "INTEGER NOT NULL DEFAULT 1",
+        }
+        with engine.begin() as connection:
+            for name, definition in additions.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE drama ADD COLUMN {name} {definition}"))
     if settings.database_url.startswith("sqlite") and "clip" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("clip")}
         additions = {
