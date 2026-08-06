@@ -118,7 +118,7 @@ def _upsert_account(session: Session, platform: str, platform_id: str, name: str
 
 def _redirect(platform: str, count: int) -> RedirectResponse:
     ui = get_settings().public_ui_origin.rstrip("/")
-    return RedirectResponse(f"{ui}/matrix?oauth=success&platform={platform}&accounts={count}")
+    return RedirectResponse(f"{ui}/management?oauth=success&platform={platform}&accounts={count}")
 
 
 @router.get("/oauth/{platform}/callback")
