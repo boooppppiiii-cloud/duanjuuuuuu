@@ -1,0 +1,16 @@
+{
+  "font_paths": [
+    "media/assets/NotoSansCJK-Regular.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+  ],
+  "font_size_min": 54,
+  "font_size_max": 110,
+  "stroke_width": 5,
+  "text_color": "#FFFFFF",
+  "stroke_color": "#18181B",
+  "shadow_offset": [5, 7],
+  "shadow_color": "#80000000",
+  "safe_zone_ratio": 0.08
+}
+

@@ -1,0 +1,5 @@
+node_modules/
+build-p2/
+dist/
+*.log
+*.tsbuildinfo

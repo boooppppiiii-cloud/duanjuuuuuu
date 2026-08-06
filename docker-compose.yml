@@ -1,0 +1,38 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/backend/data/app.db}
+      MEDIA_ROOT: /app/media
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_TEXT_MODEL: ${GEMINI_TEXT_MODEL:-gemini-2.5-flash}
+      GEMINI_IMAGE_MODEL: ${GEMINI_IMAGE_MODEL:-gemini-3.1-flash-image}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen-plus}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      YOUTUBE_CHANNEL_IDS: ${YOUTUBE_CHANNEL_IDS:-}
+      PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-http://127.0.0.1:8000}
+      PUBLIC_UI_ORIGIN: ${PUBLIC_UI_ORIGIN:-http://127.0.0.1:5174}
+      CREDENTIAL_SECRET: ${CREDENTIAL_SECRET:-}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v24.0}
+      PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
+      GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE: ${GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE:-}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${GOOGLE_DRIVE_PARENT_FOLDER_ID:-}
+      SERVERCHAN_KEY: ${SERVERCHAN_KEY:-}
+      FB_PAGE_TOKEN: ${FB_PAGE_TOKEN:-}
+      YOUTUBE_ACCESS_TOKEN: ${YOUTUBE_ACCESS_TOKEN:-}
+    volumes:
+      - ./media:/app/media
+      - ./backend/data:/app/backend/data
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    restart: unless-stopped
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-5174}:80"
+    restart: unless-stopped

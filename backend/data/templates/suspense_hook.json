@@ -1,0 +1,7 @@
+{
+  "name": "悬念钩子",
+  "hook": { "offset": 0, "duration": 3 },
+  "body": { "offset": 0, "duration": 57 },
+  "output": { "width": 1080, "height": 1920, "fps": 30 }
+}
+

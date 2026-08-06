@@ -1,0 +1,127 @@
+from pathlib import Path
+
+from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import FileResponse
+from sqlmodel import Session, select
+
+from ..config import get_settings
+from ..database import get_session
+from ..models import Drama
+from ..schemas import DramaDetail, DramaUpdate, HighlightsPayload, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
+from ..services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix, read_highlights, scan_dramas_with_logs, write_highlights
+from ..services.uploads import UploadStore, validate_title
+
+router = APIRouter(prefix="/api/dramas", tags=["剧库"])
+
+
+def get_drama_or_404(drama_id: int, session: Session) -> Drama:
+    drama = session.get(Drama, drama_id)
+    if not drama:
+        raise HTTPException(404, "剧目不存在")
+    return drama
+
+
+def to_detail(drama: Drama) -> DramaDetail:
+    media_root = get_settings().media_root
+    folder = Path(drama.file_dir)
+    episodes = episode_files(folder)
+    stills = files_with_suffix(folder / "stills", IMAGE_SUFFIXES)
+    return DramaDetail(
+        **drama.model_dump(),
+        episodes=[path.name for path in episodes],
+        stills=[DramaDetail.safe_relative(path, media_root) for path in stills],
+        highlights=read_highlights(folder),
+    )
+
+
+@router.post("/scan", response_model=ScanResult)
+def scan(session: Session = Depends(get_session)):
+    items, logs = scan_dramas_with_logs(session, get_settings().media_root)
+    return ScanResult(scan_root=str((get_settings().media_root / "dramas").resolve()), logs=logs, dramas=[to_detail(item) for item in items])
+
+
+@router.post("/register", response_model=DramaDetail)
+def manual_register(payload: ManualRegisterRequest, session: Session = Depends(get_session)):
+    try: title = validate_title(payload.title)
+    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+    source = Path(payload.absolute_path).expanduser().resolve()
+    folder = source.parent if source.is_file() else source
+    if not source.exists(): raise HTTPException(422, f"路径不存在：{source}")
+    videos = [source] if source.is_file() and source.suffix.lower() in VIDEO_SUFFIXES else episode_files(folder)
+    if not videos: raise HTTPException(422, "路径存在，但没有找到支持的视频文件")
+    existing = session.exec(select(Drama).where(Drama.title == title)).first()
+    if existing and Path(existing.file_dir).resolve() != folder: raise HTTPException(409, f"已存在同名剧：{existing.file_dir}")
+    drama = existing or Drama(title=title, file_dir=str(folder), source_note=payload.source_note)
+    drama.file_dir, drama.source_note, drama.episode_count = str(folder), payload.source_note.strip(), len(videos)
+    session.add(drama); session.commit(); session.refresh(drama)
+    return to_detail(drama)
+
+
+@router.post("/uploads/init", response_model=UploadInitResult)
+def upload_init(payload: UploadInitRequest):
+    try:
+        upload_id, received = UploadStore(get_settings().media_root).init(payload)
+        return UploadInitResult(upload_id=upload_id, received_chunks=received)
+    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+
+
+@router.put("/uploads/{upload_id}/chunks/{index}")
+def upload_chunk(upload_id: str, index: int, data: bytes = Body(..., media_type="application/octet-stream")):
+    try: return {"received_chunks": UploadStore(get_settings().media_root).write_chunk(upload_id, index, data)}
+    except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/uploads/{upload_id}/complete", response_model=DramaDetail)
+def upload_complete(upload_id: str, session: Session = Depends(get_session)):
+    try: _, manifest = UploadStore(get_settings().media_root).complete(upload_id)
+    except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+    items, _ = scan_dramas_with_logs(session, get_settings().media_root)
+    drama = next((item for item in items if item.title == manifest["drama_title"]), None)
+    if not drama: raise HTTPException(500, "文件已落盘，但剧目入库失败，请点击目录扫描查看原因")
+    drama.source_note = manifest["source_note"]; session.add(drama); session.commit(); session.refresh(drama)
+    return to_detail(drama)
+
+
+@router.get("", response_model=list[DramaDetail])
+def list_dramas(session: Session = Depends(get_session)):
+    return [to_detail(item) for item in session.exec(select(Drama).order_by(Drama.id.desc())).all()]
+
+
+@router.get("/{drama_id}", response_model=DramaDetail)
+def get_drama(drama_id: int, session: Session = Depends(get_session)):
+    return to_detail(get_drama_or_404(drama_id, session))
+
+
+@router.put("/{drama_id}", response_model=DramaDetail)
+def update_drama(drama_id: int, payload: DramaUpdate, session: Session = Depends(get_session)):
+    drama = get_drama_or_404(drama_id, session)
+    for key, value in payload.model_dump().items():
+        setattr(drama, key, value)
+    session.add(drama)
+    session.commit()
+    session.refresh(drama)
+    return to_detail(drama)
+
+
+@router.put("/{drama_id}/highlights", response_model=DramaDetail)
+def update_highlights(drama_id: int, payload: HighlightsPayload, session: Session = Depends(get_session)):
+    drama = get_drama_or_404(drama_id, session)
+    folder = Path(drama.file_dir)
+    episodes = {path.name for path in episode_files(folder)}
+    try:
+        write_highlights(folder, payload.highlights, episodes)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return to_detail(drama)
+
+
+@router.get("/{drama_id}/stills/{filename}")
+def get_still(drama_id: int, filename: str, session: Session = Depends(get_session)):
+    drama = get_drama_or_404(drama_id, session)
+    stills_dir = (Path(drama.file_dir) / "stills").resolve()
+    target = (stills_dir / Path(filename).name).resolve()
+    if target.parent != stills_dir or not target.is_file() or target.suffix.lower() not in IMAGE_SUFFIXES:
+        raise HTTPException(404, "剧照不存在")
+    return FileResponse(target)
