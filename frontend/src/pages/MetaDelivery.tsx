@@ -44,6 +44,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  }catch(e){msg.error((e as Error).message)}finally{setBuilding(false)}}
 
  return <div className={embedded?'meta-delivery':'workspace-page meta-delivery'}>{ctx}
+  {!embedded&&<div className="page-heading"><Typography.Title level={2}>Meta 官方投递</Typography.Title></div>}
   <div className="module-toolbar"><Space><b>Meta 官方投递</b><Tag icon={<SafetyCertificateOutlined/>} color="green">v260626</Tag><Tag>不调用 AI</Tag></Space></div>
   <Steps size="small" current={check?.ready?2:files.length||drama?.episode_count?1:0} className="meta-steps" items={[{title:'选择剧目与本地文件'},{title:'自动命名与校验'},{title:'生成上传文件夹'}]}/>
   <Form form={form} layout="vertical" initialValues={defaults}><div className="split-workbench meta-workbench"><Card title="1. 选择文件夹">

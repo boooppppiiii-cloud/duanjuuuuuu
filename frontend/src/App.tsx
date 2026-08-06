@@ -1,5 +1,5 @@
 import { lazy,Suspense,useEffect,useMemo,useState } from 'react'
-import { DashboardOutlined,ExperimentOutlined,FolderOpenOutlined,SendOutlined,SettingOutlined } from '@ant-design/icons'
+import { CloudUploadOutlined,DashboardOutlined,ExperimentOutlined,FolderOpenOutlined,SendOutlined,SettingOutlined } from '@ant-design/icons'
 import { Layout,Menu,Spin,Tag } from 'antd'
 import { Navigate,Route,Routes,useLocation,useNavigate } from 'react-router-dom'
 
@@ -9,6 +9,7 @@ const DramaDetail=lazy(()=>import('./pages/DramaDetail'))
 const ContentFactory=lazy(()=>import('./pages/ContentFactory'))
 const PublishingCenter=lazy(()=>import('./pages/PublishingCenter'))
 const Management=lazy(()=>import('./pages/Management'))
+const MetaDelivery=lazy(()=>import('./pages/MetaDelivery'))
 
 const nav=[
  {key:'home',icon:<DashboardOutlined/>,label:'首页'},
@@ -16,6 +17,7 @@ const nav=[
  {key:'factory',icon:<ExperimentOutlined/>,label:'内容工厂'},
  {key:'publishing',icon:<SendOutlined/>,label:'一键发布'},
  {key:'management',icon:<SettingOutlined/>,label:'管理'},
+ {key:'meta-delivery',icon:<CloudUploadOutlined/>,label:'Meta 官方投递',className:'meta-nav-item'},
 ]
 export default function App(){
  const navigate=useNavigate();const location=useLocation();const[collapsed,setCollapsed]=useState(()=>window.innerWidth<880)
@@ -30,8 +32,8 @@ export default function App(){
   </Layout.Sider>
   <Layout className="main-layout">
    <Layout.Content className="content"><Suspense fallback={<div className="route-loading"><Spin size="large"/><span>正在加载工作区…</span></div>}><Routes>
-    <Route path="/" element={<DashboardPage/>}/><Route path="/dramas" element={<DramaLibrary/>}/><Route path="/dramas/:id" element={<DramaDetail/>}/><Route path="/factory" element={<ContentFactory/>}/><Route path="/publishing" element={<PublishingCenter/>}/><Route path="/management" element={<Management/>}/>
-    <Route path="/production" element={<Navigate to="/factory" replace/>}/><Route path="/visual-moderation" element={<Navigate to="/factory" replace/>}/><Route path="/creative" element={<Navigate to="/publishing" replace/>}/><Route path="/publish" element={<Navigate to="/publishing" replace/>}/><Route path="/meta-delivery" element={<Navigate to="/publishing" replace/>}/><Route path="/matrix" element={<Navigate to="/management" replace/>}/><Route path="/strategies" element={<Navigate to="/management" replace/>}/><Route path="/metrics" element={<Navigate to="/" replace/>}/><Route path="/engagement" element={<Navigate to="/" replace/>}/><Route path="/library" element={<Navigate to="/dramas" replace/>}/><Route path="/operations" element={<Navigate to="/management" replace/>}/><Route path="*" element={<Navigate to="/" replace/>}/>
+    <Route path="/" element={<DashboardPage/>}/><Route path="/dramas" element={<DramaLibrary/>}/><Route path="/dramas/:id" element={<DramaDetail/>}/><Route path="/factory" element={<ContentFactory/>}/><Route path="/publishing" element={<PublishingCenter/>}/><Route path="/management" element={<Management/>}/><Route path="/meta-delivery" element={<MetaDelivery/>}/>
+    <Route path="/production" element={<Navigate to="/factory" replace/>}/><Route path="/visual-moderation" element={<Navigate to="/factory" replace/>}/><Route path="/creative" element={<Navigate to="/publishing" replace/>}/><Route path="/publish" element={<Navigate to="/publishing" replace/>}/><Route path="/matrix" element={<Navigate to="/management" replace/>}/><Route path="/strategies" element={<Navigate to="/management" replace/>}/><Route path="/metrics" element={<Navigate to="/" replace/>}/><Route path="/engagement" element={<Navigate to="/" replace/>}/><Route path="/library" element={<Navigate to="/dramas" replace/>}/><Route path="/operations" element={<Navigate to="/management" replace/>}/><Route path="*" element={<Navigate to="/" replace/>}/>
    </Routes></Suspense></Layout.Content>
   </Layout>
  </Layout>
