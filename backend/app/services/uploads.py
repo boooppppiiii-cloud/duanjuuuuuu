@@ -7,6 +7,8 @@ from pathlib import Path
 from ..schemas import UploadInitRequest
 
 CHUNK_SIZE = 8 * 1024 * 1024
+DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024
+DEFAULT_FREE_SPACE_RESERVE = 1024 * 1024 * 1024
 SAFE_TITLE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
 
 
@@ -18,16 +20,29 @@ def validate_title(title: str) -> str:
 
 
 class UploadStore:
-    def __init__(self, media_root: Path):
+    def __init__(self, media_root: Path, max_file_size: int = DEFAULT_MAX_FILE_SIZE, free_space_reserve: int = DEFAULT_FREE_SPACE_RESERVE):
         self.media_root = media_root
+        self.max_file_size = max_file_size
+        self.free_space_reserve = free_space_reserve
         self.root = media_root / "uploads"
         self.root.mkdir(parents=True, exist_ok=True)
 
     def init(self, payload: UploadInitRequest) -> tuple[str, list[int]]:
         title = validate_title(payload.drama_title)
         filename = Path(payload.filename).name
+        if payload.total_size > self.max_file_size:
+            limit_gb = self.max_file_size / (1024 ** 3)
+            raise ValueError(f"单个文件不得超过 {limit_gb:g}GB")
         upload_id = hashlib.sha256(f"{title}|{payload.destination}|{filename}|{payload.total_size}".encode()).hexdigest()[:24]
-        folder = self.root / upload_id; folder.mkdir(parents=True, exist_ok=True)
+        folder = self.root / upload_id
+        existing_bytes = sum(path.stat().st_size for path in folder.glob("*.chunk")) if folder.is_dir() else 0
+        remaining_bytes = max(payload.total_size - existing_bytes, 0)
+        free_bytes = shutil.disk_usage(self.root).free
+        if remaining_bytes + self.free_space_reserve > free_bytes:
+            required_gb = (remaining_bytes + self.free_space_reserve) / (1024 ** 3)
+            free_gb = free_bytes / (1024 ** 3)
+            raise ValueError(f"磁盘空间不足：本次至少需要 {required_gb:.1f}GB，当前剩余 {free_gb:.1f}GB")
+        folder.mkdir(parents=True, exist_ok=True)
         manifest = folder / "manifest.json"
         expected = {**payload.model_dump(), "drama_title": title, "filename": filename}
         if manifest.exists():
@@ -66,7 +81,10 @@ class UploadStore:
         target = target_dir / Path(manifest["filename"]).name; temp = target.with_suffix(target.suffix + ".uploading")
         with temp.open("wb") as output:
             for index in expected:
-                with (folder / f"{index}.chunk").open("rb") as source: shutil.copyfileobj(source, output, length=1024 * 1024)
+                chunk = folder / f"{index}.chunk"
+                with chunk.open("rb") as source:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                chunk.unlink()
         if temp.stat().st_size != manifest["total_size"]: raise ValueError(f"文件大小校验失败：期望 {manifest['total_size']}，实际 {temp.stat().st_size}")
         temp.replace(target); shutil.rmtree(folder)
         return target, manifest

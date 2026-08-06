@@ -97,7 +97,12 @@ def manual_register(payload: ManualRegisterRequest, session: Session = Depends(g
 @router.post("/uploads/init", response_model=UploadInitResult)
 def upload_init(payload: UploadInitRequest):
     try:
-        upload_id, received = UploadStore(get_settings().media_root).init(payload)
+        settings = get_settings()
+        upload_id, received = UploadStore(
+            settings.media_root,
+            max_file_size=settings.max_upload_file_bytes,
+            free_space_reserve=settings.upload_free_space_reserve_bytes,
+        ).init(payload)
         return UploadInitResult(upload_id=upload_id, received_chunks=received)
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
 

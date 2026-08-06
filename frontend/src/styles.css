@@ -204,9 +204,11 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .meta-workbench { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .meta-workbench>.ant-card { height:100%; }
 .meta-drama-tags { margin:-5px 0 14px; }
-.meta-file-summary { max-height:260px; margin-top:12px; overflow:auto; padding-right:7px; }
-.meta-file-summary>b { position:sticky; top:0; z-index:1; display:block; padding:7px 0; background:#fff; font-size:11px; }
+.meta-file-summary { max-height:320px; margin-top:12px; overflow:auto; padding-right:7px; }
+.meta-file-summary-head { position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:7px 0; background:#fff; font-size:11px; }
 .meta-file-summary .upload-file { margin:7px 0; }
+.upload-file-name { display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; }
+.upload-file-name>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .meta-delivery .validation-card { min-height:0; }
 .overview-toolbar { min-height:38px; display:flex; align-items:center; justify-content:space-between; }
 .overview-toolbar>strong { font-size:14px; }

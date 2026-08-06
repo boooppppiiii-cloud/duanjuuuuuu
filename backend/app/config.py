@@ -9,6 +9,8 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./backend/data/app.db"
     media_root: Path = Path("media")
+    max_upload_file_bytes: int = 50 * 1024 * 1024 * 1024
+    upload_free_space_reserve_bytes: int = 1024 * 1024 * 1024
     cors_origins: str = "http://localhost:5174,http://127.0.0.1:5174"
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"

@@ -74,6 +74,12 @@ def test_direct_video_upload_and_manual_register(tmp_path: Path):
         assert completed.status_code == 200
         assert completed.json()["episode_count"] == 1
 
+        named = client.post("/api/dramas/uploads/init", json={"drama_title": "上传剧", "filename": "CEO's Sudden Silver Bride-EP.2第2集.mp4", "total_size": 1024, "total_chunks": 1, "source_note": "网页上传测试"})
+        assert named.status_code == 200
+        oversized = client.post("/api/dramas/uploads/init", json={"drama_title": "上传剧", "filename": "too-large.mp4", "total_size": 51 * 1024 * 1024 * 1024, "total_chunks": 6528, "source_note": "网页上传测试"})
+        assert oversized.status_code == 422
+        assert "50GB" in oversized.json()["detail"]
+
 
 def test_task_metadata_cover_upload_and_approved_asset_library(tmp_path: Path):
     media = tmp_path / "media"; os.environ["MEDIA_ROOT"] = str(media); os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'tasks.db'}"

@@ -90,7 +90,7 @@ class ManualRegisterRequest(BaseModel):
 class UploadInitRequest(BaseModel):
     drama_title: str = Field(min_length=1)
     filename: str = Field(min_length=1)
-    total_size: int = Field(gt=0, le=2 * 1024 * 1024 * 1024)
+    total_size: int = Field(gt=0)
     total_chunks: int = Field(gt=0)
     source_note: str = Field(min_length=1)
     destination: Literal["episodes", "stills"] = "episodes"

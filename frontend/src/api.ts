@@ -46,9 +46,20 @@ export type HookAsset = { id:number;drama_id:number;drama_title:string;episode:s
 export type IntegrationConfig = {vault_ready:boolean;public_media_ready:boolean;callbacks:Record<'youtube'|'meta'|'tiktok',string>;apps:Record<'youtube'|'meta'|'tiktok',{client_id:string;client_secret_set:boolean;updated_at:string|null}>}
 export type TikTokCreatorInfo = {privacy_level_options:string[];comment_disabled:boolean;duet_disabled:boolean;stitch_disabled:boolean;max_video_post_duration_sec:number}
 
+async function responseError(response: Response, fallback='请求失败') {
+  try {
+    const payload = await response.json()
+    const detail = payload?.detail
+    if (Array.isArray(detail)) return detail.map(item=>item?.msg||item?.message||String(item)).join('；')
+    if (typeof detail === 'string') return detail
+    if (detail) return JSON.stringify(detail)
+  } catch { /* 响应不是 JSON 时使用后备提示 */ }
+  return fallback
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...init })
-  if (!response.ok) throw new Error((await response.json()).detail ?? '请求失败')
+  if (!response.ok) throw new Error(await responseError(response))
   return response.json()
 }
 
@@ -149,7 +160,7 @@ export const api = {
     for (let index = 0; index < totalChunks; index++) {
       if (!received.has(index)) {
         const response = await fetch(`/api/dramas/uploads/${init.upload_id}/chunks/${index}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize)) })
-        if (!response.ok) throw new Error((await response.json()).detail ?? `分片 ${index + 1} 上传失败`)
+        if (!response.ok) throw new Error(await responseError(response, `分片 ${index + 1} 上传失败`))
       }
       onProgress(Math.round(((index + 1) / totalChunks) * 100))
     }
