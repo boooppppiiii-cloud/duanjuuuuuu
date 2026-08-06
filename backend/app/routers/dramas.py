@@ -30,7 +30,7 @@ def to_detail(drama: Drama) -> DramaDetail:
     generated = files_with_suffix(folder / "generated", VIDEO_SUFFIXES)
     data = drama.model_dump()
     data["episode_count"] = len(episodes)
-    data["total_episode_count"] = max(drama.total_episode_count, len(episodes), 1)
+    data["total_episode_count"] = max(drama.total_episode_count, 1)
     return DramaDetail(
         **data,
         episodes=[path.name for path in episodes],
@@ -55,10 +55,14 @@ def create_drama_task(payload: DramaCreateRequest, session: Session = Depends(ge
         (folder / name).mkdir(parents=True, exist_ok=True)
     drama = Drama(
         title=title,
+        description=payload.description.strip(),
+        genres=payload.genres,
+        is_ai_generated=payload.is_ai_generated,
+        is_dubbed_content=payload.is_dubbed_content,
         file_dir=str(folder),
         source_note="剧目任务",
-        language=payload.language,
-        promotion_episode_count=payload.promotion_episode_count,
+        language="en_US",
+        promotion_episode_count=payload.total_episode_count,
         total_episode_count=payload.total_episode_count,
     )
     session.add(drama); session.commit(); session.refresh(drama)
@@ -84,7 +88,8 @@ def manual_register(payload: ManualRegisterRequest, session: Session = Depends(g
     if existing and Path(existing.file_dir).resolve() != folder: raise HTTPException(409, f"已存在同名剧：{existing.file_dir}")
     drama = existing or Drama(title=title, file_dir=str(folder), source_note=payload.source_note)
     drama.file_dir, drama.source_note, drama.episode_count = str(folder), payload.source_note.strip(), len(videos)
-    drama.total_episode_count = max(drama.total_episode_count, len(videos))
+    if not drama.description.strip():
+        drama.total_episode_count = max(drama.total_episode_count, len(videos))
     session.add(drama); session.commit(); session.refresh(drama)
     return to_detail(drama)
 
@@ -114,7 +119,8 @@ def upload_complete(upload_id: str, session: Session = Depends(get_session)):
     if not drama: raise HTTPException(500, "文件已落盘，但剧目入库失败，请点击目录扫描查看原因")
     drama.source_note = manifest["source_note"]
     drama.episode_count = len(episode_files(Path(drama.file_dir)))
-    drama.total_episode_count = max(drama.total_episode_count, drama.episode_count, 1)
+    if not drama.description.strip():
+        drama.total_episode_count = max(drama.total_episode_count, drama.episode_count, 1)
     session.add(drama); session.commit(); session.refresh(drama)
     return to_detail(drama)
 

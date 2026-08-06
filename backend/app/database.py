@@ -15,6 +15,8 @@ def create_db_and_tables() -> None:
     if settings.database_url.startswith("sqlite") and "drama" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("drama")}
         additions = {
+            "description": "VARCHAR NOT NULL DEFAULT ''",
+            "is_dubbed_content": "BOOLEAN NOT NULL DEFAULT 0",
             "language": "VARCHAR NOT NULL DEFAULT 'en_US'",
             "promotion_episode_count": "INTEGER NOT NULL DEFAULT 1",
             "total_episode_count": "INTEGER NOT NULL DEFAULT 1",

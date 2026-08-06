@@ -79,6 +79,9 @@ def _cover_info(path: Path | None) -> dict:
 def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
     drama_dir = Path(drama.file_dir)
     sources = episode_files(drama_dir)
+    expected_total = max(int(drama.total_episode_count or 0), 1)
+    effective_description = drama.description.strip() or payload.description.strip()
+    effective_genres = drama.genres or payload.genres
     slug = payload.series_slug.strip() or suggest_slug(drama.title, drama.id or 0)
     blockers: list[str] = []
     fixable: list[str] = []
@@ -86,7 +89,11 @@ def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
         blockers.append("系列英文标识必须是 kebab-case，只能包含小写字母、数字和短横线")
     if not sources:
         blockers.append("剧目目录中没有可投递的视频")
-    if not payload.genres or any(item not in ALLOWED_GENRES for item in payload.genres):
+    elif len(sources) != expected_total:
+        blockers.append(f"剧目任务登记为 {expected_total} 集，但当前选择了 {len(sources)} 个视频；Meta 要求视频数量、文件名总集数与系列 CSV 完全一致")
+    if not effective_description:
+        blockers.append("剧目任务缺少剧情简介")
+    if not effective_genres or any(item not in ALLOWED_GENRES for item in effective_genres):
         blockers.append("Genre 必须从 Meta 官方类型列表中选择")
     try:
         datetime.strptime(payload.release_date, "%m/%d/%Y")
@@ -110,7 +117,7 @@ def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
             if info["audio_codec"] != "aac" or info["audio_channels"] != 2: issues.append("将自动转为 AAC 双声道")
             if issues and not any("时长" in item or "2GB" in item for item in issues):
                 fixable.append(f"第 {index} 集：" + "、".join(issues))
-            assets.append({"episode": index, "source": str(source), "target": f"{slug}_ep{index:03}_{len(sources):03}.mp4", "info": info, "issues": issues})
+            assets.append({"episode": index, "source": str(source), "target": f"{slug}_ep{index:03}_{expected_total:03}.mp4", "info": info, "issues": issues})
         except Exception as exc:
             blockers.append(f"第 {index} 集媒体信息读取失败：{exc}")
             assets.append({"episode": index, "source": str(source), "target": "", "info": {}, "issues": [str(exc)]})
@@ -124,7 +131,7 @@ def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
     return {
         "ready": not blockers,
         "series_slug": slug,
-        "episode_count": len(sources),
+        "episode_count": expected_total,
         "assets": assets,
         "cover_source": cover_info,
         "blockers": list(dict.fromkeys(blockers)),
@@ -185,7 +192,9 @@ def build_package(drama: Drama, payload: MetaSFSRequest) -> tuple[Path, dict]:
     series_dir.mkdir(parents=True, exist_ok=False)
 
     sources = episode_files(Path(drama.file_dir))
-    total = len(sources)
+    total = max(int(drama.total_episode_count or 0), 1)
+    description = drama.description.strip() or payload.description.strip()
+    genres = drama.genres or payload.genres
     output_checks = []
     for index, source in enumerate(sources, 1):
         name = f"{slug}_ep{index:03}_{total:03}.mp4"
@@ -214,7 +223,7 @@ def build_package(drama: Drama, payload: MetaSFSRequest) -> tuple[Path, dict]:
     with (series_dir / f"{slug}_series.csv").open("w", newline="", encoding="utf-8-sig") as stream:
         writer = csv.writer(stream)
         writer.writerow(series_headers)
-        writer.writerow([drama.title, payload.description, total, payload.locale, ",".join(payload.genres), payload.release_date, ",".join(payload.cast_list), ",".join(payload.tags), ",".join(payload.geogating), "yes" if payload.ai_content else "no", "yes" if payload.dubbed_content else "no"])
+        writer.writerow([drama.title, description, total, payload.locale, ",".join(genres), payload.release_date, ",".join(payload.cast_list), ",".join(payload.tags), ",".join(payload.geogating), "yes" if drama.is_ai_generated else "no", "yes" if drama.is_dubbed_content else "no"])
     if payload.include_episode_csv:
         with (series_dir / f"{slug}_episodes.csv").open("w", newline="", encoding="utf-8-sig") as stream:
             writer = csv.writer(stream); writer.writerow(["Episode", "Description", "Tags"])

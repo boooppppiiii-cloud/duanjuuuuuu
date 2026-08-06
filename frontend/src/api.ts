@@ -1,7 +1,7 @@
 export type Highlight = { episode: string; start: number; end: number; note: string }
 export type Drama = {
-  id: number; title: string; genres: string[]; actor_names: string[]; source_note: string
-  is_ai_generated: boolean; episode_count: number; episodes: string[]; stills: string[]; highlights: Highlight[]; file_dir:string
+  id: number; title: string; description:string; genres: string[]; actor_names: string[]; source_note: string
+  is_ai_generated: boolean;is_dubbed_content:boolean; episode_count: number; episodes: string[]; stills: string[]; highlights: Highlight[]; file_dir:string
   language:string;promotion_episode_count:number;total_episode_count:number;generated_files:GeneratedFile[]
 }
 export type GeneratedFile = { name:string;size:number;created_at:string }
@@ -50,7 +50,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   list: () => request<Drama[]>('/api/dramas'),
-  createDramaTask: (body:{title:string;language:string;promotion_episode_count:number;total_episode_count:number}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
+  createDramaTask: (body:{title:string;description:string;total_episode_count:number;genres:string[];is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),
   get: (id: string) => request<Drama>(`/api/dramas/${id}`),
   update: (id: number, body: object) => request<Drama>(`/api/dramas/${id}`, { method: 'PUT', body: JSON.stringify(body) }),

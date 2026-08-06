@@ -2,20 +2,16 @@ from pathlib import Path
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class DramaCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    language: str = Field(default="en_US", min_length=5, max_length=20)
-    promotion_episode_count: int = Field(ge=1, le=999)
+    description: str = Field(min_length=1, max_length=2000)
     total_episode_count: int = Field(ge=1, le=999)
-
-    @model_validator(mode="after")
-    def promotion_not_over_total(self):
-        if self.promotion_episode_count > self.total_episode_count:
-            raise ValueError("推广集数不能大于全集数")
-        return self
+    genres: list[str] = Field(min_length=1)
+    is_ai_generated: bool = False
+    is_dubbed_content: bool = False
 
 
 class DramaUpdate(BaseModel):
@@ -52,8 +48,10 @@ class GeneratedFile(BaseModel):
 class DramaDetail(BaseModel):
     id: int
     title: str
+    description: str
     genres: list[str]
     is_ai_generated: bool
+    is_dubbed_content: bool
     source_note: str
     actor_names: list[str]
     file_dir: str

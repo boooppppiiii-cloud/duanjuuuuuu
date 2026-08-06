@@ -1,4 +1,6 @@
+import csv
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
 
@@ -83,3 +85,31 @@ def test_preflight_rejects_invalid_genre_and_date(monkeypatch, tmp_path: Path):
     assert result["ready"] is False
     assert any("Genre" in item for item in result["blockers"])
     assert any("MM/DD/YYYY" in item for item in result["blockers"])
+
+
+def test_preflight_uses_task_total_for_names_and_blocks_missing_episodes(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video())
+    drama = make_drama(tmp_path); drama.total_episode_count = 3
+    result = meta_sfs.preflight(drama, request())
+
+    assert result["ready"] is False
+    assert result["assets"][0]["target"] == "midnight-contract_ep001_003.mp4"
+    assert any("登记为 3 集" in item for item in result["blockers"])
+
+
+def test_build_package_inherits_task_metadata(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video())
+    monkeypatch.setattr(meta_sfs, "_verify_output", lambda _: [])
+    monkeypatch.setattr(meta_sfs, "_normalize_video", lambda source, target, has_audio: target.write_bytes(b"normalized"))
+    monkeypatch.setattr(meta_sfs, "_render_cover", lambda source, target, size: target.write_bytes(b"cover"))
+    monkeypatch.setattr(meta_sfs, "get_settings", lambda: SimpleNamespace(media_root=tmp_path / "output"))
+    drama = make_drama(tmp_path); drama.description = "Task synopsis"; drama.genres = ["Drama", "Romance"]; drama.is_ai_generated = True; drama.is_dubbed_content = True; drama.total_episode_count = 1
+
+    output, _ = meta_sfs.build_package(drama, request(description="Ignored synopsis", genres=["Comedy"], ai_content=False, dubbed_content=False, include_thumbnails=False))
+    with next(output.rglob("*_series.csv")).open(encoding="utf-8-sig", newline="") as stream:
+        row = next(csv.DictReader(stream))
+    assert row["Description"] == "Task synopsis"
+    assert row["Total Number of Episodes"] == "1"
+    assert row["Genre"] == "Drama,Romance"
+    assert row["AI Content"] == "yes"
+    assert row["Dubbed Content"] == "yes"

@@ -23,6 +23,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
 
  const load=async()=>{const[d,p]=await Promise.all([api.list(),api.metaPackages()]);setDramas(d);setPackages(p);if(!form.getFieldValue('drama_id')&&d[0])form.setFieldValue('drama_id',d[0].id)}
  useEffect(()=>{load().catch(e=>msg.error(e.message))},[])
+ useEffect(()=>{if(!drama)return;form.setFieldsValue({description:drama.description,genres:drama.genres,ai_content:drama.is_ai_generated,dubbed_content:drama.is_dubbed_content,locale:drama.language||'en_US'})},[drama?.id])
  const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
  const build=async()=>{try{
    const values=await form.validateFields()
@@ -46,17 +47,17 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
   <div className="module-toolbar"><Space><b>Meta 官方投递</b><Tag icon={<SafetyCertificateOutlined/>} color="green">v260626</Tag><Tag>不调用 AI</Tag></Space></div>
   <Steps size="small" current={check?.ready?2:files.length||drama?.episode_count?1:0} className="meta-steps" items={[{title:'选择剧目与本地文件'},{title:'自动命名与校验'},{title:'生成上传文件夹'}]}/>
   <Form form={form} layout="vertical" initialValues={defaults}><div className="split-workbench meta-workbench"><Card title="1. 选择文件夹">
-    <Form.Item name="drama_id" label="剧目任务" rules={[{required:true,message:'请选择剧目任务'}]}><Select showSearch optionFilterProp="label" options={dramas.map(x=>({value:x.id,label:`${x.title} · ${x.language} · 全集 ${x.total_episode_count}`}))}/></Form.Item>
-    {drama&&<Space wrap className="meta-drama-tags"><Tag>已入库 {drama.episode_count} 个原片</Tag><Tag>全集 {drama.total_episode_count}</Tag></Space>}
+    <Form.Item name="drama_id" label="剧目任务" rules={[{required:true,message:'请选择剧目任务'}]}><Select showSearch optionFilterProp="label" options={dramas.map(x=>({value:x.id,label:`${x.title} · 全集 ${x.total_episode_count}`}))}/></Form.Item>
+    {drama&&<Space wrap className="meta-drama-tags"><Tag>已入库 {drama.episode_count} 个原片</Tag><Tag>总集数 {drama.total_episode_count}</Tag>{drama.genres.map(genre=><Tag key={genre}>{genre}</Tag>)}{drama.is_ai_generated&&<Tag color="purple">AI 内容</Tag>}{drama.is_dubbed_content&&<Tag color="blue">配音内容</Tag>}</Space>}
     <Upload.Dragger directory multiple beforeUpload={()=>false} fileList={files.map((file,index)=>({uid:`${index}-${file.name}`,name:file.webkitRelativePath||file.name,status:'done',originFileObj:file as any}))} onChange={({fileList})=>setFiles(fileList.map(x=>x.originFileObj).filter(Boolean) as File[])} accept=".mp4,.mov,.mkv,.webm,.srt,.vtt,.jpg,.jpeg,.png,.webp"><p className="ant-upload-drag-icon"><FolderOpenOutlined/></p><p className="ant-upload-text">选择包含多集视频的本地文件夹</p><p className="ant-upload-hint">请同时放入一张封面图；系统会生成官方要求的竖版与方形封面</p></Upload.Dragger>
     {files.length>0&&<div className="meta-file-summary"><b>{videoCount} 个视频 · {files.length-videoCount} 个配套文件</b>{files.map(file=><div className="upload-file" key={file.webkitRelativePath||file.name}><span>{file.webkitRelativePath||file.name}</span><Progress percent={progress[file.name]??0}/></div>)}</div>}
   </Card>
   <Card title="2. Meta 必填信息">
     <Form.Item name="series_slug" label="英文文件夹名（可留空自动生成）"><Input placeholder="例如 boss-like-me"/></Form.Item>
-    <Form.Item name="description" label="英文简介" rules={[{required:true,message:'Meta 要求填写系列简介'}]}><Input.TextArea rows={3}/></Form.Item>
+    <Form.Item name="description" label="剧情简介（来自剧目任务）" rules={[{required:true,message:'Meta 要求填写系列简介'}]}><Input.TextArea rows={3} disabled={Boolean(drama?.description)}/></Form.Item>
     <div className="form-grid"><Form.Item name="locale" label="语种代码" rules={[{required:true}]}><Input/></Form.Item><Form.Item name="release_date" label="首发日期 MM/DD/YYYY" rules={[{required:true}]}><Input/></Form.Item></div>
-    <Form.Item name="genres" label="内容类型" rules={[{required:true}]}><Select mode="multiple" options={genres.map(x=>({value:x,label:x}))}/></Form.Item>
-    <Space size="large" wrap><Form.Item name="ai_content" valuePropName="checked" label="素材含 AI 内容"><Switch/></Form.Item><Form.Item name="dubbed_content" valuePropName="checked" label="素材为配音内容"><Switch/></Form.Item></Space>
+    <Form.Item name="genres" label="题材分类（来自剧目任务）" rules={[{required:true}]}><Select mode="multiple" disabled={Boolean(drama?.genres.length)} options={genres.map(x=>({value:x,label:x}))}/></Form.Item>
+    <Space size="large" wrap><Form.Item name="ai_content" valuePropName="checked" label="AI 标识（来自剧目任务）"><Switch disabled={Boolean(drama)}/></Form.Item><Form.Item name="dubbed_content" valuePropName="checked" label="配音标识（来自剧目任务）"><Switch disabled={Boolean(drama)}/></Form.Item></Space>
     <Button block size="large" type="primary" loading={building} disabled={!drama||(!files.length&&!drama.episode_count)} icon={<ThunderboltOutlined/>} onClick={build}>整理并生成合规文件夹</Button>
   </Card></div></Form>
 

@@ -1,18 +1,10 @@
 import { useEffect,useMemo,useState } from 'react'
-import { Button,Card,Collapse,Empty,Form,Input,InputNumber,message,Modal,Progress,Segmented,Select,Space,Spin,Table,Tag,Typography } from 'antd'
+import { Button,Card,Collapse,Empty,Form,Input,InputNumber,message,Modal,Progress,Segmented,Select,Space,Spin,Switch,Table,Tag,Typography } from 'antd'
 import { ExperimentOutlined,FolderOpenOutlined,PlusOutlined,ReloadOutlined,RocketOutlined,VideoCameraOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { api,Drama,ScanLog } from '../api'
 
-const languages=[
-  {value:'en_US',label:'英语 · en_US'},
-  {value:'es_MX',label:'西班牙语 · es_MX'},
-  {value:'pt_BR',label:'葡萄牙语 · pt_BR'},
-  {value:'id_ID',label:'印尼语 · id_ID'},
-  {value:'th_TH',label:'泰语 · th_TH'},
-  {value:'vi_VN',label:'越南语 · vi_VN'},
-  {value:'zh_CN',label:'中文 · zh_CN'},
-]
+const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
 
 export default function DramaLibrary(){
  const[items,setItems]=useState<Drama[]>([])
@@ -29,7 +21,7 @@ export default function DramaLibrary(){
  const load=async()=>{try{setItems(await api.list())}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
  useEffect(()=>{void load()},[])
  const scan=async()=>{setLoading(true);try{const result=await api.scan();setLogs(result.logs);await load();msg.success('本地素材已同步')}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
- const createTask=async(values:{title:string;language:string;promotion_episode_count:number;total_episode_count:number})=>{try{const item=await api.createDramaTask(values);msg.success('剧目任务已建立');setCreateOpen(false);createForm.resetFields();await load();navigate(`/factory?drama=${item.id}`)}catch(e){msg.error((e as Error).message)}}
+ const createTask=async(values:{title:string;description:string;total_episode_count:number;genres:string[];is_ai_generated:boolean;is_dubbed_content:boolean})=>{try{const item=await api.createDramaTask(values);msg.success('剧目任务已建立');setCreateOpen(false);createForm.resetFields();await load();navigate(`/factory?drama=${item.id}`)}catch(e){msg.error((e as Error).message)}}
  const register=async(values:{title:string;absolute_path:string;source_note:string})=>{try{await api.registerDrama(values.title,values.absolute_path,values.source_note);msg.success('已有素材已登记');setRegisterOpen(false);registerForm.resetFields();await load()}catch(e){msg.error((e as Error).message)}}
  const generated=useMemo(()=>items.flatMap(drama=>drama.generated_files.map(file=>({key:`${drama.id}-${file.name}`,drama,file}))),[items])
  const logColor:Record<string,string>={imported:'green',updated:'blue',skipped:'orange',info:'default'}
@@ -42,7 +34,8 @@ export default function DramaLibrary(){
     const progress=Math.min(100,Math.round((item.episode_count/Math.max(1,item.total_episode_count))*100))
     return <Card key={item.id} hoverable className="drama-task-card" actions={[<Button type="link" icon={<ExperimentOutlined/>} onClick={()=>navigate(`/factory?drama=${item.id}`)}>进入内容工厂</Button>,<Button type="link" onClick={()=>navigate(`/dramas/${item.id}`)}>查看资料</Button>]}>
       <Card.Meta avatar={<VideoCameraOutlined className="card-icon"/>} title={item.title} description={<Space direction="vertical" className="full-width" size={10}>
-        <Space wrap><Tag>{item.language}</Tag><Tag color="blue">推广 {item.promotion_episode_count} 集</Tag><Tag>全集 {item.total_episode_count} 集</Tag>{item.generated_files.length>0&&<Tag color="green">成品 {item.generated_files.length}</Tag>}</Space>
+        <Typography.Text ellipsis={{tooltip:item.description}}>{item.description||'未填写剧情简介'}</Typography.Text>
+        <Space wrap>{item.genres.map(genre=><Tag key={genre}>{genre}</Tag>)}<Tag>全集 {item.total_episode_count} 集</Tag>{item.is_ai_generated&&<Tag color="purple">AI 内容</Tag>}{item.is_dubbed_content&&<Tag color="blue">配音内容</Tag>}{item.generated_files.length>0&&<Tag color="green">成品 {item.generated_files.length}</Tag>}</Space>
         <div className="task-progress"><span>原片 {item.episode_count}/{item.total_episode_count}</span><Progress percent={progress} showInfo={false}/></div>
       </Space>}/>
     </Card>
@@ -56,10 +49,11 @@ export default function DramaLibrary(){
     ]}/>:<Empty description="内容工厂终审通过的成品会出现在这里"/>}</Card>
   )}</Spin>
 
-  <Modal title="新建剧目任务" open={createOpen} onCancel={()=>setCreateOpen(false)} footer={null} destroyOnHidden><Form form={createForm} layout="vertical" initialValues={{language:'en_US',promotion_episode_count:10,total_episode_count:80}} onFinish={createTask}>
+  <Modal title="新建剧目任务" open={createOpen} onCancel={()=>setCreateOpen(false)} footer={null} width={620} destroyOnHidden><Form form={createForm} layout="vertical" initialValues={{genres:['Drama'],total_episode_count:80,is_ai_generated:false,is_dubbed_content:false}} onFinish={createTask}>
     <Form.Item name="title" label="短剧名称" rules={[{required:true,message:'请输入短剧名称'}]}><Input autoFocus placeholder="例如：午夜契约"/></Form.Item>
-    <Form.Item name="language" label="语种" rules={[{required:true}]}><Select showSearch options={languages}/></Form.Item>
-    <div className="form-grid"><Form.Item name="promotion_episode_count" label="推广集数" dependencies={['total_episode_count']} rules={[{required:true},{validator:(_,value)=>value<=createForm.getFieldValue('total_episode_count')?Promise.resolve():Promise.reject(new Error('不能大于全集数'))}]}><InputNumber min={1} max={999} className="full-width"/></Form.Item><Form.Item name="total_episode_count" label="全集数" rules={[{required:true}]}><InputNumber min={1} max={999} className="full-width"/></Form.Item></div>
+    <Form.Item name="description" label="剧情简介" rules={[{required:true,message:'请输入剧情简介'}]}><Input.TextArea rows={4} placeholder="用于生成 Meta 系列 CSV，请填写完整剧情梗概"/></Form.Item>
+    <div className="form-grid"><Form.Item name="total_episode_count" label="总集数" rules={[{required:true}]}><InputNumber min={1} max={999} className="full-width"/></Form.Item><Form.Item name="genres" label="题材分类" rules={[{required:true,message:'至少选择一种题材'}]}><Select mode="multiple" options={genres.map(value=>({value,label:value}))}/></Form.Item></div>
+    <div className="form-grid"><Form.Item name="is_ai_generated" label="AI 标识" valuePropName="checked"><Switch checkedChildren="包含 AI" unCheckedChildren="非 AI"/></Form.Item><Form.Item name="is_dubbed_content" label="配音标识" valuePropName="checked"><Switch checkedChildren="配音内容" unCheckedChildren="原声内容"/></Form.Item></div>
     <Button block size="large" type="primary" htmlType="submit">建立任务并进入内容工厂</Button>
   </Form></Modal>
 

@@ -51,8 +51,10 @@ class AccountStrategy(SQLModel, table=True):
 class Drama(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str = Field(index=True, unique=True)
+    description: str = ""
     genres: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     is_ai_generated: bool = False
+    is_dubbed_content: bool = False
     source_note: str = "待补充"
     actor_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     file_dir: str = Field(unique=True)
