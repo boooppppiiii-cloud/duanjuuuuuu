@@ -103,7 +103,12 @@ def _consume_state(state: str, platform: str) -> None:
 def _upsert_account(session: Session, platform: str, platform_id: str, name: str, credentials: dict, avatar_url: str = "", profile_url: str = "", followers: int = 0, capabilities: list[str] | None = None) -> Account:
     account = session.exec(select(Account).where(Account.platform == platform, Account.platform_user_id == platform_id)).first()
     if not account:
+        placeholders = session.exec(select(Account).where(Account.platform == platform, Account.platform_user_id == "")).all()
+        if len(placeholders) == 1:
+            account = placeholders[0]
+    if not account:
         account = Account(platform=platform, platform_user_id=platform_id, name=name, account_type="official")
+    account.platform_user_id = platform_id
     account.name = name; account.credentials_json = credentials; account.avatar_url = avatar_url; account.profile_url = profile_url
     account.follower_count = followers; account.capabilities = capabilities or []; account.status = "connected"
     account.last_error = ""; account.last_checked_at = datetime.now(); account.connected_at = account.connected_at or datetime.now()

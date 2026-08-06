@@ -126,7 +126,17 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
     const secrets:Record<string,string>={access_token:v.access_token||'',refresh_token:v.refresh_token||'',client_id:v.client_id||'',client_secret:v.client_secret||''}
     const secretEnvs:Record<string,string>={access_token:v.access_token_env||'',refresh_token:v.refresh_token_env||'',client_id:v.client_id_env||'',client_secret:v.client_secret_env||''}
     await api.configureAccount({platform,name:v.name,account_type:v.account_type,strategy_id:v.strategy_id,public_config:publicConfig,secrets,secret_envs:secretEnvs},editing?.id)
-    setAccountOpen(false);msg.success('账号配置已保存，请执行连接检测');await load()
+    const hasStoredToken=Boolean(editing?.credential_status.access_token_set||editing?.credential_status.access_token_env)
+    const oauthPlatform:OAuthPlatform|null=platform==='youtube'||platform==='tiktok'?platform:null
+    const needsOAuth=Boolean(oauthPlatform)&&!v.access_token&&!v.access_token_env&&!hasStoredToken
+    const oauthAppSaved=Boolean(needsOAuth&&v.client_id&&v.client_secret)
+    if(oauthAppSaved&&oauthPlatform){
+      await api.saveIntegrationConfig(oauthPlatform,{client_id:v.client_id,client_secret:v.client_secret})
+      setSection('apps')
+    }
+    setAccountOpen(false)
+    msg.success(oauthAppSaved?'开发者应用已保存，请点击“连接账号”完成授权':needsOAuth?'账号已保存；请在“开发者应用与 OAuth”完成授权':'账号配置已保存，请执行连接检测')
+    await load()
   }
 
   const check=async(account:Account)=>{
@@ -204,6 +214,7 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
     <Modal width={700} open={accountOpen} title={editing?`配置账号 · ${editing.name}`:'手动配置真实账号'} footer={null} onCancel={()=>setAccountOpen(false)} destroyOnHidden>
       {!integration?.vault_ready&&<Alert className="modal-note" type="warning" showIcon message="尚未配置 CREDENTIAL_SECRET"/>}
       <Form form={accountForm} layout="vertical" onFinish={saveAccount}>
+        <Alert className="modal-note" type="info" showIcon message="推荐使用 OAuth 自动获取 Access Token" description="如果没有现成的 Access Token，填写 Client ID 和 Client Secret 后保存，系统会切换到 OAuth 授权入口。"/>
         <div className="form-grid"><Form.Item name="platform" label="平台" rules={[{required:true}]}><Select disabled={Boolean(editing)} options={Object.entries(platformLabel).map(([value,label])=>({value,label}))}/></Form.Item><Form.Item name="name" label="内部显示名称" rules={[{required:true}]}><Input placeholder="例如：北美女频主号"/></Form.Item></div>
         <div className="form-grid"><Form.Item name="account_type" label="账号类型"><Radio.Group options={[{label:'官方账号',value:'official'},{label:'达人账号',value:'creator'}]}/></Form.Item><Form.Item name="strategy_id" label="运营策略"><Select allowClear options={strategies.map(x=>({value:x.id,label:x.name}))}/></Form.Item></div>
         {selectedPlatform==='youtube'&&<div className="form-grid"><Form.Item name="channel_id" label="Channel ID"><Input placeholder="UC...；留空时通过 OAuth 读取 mine"/></Form.Item><Form.Item name="default_privacy" label="默认可见性"><Select options={['private','unlisted','public'].map(x=>({value:x,label:x}))}/></Form.Item></div>}
