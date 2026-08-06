@@ -173,6 +173,7 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .overview-page-heading { align-items:center; min-height:40px; }
 .overview-page-heading h2 { margin:0!important; }
 .overview-page>.overview-pager { width:min(100%,430px); justify-self:start; }
+.factory-page>.factory-pager { width:min(100%,430px); justify-self:start; }
 .overview-toolbar { min-height:38px; display:flex; align-items:center; justify-content:space-between; }
 .overview-toolbar>strong { font-size:14px; }
 .overview-account-grid { display:grid; grid-template-columns:repeat(3,minmax(280px,1fr)); gap:12px; }
