@@ -40,7 +40,7 @@ async def lifespan(_: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="社媒运营中心", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="剧枢", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origin_list,

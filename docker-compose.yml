@@ -1,6 +1,8 @@
 services:
   backend:
     build: ./backend
+    env_file:
+      - .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite:////app/backend/data/app.db}
       MEDIA_ROOT: /app/media

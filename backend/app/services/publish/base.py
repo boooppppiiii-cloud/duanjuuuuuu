@@ -12,6 +12,7 @@ class PublishPayload:
     account: Account
     video: Path
     package_root: Path
+    cover: Path | None = None
 
 
 @dataclass

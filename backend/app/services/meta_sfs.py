@@ -76,6 +76,24 @@ def _cover_info(path: Path | None) -> dict:
         return {"path": str(path), "width": image.width, "height": image.height}
 
 
+def _stored_cover(value: str) -> Path | None:
+    path = Path(value) if value else None
+    return path if path and path.is_file() else None
+
+
+def _cover_issue(path: Path, ratio: float, min_width: int, min_height: int, label: str) -> str:
+    try:
+        with Image.open(path) as image:
+            if image.format not in {"JPEG", "PNG"}:
+                return f"{label}仅支持 JPEG 或 PNG"
+            width, height = image.size
+            if width < min_width or height < min_height or abs(width / height - ratio) > 0.01:
+                return f"{label}规格不合规：当前 {width}x{height}"
+    except Exception as exc:
+        return f"{label}无法读取：{exc}"
+    return ""
+
+
 def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
     drama_dir = Path(drama.file_dir)
     sources = episode_files(drama_dir)
@@ -122,24 +140,43 @@ def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
             blockers.append(f"第 {index} 集媒体信息读取失败：{exc}")
             assets.append({"episode": index, "source": str(source), "target": "", "info": {}, "issues": [str(exc)]})
 
-    cover = _cover_candidates(drama_dir)
-    cover_info = _cover_info(cover[0] if cover else None)
-    if not cover:
-        blockers.append("缺少剧照或底图，无法自动生成必需的 3:4 封面与方形封面")
+    vertical_cover = _stored_cover(drama.cover_vertical_path)
+    square_cover = _stored_cover(drama.cover_square_path)
+    horizontal_cover = _stored_cover(drama.cover_horizontal_path)
+    cover_sources = {
+        "vertical": _cover_info(vertical_cover),
+        "square": _cover_info(square_cover),
+        "horizontal": _cover_info(horizontal_cover),
+    }
+    if not vertical_cover:
+        blockers.append("缺少竖版封面：3:4，至少 1440x1920")
     else:
-        fixable.append("将从首张剧照自动生成 1440x1920 竖版封面和 1200x1200 方形封面")
+        issue = _cover_issue(vertical_cover, 3 / 4, 1440, 1920, "竖版封面")
+        if issue: blockers.append(issue)
+    if not square_cover:
+        blockers.append("缺少方形封面：1:1，至少 1200x1200")
+    else:
+        issue = _cover_issue(square_cover, 1.0, 1200, 1200, "方形封面")
+        if issue: blockers.append(issue)
+    if horizontal_cover:
+        issue = _cover_issue(horizontal_cover, 16 / 9, 1920, 1080, "横版封面")
+        if issue: blockers.append(issue)
+    if vertical_cover and square_cover:
+        fixable.append("封面文件名将按 Meta 规范自动统一")
     return {
         "ready": not blockers,
         "series_slug": slug,
         "episode_count": expected_total,
         "assets": assets,
-        "cover_source": cover_info,
+        "cover_source": cover_sources["vertical"],
+        "cover_sources": cover_sources,
         "blockers": list(dict.fromkeys(blockers)),
         "automatic_fixes": list(dict.fromkeys(fixable)),
         "requirements": {
             "video": "MP4/H.264 · 9:16 · 1080x1920 · 60秒-3分钟 · 视频码率≥2.5Mbps · AAC双声道 · 单文件≤2GB",
             "cover": "3:4，至少 1440x1920",
             "square_cover": "1:1，至少 1200x1200",
+            "background": "可选；16:9，至少 1920x1080",
             "naming": "<series-name>_epXXX_<total>.mp4，集数和总集数均为三位数字",
         },
     }
@@ -180,14 +217,14 @@ def _verify_output(path: Path) -> list[str]:
     return errors
 
 
-def build_package(drama: Drama, payload: MetaSFSRequest) -> tuple[Path, dict]:
+def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | None = None) -> tuple[Path, dict]:
     check = preflight(drama, payload)
     if check["blockers"]:
         raise ValueError("；".join(check["blockers"]))
     settings = get_settings()
     slug = check["series_slug"]
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    package_root = settings.media_root / "packages" / "meta_sfs" / f"{slug}_{stamp}"
+    package_root = (output_parent or settings.media_root / "packages" / "meta_sfs") / f"{slug}_{stamp}"
     series_dir = package_root / slug
     series_dir.mkdir(parents=True, exist_ok=False)
 
@@ -215,9 +252,11 @@ def build_package(drama: Drama, payload: MetaSFSRequest) -> tuple[Path, dict]:
             result = subprocess.run([_binary("ffmpeg"), "-y", "-ss", "1", "-i", str(target), "-frames:v", "1", "-q:v", "2", str(thumb)], capture_output=True, timeout=90)
             if result.returncode != 0: raise RuntimeError(f"{name} 缩略图生成失败")
 
-    cover_source = Path(check["cover_source"]["path"])
-    _render_cover(cover_source, series_dir / f"{slug}_cover.jpg", (1440, 1920))
-    _render_cover(cover_source, series_dir / f"{slug}_cover_square.jpg", (1200, 1200))
+    cover_sources = check["cover_sources"]
+    _render_cover(Path(cover_sources["vertical"]["path"]), series_dir / f"{slug}_cover.jpg", (1440, 1920))
+    _render_cover(Path(cover_sources["square"]["path"]), series_dir / f"{slug}_cover_square.jpg", (1200, 1200))
+    if cover_sources["horizontal"]["path"]:
+        _render_cover(Path(cover_sources["horizontal"]["path"]), series_dir / f"{slug}_background.jpg", (1920, 1080))
 
     series_headers = ["Title", "Description", "Total Number of Episodes", "Locale", "Genre", "Release Date", "Cast List & IG Handles", "Tags", "Geogating", "AI Content", "Dubbed Content"]
     with (series_dir / f"{slug}_series.csv").open("w", newline="", encoding="utf-8-sig") as stream:

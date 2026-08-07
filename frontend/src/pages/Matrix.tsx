@@ -42,14 +42,14 @@ import {
   type AccountStrategy,
   type IntegrationConfig,
 } from '../api'
+import { PlatformBadge, PlatformLogo, PlatformOption } from '../components/PlatformBrand'
 
 type Platform = 'youtube' | 'tiktok' | 'instagram' | 'facebook'
 type OAuthPlatform = 'youtube' | 'meta' | 'tiktok'
 type MediaRow = { id:string;title:string;published_at:string|null;views:number;likes:number;comments:number;url:string }
 
 const fmt = (n:number) => new Intl.NumberFormat('zh-CN').format(n)
-const platformLabel:Record<Platform,string> = { youtube:'YouTube',tiktok:'TikTok',instagram:'Instagram',facebook:'Facebook' }
-const platformColor:Record<Platform,string> = { youtube:'red',tiktok:'default',instagram:'magenta',facebook:'blue' }
+const platformOptions:Platform[] = ['youtube','tiktok','instagram','facebook']
 
 function connectionTag(status:string){
   if(status==='connected') return <Tag color="success" icon={<CheckCircleFilled/>}>已连接</Tag>
@@ -172,13 +172,13 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
 
   const selectedPlatform=Form.useWatch('platform',accountForm) as Platform|undefined
   const appCards:(readonly [OAuthPlatform,string,string])[]=[
-    ['youtube','YouTube / Google','OAuth Web Application'],['meta','Instagram / Facebook','同一套 Meta App'],['tiktok','TikTok','Login Kit + Content Posting API'],
+    ['youtube','OAuth Web Application','Google Cloud Console'],['meta','多账号通用应用','Business Login + Graph API'],['tiktok','Login Kit 应用','Content Posting API'],
   ]
 
   const columns=[
     {title:'账号',width:260,render:(_:unknown,r:AccountMatrixRow)=>{
       const account=accounts.find(x=>x.id===r.id)
-      return <Space><Avatar size={40} src={account?.avatar_url}>{r.name.slice(0,1)}</Avatar><div><Space size={6}><Tag color={platformColor[r.platform as Platform]}>{platformLabel[r.platform as Platform]||r.platform}</Tag><b>{r.name}</b></Space><div className="cell-sub">{r.account_type==='official'?'官方账号':'达人账号'} · {r.profile_url?<a href={r.profile_url} target="_blank">打开主页</a>:'未读取主页'}</div></div></Space>
+      return <Space><Avatar size={40} src={account?.avatar_url} icon={<PlatformLogo platform={r.platform} size={21}/>}/><div><Space size={6}><PlatformBadge platform={r.platform}/><b>{r.name}</b></Space><div className="cell-sub">{r.account_type==='official'?'官方账号':'达人账号'} · {r.profile_url?<a href={r.profile_url} target="_blank">打开主页</a>:'未读取主页'}</div></div></Space>
     }},
     {title:'真实连接',width:150,render:(_:unknown,r:AccountMatrixRow)=><div>{connectionTag(r.status)}<div className="cell-sub">{r.last_checked_at?`检查 ${new Date(r.last_checked_at).toLocaleString()}`:'尚未检测'}</div></div>},
     {title:'近7天',width:180,render:(_:unknown,r:AccountMatrixRow)=><div><b>{fmt(r.views_7d)} 播放</b><div className="cell-sub">{r.posts_7d} 发布 · {fmt(r.likes_7d)} 赞 · {fmt(r.comments_7d)} 评论</div></div>},
@@ -203,7 +203,7 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
       <Table rowKey="id" dataSource={rows} columns={columns} scroll={{x:1280}} pagination={{pageSize:10,showSizeChanger:false}} locale={{emptyText:<Empty description="还没有真实账号，请先连接平台或手动配置"/>}}/>
     </Card>:<div className="integration-grid">
       {appCards.map(([key,title,sub])=>{const app=integration?.apps[key];const ready=Boolean(app?.client_id&&app.client_secret_set);return <Card key={key} className="integration-card">
-        <div className="integration-card-head"><Avatar shape="square" size={42}>{title.slice(0,1)}</Avatar><div><b>{title}</b><p>{sub}</p></div>{ready?<Tag color="success">应用已配置</Tag>:<Tag color="warning">待配置</Tag>}</div>
+        <div className="integration-card-head"><Avatar className="integration-brand-avatar" shape="square" size={42} icon={<PlatformLogo platform={key} size={25}/>}/><div><b>{title}</b><p>{sub}</p></div>{ready?<Tag color="success">应用已配置</Tag>:<Tag color="warning">待配置</Tag>}</div>
         <Descriptions size="small" column={1} items={[{key:'id',label:'Client / App ID',children:app?.client_id||'未填写'},{key:'secret',label:'Secret',children:app?.client_secret_set?'已加密保存':'未填写'}]}/>
         <div className="callback-box"><span>Authorized redirect URI</span><code>{integration?.callbacks[key]}</code><Button size="small" type="text" icon={<CopyOutlined/>} onClick={()=>navigator.clipboard.writeText(integration?.callbacks[key]||'')}/></div>
         {!integration?.vault_ready&&<Alert type="warning" showIcon message="先在 .env 配置 CREDENTIAL_SECRET"/>}
@@ -215,7 +215,7 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
       {!integration?.vault_ready&&<Alert className="modal-note" type="warning" showIcon message="尚未配置 CREDENTIAL_SECRET"/>}
       <Form form={accountForm} layout="vertical" onFinish={saveAccount}>
         <Alert className="modal-note" type="info" showIcon message="推荐使用 OAuth 自动获取 Access Token" description="如果没有现成的 Access Token，填写 Client ID 和 Client Secret 后保存，系统会切换到 OAuth 授权入口。"/>
-        <div className="form-grid"><Form.Item name="platform" label="平台" rules={[{required:true}]}><Select disabled={Boolean(editing)} options={Object.entries(platformLabel).map(([value,label])=>({value,label}))}/></Form.Item><Form.Item name="name" label="内部显示名称" rules={[{required:true}]}><Input placeholder="例如：北美女频主号"/></Form.Item></div>
+        <div className="form-grid"><Form.Item name="platform" label="平台" rules={[{required:true}]}><Select disabled={Boolean(editing)} options={platformOptions.map(value=>({value,label:<PlatformOption platform={value}/> }))}/></Form.Item><Form.Item name="name" label="内部显示名称" rules={[{required:true}]}><Input placeholder="例如：北美女频主号"/></Form.Item></div>
         <div className="form-grid"><Form.Item name="account_type" label="账号类型"><Radio.Group options={[{label:'官方账号',value:'official'},{label:'达人账号',value:'creator'}]}/></Form.Item><Form.Item name="strategy_id" label="运营策略"><Select allowClear options={strategies.map(x=>({value:x.id,label:x.name}))}/></Form.Item></div>
         {selectedPlatform==='youtube'&&<div className="form-grid"><Form.Item name="channel_id" label="Channel ID"><Input placeholder="UC...；留空时通过 OAuth 读取 mine"/></Form.Item><Form.Item name="default_privacy" label="默认可见性"><Select options={['private','unlisted','public'].map(x=>({value:x,label:x}))}/></Form.Item></div>}
         {selectedPlatform==='facebook'&&<div className="form-grid"><Form.Item name="page_id" label="Facebook Page ID" rules={[{required:true}]}><Input/></Form.Item><Form.Item name="graph_version" label="Graph API 版本"><Input placeholder="留空使用系统版本"/></Form.Item></div>}
@@ -229,7 +229,7 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
       </Form>
     </Modal>
 
-    <Modal open={Boolean(appOpen)} title={`配置 ${appOpen||''} 开发者应用`} footer={null} onCancel={()=>setAppOpen(null)} destroyOnHidden>
+    <Modal open={Boolean(appOpen)} title={<Space>{appOpen&&<PlatformLogo platform={appOpen}/>}<span>配置开发者应用</span></Space>} footer={null} onCancel={()=>setAppOpen(null)} destroyOnHidden>
       <Form form={appForm} layout="vertical" onFinish={saveApp}><Form.Item name="client_id" label="Client ID / App ID / Client Key" rules={[{required:true}]}><Input/></Form.Item><Form.Item name="client_secret" label="Client Secret / App Secret" rules={[{required:!integration?.apps[appOpen||'youtube']?.client_secret_set}]}><Input.Password autoComplete="new-password" placeholder={integration?.apps[appOpen||'youtube']?.client_secret_set?'已保存；留空表示不修改':''}/></Form.Item><Button block type="primary" htmlType="submit">加密保存</Button></Form>
     </Modal>
 

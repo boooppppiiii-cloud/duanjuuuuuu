@@ -1,4 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from ..database import get_session
@@ -6,10 +16,65 @@ from ..models import Drama, MetaDeliveryPackage
 from ..schemas import MetaSFSRequest
 from ..services.meta_sfs import build_package, preflight
 from ..services.drive_delivery import upload_meta_package
-from datetime import datetime
-from pathlib import Path
 
 router = APIRouter(prefix="/api/meta-sfs", tags=["Meta SFS 官方投递"])
+_local_destinations: dict[str, tuple[Path, float]] = {}
+
+
+def _package_root(item: MetaDeliveryPackage) -> Path:
+    root = Path(item.output_dir).resolve()
+    if not root.is_dir():
+        raise HTTPException(404, "投递文件夹不存在或尚未生成完成")
+    return root
+
+
+def _package_file(root: Path, relative_path: str) -> Path:
+    target = (root / relative_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(400, "文件路径无效") from exc
+    if not target.is_file():
+        raise HTTPException(404, "文件不存在")
+    return target
+
+
+def _take_local_destination(token: str) -> Path | None:
+    if not token:
+        return None
+    selected = _local_destinations.pop(token, None)
+    if not selected or selected[1] < time.monotonic():
+        raise HTTPException(422, "保存位置授权已过期，请重新选择")
+    path = selected[0]
+    if not path.is_dir():
+        raise HTTPException(422, "选择的保存位置已不存在")
+    return path
+
+
+@router.post("/select-local-directory")
+def select_local_directory(request: Request):
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(403, "只有本地运行时可以调用系统文件夹选择器")
+    if sys.platform != "win32":
+        raise HTTPException(422, "当前环境不支持系统文件夹选择器，请使用 Chrome 或 Edge")
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(parent=root, title="选择 Meta 合规文件夹保存位置", mustexist=True)
+        root.destroy()
+    except Exception as exc:
+        raise HTTPException(422, f"无法打开文件夹选择器：{exc}") from exc
+    if not selected:
+        raise HTTPException(409, "已取消选择保存位置")
+    path = Path(selected).resolve()
+    token = secrets.token_urlsafe(24)
+    _local_destinations[token] = (path, time.monotonic() + 15 * 60)
+    return {"token": token, "name": path.name or str(path)}
 
 
 @router.post("/preflight")
@@ -26,7 +91,7 @@ def create_package(payload: MetaSFSRequest, session: Session = Depends(get_sessi
     if not drama:
         raise HTTPException(404, "剧目不存在")
     try:
-        output_dir, report = build_package(drama, payload)
+        output_dir, report = build_package(drama, payload, output_parent=_take_local_destination(payload.local_destination_token))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
@@ -39,6 +104,68 @@ def create_package(payload: MetaSFSRequest, session: Session = Depends(get_sessi
 @router.get("/packages", response_model=list[MetaDeliveryPackage])
 def list_packages(session: Session = Depends(get_session)):
     return session.exec(select(MetaDeliveryPackage).order_by(MetaDeliveryPackage.created_at.desc())).all()
+
+
+@router.get("/packages/{package_id}/files")
+def list_package_files(package_id: int, session: Session = Depends(get_session)):
+    item = session.get(MetaDeliveryPackage, package_id)
+    if not item:
+        raise HTTPException(404, "投递文件夹不存在")
+    root = _package_root(item)
+    files = [
+        {"path": path.relative_to(root).as_posix(), "size": path.stat().st_size}
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    ]
+    return {"folder_name": root.name, "total_bytes": sum(file["size"] for file in files), "files": files}
+
+
+@router.get("/packages/{package_id}/files/{relative_path:path}")
+def download_package_file(package_id: int, relative_path: str, session: Session = Depends(get_session)):
+    item = session.get(MetaDeliveryPackage, package_id)
+    if not item:
+        raise HTTPException(404, "投递文件夹不存在")
+    target = _package_file(_package_root(item), relative_path)
+    return FileResponse(target, filename=target.name)
+
+
+@router.post("/packages/{package_id}/open-folder")
+def open_package_folder(package_id: int, session: Session = Depends(get_session)):
+    item = session.get(MetaDeliveryPackage, package_id)
+    if not item:
+        raise HTTPException(404, "投递文件夹不存在")
+    root = _package_root(item)
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(root))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(root)])
+        else:
+            subprocess.Popen(["xdg-open", str(root)])
+    except Exception as exc:
+        raise HTTPException(422, f"无法打开本地文件夹：{exc}") from exc
+    return {"opened": True, "path": str(root)}
+
+
+@router.post("/packages/{package_id}/copy-local")
+def copy_package_local(package_id: int, token: str, session: Session = Depends(get_session)):
+    item = session.get(MetaDeliveryPackage, package_id)
+    if not item:
+        raise HTTPException(404, "投递文件夹不存在")
+    source = _package_root(item)
+    destination_parent = _take_local_destination(token)
+    if destination_parent is None:
+        raise HTTPException(422, "请重新选择保存位置")
+    destination = destination_parent / source.name
+    if destination.resolve() == source:
+        return {"path": str(source), "folder_name": source.name}
+    if destination.exists():
+        destination = destination_parent / f"{source.name}_copy_{datetime.now():%Y%m%d_%H%M%S}"
+    try:
+        shutil.copytree(source, destination)
+    except Exception as exc:
+        raise HTTPException(500, f"复制合规文件夹失败：{exc}") from exc
+    return {"path": str(destination.resolve()), "folder_name": destination.name}
 
 
 @router.post("/packages/{package_id}/upload-drive", response_model=MetaDeliveryPackage)

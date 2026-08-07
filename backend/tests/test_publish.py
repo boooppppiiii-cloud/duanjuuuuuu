@@ -4,13 +4,25 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from PIL import Image
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import Account, Clip, Drama, Post, PublishJob
 from app.routers.publish import create_job, update_job
 from app.schemas import PublishJobCreateRequest, PublishJobUpdateRequest
 from app.services.publish.base import PublishResult
-from app.services.publisher import execute_publish_job
+from app.services.publisher import execute_publish_job, prepare_publish_cover
+
+
+def test_library_cover_is_converted_to_youtube_safe_thumbnail(tmp_path: Path):
+    source = tmp_path / "vertical.png"
+    target = tmp_path / "ready.jpg"
+    Image.new("RGB", (1440, 1920), "#20422f").save(source)
+    prepared = prepare_publish_cover(source, target)
+    assert prepared == target
+    assert target.stat().st_size <= 2 * 1024 * 1024
+    with Image.open(target) as image:
+        assert image.size == (1280, 720)
 
 
 def seed(session: Session, root: Path, ai: bool = True):

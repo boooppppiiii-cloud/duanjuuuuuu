@@ -62,6 +62,9 @@ class Drama(SQLModel, table=True):
     language: str = "en_US"
     promotion_episode_count: int = 1
     total_episode_count: int = 1
+    cover_vertical_path: str = ""
+    cover_square_path: str = ""
+    cover_horizontal_path: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from PIL import Image, ImageOps
 from sqlmodel import Session
 
 from ..config import get_settings
@@ -15,6 +16,21 @@ from .finalizer import finalize_video
 from .publish import CHANNEL_REGISTRY
 from .publish.base import PublishPayload
 from .social_integrations import TIKTOK_API, _youtube_analytics, bearer_headers, graph_version, tiktok_access_token, youtube_access_token
+
+
+def prepare_publish_cover(source: Path, target: Path) -> Path:
+    """Create a YouTube-safe 16:9 JPEG below the official 2 MB limit."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(source) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+        image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (1280, 720), "#111411")
+        canvas.paste(image, ((1280 - image.width) // 2, (720 - image.height) // 2))
+        for quality in (90, 82, 74, 66):
+            canvas.save(target, "JPEG", quality=quality, optimize=True, progressive=True)
+            if target.stat().st_size <= 2 * 1024 * 1024:
+                return target
+    raise RuntimeError("封面压缩后仍超过 YouTube 2MB 限制")
 
 
 def notify_serverchan(message: str) -> None:
@@ -63,7 +79,11 @@ def execute_publish_job(session: Session, job: PublishJob) -> PublishJob:
         video = finalize_video(settings.ffmpeg_binary, Path(clip.file_path), account.account_type, settings.media_root / "assets", settings.media_root / "posts" / "final_cache")
         job.final_video_path = str(video)
         session.add(job); session.commit(); session.refresh(job)
-        payload = PublishPayload(job=job, post=delivery_post, account=account, video=video, package_root=settings.media_root / "packages")
+        cover_fields = {"vertical": drama.cover_vertical_path, "square": drama.cover_square_path, "horizontal": drama.cover_horizontal_path}
+        cover_kind = str((job.publish_options or {}).get("cover_kind") or "")
+        source_cover = Path(cover_fields.get(cover_kind) or "") if cover_kind else None
+        cover = prepare_publish_cover(source_cover, settings.media_root / "posts" / "final_cache" / f"cover_job_{job.id}.jpg") if source_cover and source_cover.is_file() else None
+        payload = PublishPayload(job=job, post=delivery_post, account=account, video=video, package_root=settings.media_root / "packages", cover=cover)
         result = channel_cls().publish(payload)
         if not result.success or not result.video_id:
             raise RuntimeError(result.log or "平台未返回可追踪的发布 ID")
@@ -144,8 +164,8 @@ def fetch_metrics(account: Account, video_id: str) -> dict[str, int | float | No
         result.update({"views": int(stats.get("viewCount", 0)), "likes": int(stats.get("likeCount", 0)), "comments": int(stats.get("commentCount", 0))})
         analytics = _youtube_analytics(token, [video_id]).get(video_id, {})
         result.update({
-            "impressions": int(analytics["impressions"]) if "impressions" in analytics else None,
-            "ctr": analytics.get("impressionClickThroughRate"),
+            "impressions": int(analytics["videoThumbnailImpressions"]) if "videoThumbnailImpressions" in analytics else None,
+            "ctr": analytics.get("videoThumbnailImpressionsClickRate"),
             "watch_time_seconds": round(analytics["estimatedMinutesWatched"] * 60) if "estimatedMinutesWatched" in analytics else None,
             "estimated_revenue": analytics.get("estimatedRevenue"),
             "subscribers_gained": int(analytics["subscribersGained"]) if "subscribersGained" in analytics else None,

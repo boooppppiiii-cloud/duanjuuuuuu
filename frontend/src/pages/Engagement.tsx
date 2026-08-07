@@ -31,6 +31,7 @@ import {
 } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { api, type Account, type EngagementSummary, type SocialComment } from '../api'
+import { PlatformBadge, PlatformLogo, PlatformLogoGroup, PlatformOption } from '../components/PlatformBrand'
 
 const sentimentMeta:Record<string,[string,string]>={positive:['正面','green'],negative:['负面','red'],neutral:['中性','default'],unanalyzed:['待分析','orange']}
 const statusMeta:Record<string,string>={pending:'待处理',following:'跟进中',resolved:'已解决',ignored:'已忽略',replied:'已回复'}
@@ -79,10 +80,10 @@ export default function Engagement({embedded=false}:{embedded?:boolean}){
 
     <div className="summary-strip engagement-summary"><Statistic title="真实评论" value={summary?.total||0}/><Statistic title="待处理" value={summary?.pending||0}/><Statistic title="需人工工单" value={summary?.needs_human||0} valueStyle={{color:'#dc2626'}}/><Statistic title="追剧 / 私信意向" value={summary?.buyer_intent||0} valueStyle={{color:'#7c3aed'}}/><Statistic title="负面评论" value={summary?.sentiment.negative||0}/><Statistic title="舆情状态" value={summary?.health==='urgent'?'紧急':summary?.health==='watch'?'关注':'健康'} valueStyle={{color:summary?.health==='urgent'?'#dc2626':summary?.health==='watch'?'#d97706':'#16a34a'}}/></div>
 
-    <Card className="table-card" title="评论工作队列" extra={<Space wrap><Segmented value={platform} onChange={x=>setPlatform(String(x))} options={[['all','全部平台'],['youtube','YouTube'],['instagram','Instagram'],['facebook','Facebook'],['tiktok','TikTok']].map(([value,label])=>({value,label}))}/><Select value={status} onChange={setStatus} style={{width:125}} options={[['all','全部状态'],['pending','待处理'],['following','跟进中'],['resolved','已解决'],['ignored','已忽略'],['replied','已回复']].map(([value,label])=>({value,label}))}/></Space>}>
+    <Card className="table-card" title="评论工作队列" extra={<Space wrap><Segmented value={platform} onChange={x=>setPlatform(String(x))} options={[{value:'all',label:<PlatformLogoGroup/>},...['youtube','instagram','facebook','tiktok'].map(value=>({value,label:<PlatformLogo platform={value} size={17}/>}))]}/><Select value={status} onChange={setStatus} style={{width:125}} options={[['all','全部状态'],['pending','待处理'],['following','跟进中'],['resolved','已解决'],['ignored','已忽略'],['replied','已回复']].map(([value,label])=>({value,label}))}/></Space>}>
       <div className="batch-bar"><span>已选 {selected.length} 条；未选择时处理全部待分析评论</span><Button loading={working} icon={<SafetyOutlined/>} onClick={()=>analyze(false)}>本地分级</Button><Popconfirm title="将把所选评论发送给已配置的大模型，确认继续？" onConfirm={()=>analyze(true)}><Button loading={working} type="primary" icon={<RobotOutlined/>}>AI 深度分析</Button></Popconfirm></div>
       <Table rowKey="id" rowSelection={{selectedRowKeys:selected,onChange:setSelected}} dataSource={filtered} onRow={r=>({onClick:e=>{if((e.target as HTMLElement).closest('.ant-checkbox-wrapper'))return;openDetail(r)}})} scroll={{x:1160}} locale={{emptyText:<Empty description="暂无真实评论，请连接账号同步或导入平台文件"/>}} columns={[
-        {title:'平台',dataIndex:'platform',width:105,render:(x:string)=><Tag>{x.toUpperCase()}</Tag>},
+        {title:'平台',dataIndex:'platform',width:72,render:(x:string)=><PlatformBadge platform={x}/>},
         {title:'评论',dataIndex:'text_original',width:390,render:(x:string,r)=><div><b className="comment-author">{r.author_name||'匿名用户'}</b><p className="comment-text">{x}</p><span className="cell-sub">《{r.video_title||r.video_id||'未知内容'}》 · 👍 {r.like_count}</span></div>},
         {title:'情绪',dataIndex:'sentiment',width:90,render:(x:string)=>{const m=sentimentMeta[x]||[x,'default'];return <Tag color={m[1]}>{m[0]}</Tag>}},
         {title:'意向',dataIndex:'user_status',width:110,render:(x:string)=>intentMeta[x]||x},
@@ -92,11 +93,11 @@ export default function Engagement({embedded=false}:{embedded?:boolean}){
       ]}/>
     </Card>
 
-    <Modal open={syncOpen} title="从平台官方接口同步评论" onCancel={()=>setSyncOpen(false)} onOk={sync} confirmLoading={working} okText="开始同步"><Select mode="multiple" style={{width:'100%'}} value={syncAccounts} onChange={setSyncAccounts} options={connected.map(x=>({value:x.id,label:`${x.platform.toUpperCase()} · ${x.name}`}))}/></Modal>
+    <Modal open={syncOpen} title="从平台官方接口同步评论" onCancel={()=>setSyncOpen(false)} onOk={sync} confirmLoading={working} okText="开始同步"><Select mode="multiple" style={{width:'100%'}} value={syncAccounts} onChange={setSyncAccounts} options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/></Modal>
     <Modal open={importOpen} title="导入平台评论 CSV / JSON" onCancel={()=>setImportOpen(false)} onOk={submitImport} okText="导入"><Input.TextArea rows={12} value={raw} onChange={e=>setRaw(e.target.value)} placeholder="粘贴平台导出的 CSV 或 JSON"/></Modal>
 
     <Drawer open={Boolean(detail)} onClose={()=>setDetail(undefined)} width={560} title="评论详情与处理"><>{detail&&<div className="comment-detail">
-      <Space><Tag>{detail.platform}</Tag><b>{detail.author_name||'匿名用户'}</b><span>{detail.author_handle}</span></Space><blockquote>{detail.text_original}</blockquote>
+      <Space><PlatformBadge platform={detail.platform}/><b>{detail.author_name||'匿名用户'}</b><span>{detail.author_handle}</span></Space><blockquote>{detail.text_original}</blockquote>
       <Card size="small" title={<><BulbOutlined/> 舆情判断</>}><p>{detail.summary||'尚未分析'}</p><Space wrap><Tag color="purple">{intentMeta[detail.user_status]||detail.user_status}</Tag><Tag>{detail.keyword_category}</Tag>{detail.keywords.map(x=><Tag key={x}>{x}</Tag>)}</Space></Card>
       <Card size="small" title={<><CustomerServiceOutlined/> 平台回复</>}>
         {detail.replied_at?<Alert type="success" showIcon message="已通过平台接口回复" description={<><p>{detail.reply_text}</p><code>{detail.reply_id}</code></>}/>:<><Input.TextArea rows={4} value={reply} onChange={e=>setReply(e.target.value)} placeholder="编辑最终回复；点击发送后将直接发布到平台"/><div className="reply-actions"><Button icon={<CopyOutlined/>} onClick={()=>navigator.clipboard.writeText(reply).then(()=>msg.success('已复制'))}>复制</Button><Popconfirm title={`确认以 ${account?.name||'关联账号'} 身份发送这条回复？`} onConfirm={sendReply}><Button type="primary" icon={<SendOutlined/>} loading={working} disabled={!account?.capabilities.includes('reply')||!reply.trim()}>确认发送到平台</Button></Popconfirm></div></>}

@@ -13,7 +13,7 @@ from ..schemas import AccountConfigureRequest, AccountCreateRequest, AccountStra
 from ..services.credentials import sanitized_credentials, store_secret_fields
 from ..services.publisher import execute_publish_job, refresh_publish_status
 from ..services.public_media import verify_public_video_signature
-from ..services.social_integrations import check_account, list_platform_media, tiktok_creator_info
+from ..services.social_integrations import account_insights, check_account, list_platform_media, tiktok_creator_info
 from ..services.llm import _gemini, _qwen, strip_fences
 
 router = APIRouter(prefix="/api/publish", tags=["发布调度"])
@@ -171,6 +171,19 @@ def account_media(account_id: int, limit: int = 25, session: Session = Depends(g
         raise HTTPException(404, "账号不存在")
     try:
         return list_platform_media(account, limit)
+    except Exception as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/accounts/{account_id}/insights")
+def account_analytics(account_id: int, days: str = "all", refresh: bool = False, session: Session = Depends(get_session)):
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    if account.status != "connected":
+        raise HTTPException(422, "账号尚未连接，不能读取官方分析数据")
+    try:
+        return account_insights(account, days, refresh)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 

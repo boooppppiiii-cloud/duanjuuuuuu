@@ -75,10 +75,22 @@ class UploadStore:
         expected = list(range(manifest["total_chunks"]))
         if received != expected: raise ValueError(f"分片不完整，缺少：{sorted(set(expected) - set(received))}")
         destination = manifest.get("destination", "episodes")
-        if destination not in {"episodes", "stills"}:
+        if destination not in {"episodes", "stills", "publish", "cover_vertical", "cover_square", "cover_horizontal"}:
             raise ValueError("上传目标目录不合法")
-        target_dir = self.media_root / "dramas" / manifest["drama_title"] / destination; target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / Path(manifest["filename"]).name; temp = target.with_suffix(target.suffix + ".uploading")
+        if destination.startswith("cover_"):
+            kind = destination.removeprefix("cover_")
+            suffix = Path(manifest["filename"]).suffix.lower()
+            target_dir = self.media_root / "dramas" / manifest["drama_title"] / "covers"
+            target = target_dir / f"{kind}_{upload_id}{suffix}"
+        elif destination == "publish":
+            source = Path(manifest["filename"])
+            target_dir = self.media_root / "dramas" / manifest["drama_title"] / "generated"
+            target = target_dir / f"{source.stem}_{upload_id[:8]}{source.suffix.lower()}"
+        else:
+            target_dir = self.media_root / "dramas" / manifest["drama_title"] / destination
+            target = target_dir / Path(manifest["filename"]).name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        temp = target.with_suffix(target.suffix + ".uploading")
         with temp.open("wb") as output:
             for index in expected:
                 chunk = folder / f"{index}.chunk"

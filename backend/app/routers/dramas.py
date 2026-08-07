@@ -3,16 +3,23 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
+from PIL import Image
 from sqlmodel import Session, select
 
 from ..config import get_settings
 from ..database import get_session
-from ..models import Drama
+from ..models import Clip, Drama
 from ..schemas import DramaCreateRequest, DramaDetail, DramaUpdate, GeneratedFile, HighlightsPayload, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
 from ..services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix, read_highlights, scan_dramas_with_logs, write_highlights
 from ..services.uploads import UploadStore, validate_title
 
 router = APIRouter(prefix="/api/dramas", tags=["剧库"])
+
+COVER_SPECS = {
+    "cover_vertical": ("cover_vertical_path", 3 / 4, 1440, 1920, "竖版封面必须为 3:4，且至少 1440x1920"),
+    "cover_square": ("cover_square_path", 1.0, 1200, 1200, "方形封面必须为 1:1，且至少 1200x1200"),
+    "cover_horizontal": ("cover_horizontal_path", 16 / 9, 1920, 1080, "横版封面必须为 16:9，且至少 1920x1080"),
+}
 
 
 def get_drama_or_404(drama_id: int, session: Session) -> Drama:
@@ -51,7 +58,7 @@ def create_drama_task(payload: DramaCreateRequest, session: Session = Depends(ge
     folder = (get_settings().media_root / "dramas" / title).resolve()
     if folder.exists() and any(folder.iterdir()):
         raise HTTPException(409, "本地已有同名素材文件夹，请使用“登记现有文件夹”")
-    for name in ("episodes", "stills", "generated"):
+    for name in ("episodes", "stills", "generated", "covers"):
         (folder / name).mkdir(parents=True, exist_ok=True)
     drama = Drama(
         title=title,
@@ -116,12 +123,49 @@ def upload_chunk(upload_id: str, index: int, data: bytes = Body(..., media_type=
 
 @router.post("/uploads/{upload_id}/complete", response_model=DramaDetail)
 def upload_complete(upload_id: str, session: Session = Depends(get_session)):
-    try: _, manifest = UploadStore(get_settings().media_root).complete(upload_id)
+    try: target, manifest = UploadStore(get_settings().media_root).complete(upload_id)
     except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
-    scan_dramas_with_logs(session, get_settings().media_root)
+    destination = manifest.get("destination", "episodes")
+    if destination in {"episodes", "stills"}:
+        scan_dramas_with_logs(session, get_settings().media_root)
     drama = session.exec(select(Drama).where(Drama.title == manifest["drama_title"])).first()
     if not drama: raise HTTPException(500, "文件已落盘，但剧目入库失败，请点击目录扫描查看原因")
+    if destination in COVER_SPECS:
+        field, ratio, min_width, min_height, requirement = COVER_SPECS[destination]
+        try:
+            with Image.open(target) as image:
+                if image.format not in {"JPEG", "PNG"}:
+                    raise ValueError("封面仅支持 JPEG 或 PNG")
+                width, height = image.size
+                if width < min_width or height < min_height or abs(width / height - ratio) > 0.01:
+                    raise ValueError(f"{requirement}；当前为 {width}x{height}")
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            raise HTTPException(422, str(exc)) from exc
+        previous = Path(getattr(drama, field)) if getattr(drama, field) else None
+        setattr(drama, field, str(target.resolve()))
+        if previous and previous != target and previous.is_file():
+            previous.unlink(missing_ok=True)
+    elif destination == "publish":
+        if target.suffix.lower() not in VIDEO_SUFFIXES:
+            target.unlink(missing_ok=True)
+            raise HTTPException(422, "本地发布文件仅支持视频格式")
+        resolved = str(target.resolve())
+        if not session.exec(select(Clip).where(Clip.file_path == resolved)).first():
+            session.add(Clip(
+                drama_id=drama.id,
+                template_name="local_upload",
+                source_eps=[target.name],
+                source_start=0,
+                source_end=0,
+                duration=0,
+                file_path=resolved,
+                status="approved",
+                progress=100,
+                current_step="completed",
+                asset_kind="publish",
+            ))
     drama.source_note = manifest["source_note"]
     drama.episode_count = len(episode_files(Path(drama.file_dir)))
     if not drama.description.strip():
@@ -153,12 +197,54 @@ def get_generated_video(drama_id: int, filename: str, session: Session = Depends
 @router.put("/{drama_id}", response_model=DramaDetail)
 def update_drama(drama_id: int, payload: DramaUpdate, session: Session = Depends(get_session)):
     drama = get_drama_or_404(drama_id, session)
-    for key, value in payload.model_dump().items():
+    changes = payload.model_dump(exclude_unset=True)
+    if "title" in changes:
+        try:
+            new_title = validate_title(changes.pop("title"))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        duplicate = session.exec(select(Drama).where(Drama.title == new_title, Drama.id != drama_id)).first()
+        if duplicate:
+            raise HTTPException(409, "已存在同名剧目任务")
+        if new_title != drama.title:
+            old_folder = Path(drama.file_dir).resolve()
+            managed_root = (get_settings().media_root / "dramas").resolve()
+            try:
+                old_folder.relative_to(managed_root)
+                new_folder = (managed_root / new_title).resolve()
+                if new_folder.exists():
+                    raise HTTPException(409, "新名称对应的本地文件夹已存在")
+                old_folder.rename(new_folder)
+                drama.file_dir = str(new_folder)
+                for field in ("cover_vertical_path", "cover_square_path", "cover_horizontal_path"):
+                    value = getattr(drama, field)
+                    if value:
+                        try:
+                            setattr(drama, field, str(new_folder / Path(value).resolve().relative_to(old_folder)))
+                        except ValueError:
+                            pass
+            except ValueError:
+                pass
+            except OSError as exc:
+                raise HTTPException(422, f"本地剧目文件夹重命名失败：{exc}") from exc
+            drama.title = new_title
+    for key, value in changes.items():
         setattr(drama, key, value)
     session.add(drama)
     session.commit()
     session.refresh(drama)
     return to_detail(drama)
+
+
+@router.get("/{drama_id}/covers/{kind}")
+def get_cover(drama_id: int, kind: str, session: Session = Depends(get_session)):
+    drama = get_drama_or_404(drama_id, session)
+    fields = {"vertical": "cover_vertical_path", "square": "cover_square_path", "horizontal": "cover_horizontal_path"}
+    field = fields.get(kind)
+    target = Path(getattr(drama, field, "")) if field else Path()
+    if not field or not target.is_file():
+        raise HTTPException(404, "封面不存在")
+    return FileResponse(target)
 
 
 @router.put("/{drama_id}/highlights", response_model=DramaDetail)

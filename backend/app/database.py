@@ -20,6 +20,9 @@ def create_db_and_tables() -> None:
             "language": "VARCHAR NOT NULL DEFAULT 'en_US'",
             "promotion_episode_count": "INTEGER NOT NULL DEFAULT 1",
             "total_episode_count": "INTEGER NOT NULL DEFAULT 1",
+            "cover_vertical_path": "VARCHAR NOT NULL DEFAULT ''",
+            "cover_square_path": "VARCHAR NOT NULL DEFAULT ''",
+            "cover_horizontal_path": "VARCHAR NOT NULL DEFAULT ''",
         }
         with engine.begin() as connection:
             for name, definition in additions.items():

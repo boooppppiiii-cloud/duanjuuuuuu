@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Avatar,
   Button,
@@ -11,7 +11,6 @@ import {
   Spin,
   Table,
   Tag,
-  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -31,7 +30,9 @@ import {
   VideoCameraOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { api, type Account, type AccountMatrixRow, type PlatformMedia, type SocialComment, type WorkspaceSummary } from '../api'
+import { api, type Account, type AccountInsights, type AccountInsightPoint, type PlatformMedia, type SocialComment } from '../api'
+import { PlatformBadge, PlatformLogo, PlatformOption } from '../components/PlatformBrand'
+import { SmoothLineChart } from '../components/SmoothLineChart'
 
 const fmt = (value:number|null|undefined) => value == null ? '—' : new Intl.NumberFormat('zh-CN').format(value)
 const compact = (value:number|null|undefined) => value == null ? '—' : new Intl.NumberFormat('zh-CN',{notation:'compact',maximumFractionDigits:1}).format(value)
@@ -49,32 +50,61 @@ const addDays=(date:Date,amount:number)=>{const next=new Date(date);next.setDate
 const startOfWeek=(date:Date)=>{const next=new Date(date);const day=next.getDay();next.setDate(next.getDate()-(day===0?6:day-1));next.setHours(0,0,0,0);return next}
 const startOfMonthGrid=(date:Date)=>{const first=new Date(date.getFullYear(),date.getMonth(),1);const day=first.getDay();return addDays(first,-(day===0?6:day-1))}
 const validDate=(value:string|null)=>value?new Date(value):null
-const platformNames:Record<string,string>={youtube:'YouTube',instagram:'Instagram',facebook:'Facebook',tiktok:'TikTok'}
-const platformClass=(platform:string)=>`platform-${platform.toLowerCase()}`
 const sentimentMeta:Record<string,[string,string]>={positive:['正面','green'],negative:['负面','red'],neutral:['中性','default'],unanalyzed:['待分析','orange']}
 
-function MetricCell({label,value,muted=false}:{label:string;value:string;muted?:boolean}){
-  return <div className="account-metric"><span>{label}</span><strong className={muted?'metric-empty':''}>{value}</strong></div>
+function InsightMetric({label,value,sub,muted=false}:{label:string;value:string;sub?:string;muted?:boolean}){
+  return <div className="insight-metric"><span>{label}</span><strong className={muted?'metric-empty':''}>{value}</strong>{sub&&<small>{sub}</small>}</div>
 }
 
-function AccountCard({row}:{row:AccountMatrixRow}){
-  const body=<Card className={`overview-account-card ${row.profile_url?'is-linked':''}`}>
-    <div className="account-card-head">
-      <Avatar size={44} src={row.avatar_url} icon={<UserOutlined/>}/>
-      <div><strong>{row.name}</strong><Space size={6}><span className={`platform-dot ${platformClass(row.platform)}`}/><span>{platformNames[row.platform]||row.platform}</span></Space></div>
-      <Tooltip title={row.status==='connected'?'账号已连接':'账号未连接'}><span className={`connection-dot ${row.status==='connected'?'is-connected':''}`}/></Tooltip>
-      {row.profile_url&&<ExportOutlined className="account-link-icon"/>}
-    </div>
-    <div className="account-metric-grid">
-      <MetricCell label="播放量" value={compact(row.views_total)}/>
-      <MetricCell label="点击率" value={percent(row.ctr)} muted={row.ctr==null}/>
-      <MetricCell label="观看时长" value={duration(row.watch_time_seconds)} muted={row.watch_time_seconds==null}/>
-      <MetricCell label="广告收入" value={money(row.estimated_revenue)} muted={row.estimated_revenue==null}/>
-      <MetricCell label="RPM" value={money(row.rpm)} muted={row.rpm==null}/>
-      <MetricCell label="订阅数" value={compact(row.followers)}/>
-    </div>
-  </Card>
-  return row.profile_url?<a className="account-card-link" href={row.profile_url} target="_blank" rel="noreferrer" aria-label={`打开 ${row.name} 主页`}>{body}</a>:body
+type TrendMetric='views'|'watch_time_seconds'|'estimated_revenue'|'subscribers_gained'
+type InsightRange='all'|'7'|'28'|'90'
+const trendMeta:Record<TrendMetric,{label:string;format:(value:number)=>string}> = {
+  views:{label:'播放量',format:compact},
+  watch_time_seconds:{label:'观看时长',format:value=>duration(value)},
+  estimated_revenue:{label:'广告收入',format:value=>money(value)},
+  subscribers_gained:{label:'新增订阅',format:fmt},
+}
+
+function TrendChart({series,metric}:{series:AccountInsightPoint[];metric:TrendMetric}){
+  const longRange=series.length>1&&new Date(series.at(-1)!.date).getTime()-new Date(series[0].date).getTime()>180*86400000
+  const points=series.map(item=>({
+    label:item.date,
+    axisLabel:longRange?item.date.slice(0,7):item.date.slice(5),
+    value:Number(item[metric]||0),
+    details:[
+      {label:'播放量',value:fmt(item.views)},
+      {label:'展现量',value:fmt(item.impressions)},
+      {label:'点击率',value:percent(item.ctr)},
+      {label:'观看时长',value:duration(item.watch_time_seconds)},
+      {label:'平均观看',value:duration(item.average_view_duration_seconds)},
+      {label:'广告收入',value:money(item.estimated_revenue)},
+      {label:'新增订阅',value:fmt(item.subscribers_gained)},
+    ].filter(detail=>detail.label!==trendMeta[metric].label&&detail.value!=='—'),
+  }))
+  return <div className="insight-chart-wrap"><SmoothLineChart points={points} seriesName={trendMeta[metric].label} valueFormat={trendMeta[metric].format} ariaLabel={`${trendMeta[metric].label}趋势图`}/></div>
+}
+
+function ContentPerformance({items}:{items:PlatformMedia[]}){
+  const rows=[...items].sort((a,b)=>String(a.published_at||'').localeCompare(String(b.published_at||''))).slice(-12)
+  const points=rows.map((item,index)=>{
+    const date=item.published_at?new Date(item.published_at):null
+    return{
+      label:item.title||`视频 ${index+1}`,
+      axisLabel:date?`${date.getMonth()+1}-${String(date.getDate()).padStart(2,'0')}`:String(index+1),
+      value:item.views,
+      details:[
+        {label:'发布时间',value:date?date.toLocaleString('zh-CN'):'未知'},
+        {label:'点赞',value:fmt(item.likes)},
+        {label:'评论',value:fmt(item.comments)},
+        {label:'点击率',value:percent(item.ctr)},
+        {label:'观看时长',value:duration(item.watch_time_seconds)},
+        {label:'广告收入',value:money(item.estimated_revenue)},
+        {label:'RPM',value:money(item.rpm)},
+        {label:'新增订阅',value:fmt(item.subscribers_gained)},
+      ].filter(detail=>detail.value!=='—'),
+    }
+  })
+  return <SmoothLineChart points={points} seriesName="播放量" valueFormat={compact} ariaLabel="视频播放表现曲线" emptyText="平台暂未返回视频"/>
 }
 
 function VideoPopover({item}:{item:PlatformMedia}){
@@ -127,7 +157,7 @@ function CommentCard({item,account}:{item:SocialComment;account?:Account}){
       <p className="comment-original">{item.text_original}</p>
       <div className={`comment-translation ${item.text_zh?'':'is-pending'}`}><TranslationOutlined/><span>{item.text_zh||'等待 AI 翻译'}</span></div>
       <div className="comment-card-footer">
-        <Space size={7} wrap><Tag className={platformClass(item.platform)}>{platformNames[item.platform]||item.platform}</Tag>{account&&<span>{account.name}</span>}<Tag color={sentiment[1]}>{sentiment[0]}</Tag><span><LikeOutlined/> {fmt(item.like_count)}</span></Space>
+        <Space size={7} wrap><PlatformBadge platform={item.platform}/>{account&&<span>{account.name}</span>}<Tag color={sentiment[1]}>{sentiment[0]}</Tag><span><LikeOutlined/> {fmt(item.like_count)}</span></Space>
         {item.video_url?<a href={item.video_url} target="_blank" rel="noreferrer"><VideoCameraOutlined/> {item.video_title||item.video_id||'来源视频'} <ExportOutlined/></a>:<span><VideoCameraOutlined/> {item.video_title||item.video_id||'来源视频未知'}</span>}
       </div>
     </div>
@@ -135,37 +165,61 @@ function CommentCard({item,account}:{item:SocialComment;account?:Account}){
 }
 
 export default function DashboardPage(){
-  const [summary,setSummary]=useState<WorkspaceSummary>()
   const [accounts,setAccounts]=useState<Account[]>([])
   const [comments,setComments]=useState<SocialComment[]>([])
   const [media,setMedia]=useState<PlatformMedia[]>([])
+  const [insights,setInsights]=useState<AccountInsights>()
   const [selectedAccountId,setSelectedAccountId]=useState<number>()
   const [activeSection,setActiveSection]=useState<'accounts'|'publishing'|'fans'>('accounts')
+  const [insightDays,setInsightDays]=useState<InsightRange>('all')
+  const [trendMetric,setTrendMetric]=useState<TrendMetric>('views')
   const [calendarView,setCalendarView]=useState<'week'|'month'>('week')
   const [calendarCursor,setCalendarCursor]=useState(new Date())
   const [commentSort,setCommentSort]=useState<'latest'|'video'|'user'>('latest')
   const [commentAccount,setCommentAccount]=useState<number|'all'>('all')
   const [loading,setLoading]=useState(false)
   const [mediaLoading,setMediaLoading]=useState(false)
+  const [insightLoading,setInsightLoading]=useState(false)
+  const [insightError,setInsightError]=useState('')
   const [commentWorking,setCommentWorking]=useState(false)
   const [mediaError,setMediaError]=useState('')
+  const mediaCache=useRef(new Map<number,PlatformMedia[]>())
+  const insightCache=useRef(new Map<string,AccountInsights>())
+  const commentsLoaded=useRef(false)
   const [msg,holder]=message.useMessage()
   const navigate=useNavigate()
 
   const load=async()=>{
     setLoading(true)
     try{
-      const [workspace,accountRows,commentRows]=await Promise.all([api.workspaceSummary(),api.accounts(),api.socialComments()])
-      setSummary(workspace);setAccounts(accountRows);setComments(commentRows)
+      const accountRows=await api.accounts()
+      setAccounts(accountRows)
       setSelectedAccountId(current=>current&&accountRows.some(item=>item.id===current)?current:accountRows[0]?.id)
     }catch(error){msg.error((error as Error).message)}finally{setLoading(false)}
   }
-  const loadMedia=async(accountId:number)=>{
-    setMediaLoading(true);setMediaError('')
-    try{setMedia(await api.accountMedia(accountId,50))}catch(error){setMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
+  const loadComments=async(force=false)=>{
+    if(commentsLoaded.current&&!force)return
+    try{setComments(await api.socialComments());commentsLoaded.current=true}catch(error){msg.error((error as Error).message)}
   }
-  useEffect(()=>{void load()},[])
-  useEffect(()=>{if(activeSection==='publishing'&&selectedAccountId)void loadMedia(selectedAccountId)},[activeSection,selectedAccountId])
+  const loadMedia=async(accountId:number,force=false)=>{
+    const cached=mediaCache.current.get(accountId)
+    if(cached&&!force){setMedia(cached);return}
+    setMediaLoading(true);setMediaError('')
+    try{const rows=await api.accountMedia(accountId,50);mediaCache.current.set(accountId,rows);setMedia(rows)}catch(error){setMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
+  }
+  const loadInsights=async(accountId:number,days:InsightRange=insightDays,force=false)=>{
+    const key=`${accountId}:${days}`;const cached=insightCache.current.get(key)
+    if(cached&&!force){setInsights(cached);return}
+    setInsightLoading(true);setInsightError('')
+    try{const result=await api.accountInsights(accountId,days,force);insightCache.current.set(key,result);setInsights(result)}catch(error){setInsights(undefined);setInsightError((error as Error).message)}finally{setInsightLoading(false)}
+  }
+  useEffect(()=>{void load();void loadComments()},[])
+  useEffect(()=>{
+    if(!selectedAccountId)return
+    if(activeSection==='accounts'){void loadInsights(selectedAccountId,insightDays);void loadMedia(selectedAccountId)}
+    if(activeSection==='publishing')void loadMedia(selectedAccountId)
+    if(activeSection==='fans')void loadComments()
+  },[activeSection,selectedAccountId,insightDays])
 
   const visibleRange=useMemo(()=>{
     if(calendarView==='week'){const start=startOfWeek(calendarCursor);return{start,end:addDays(start,7)}}
@@ -186,22 +240,67 @@ export default function DashboardPage(){
   const syncComments=async()=>{setCommentWorking(true);try{const connected=accounts.filter(item=>item.status==='connected').map(item=>item.id);const result=await api.syncComments(connected,300);msg.success(`已同步 ${result.created+result.updated} 条评论`);setComments(await api.socialComments())}catch(error){msg.error((error as Error).message)}finally{setCommentWorking(false)}}
   const translateComments=async()=>{const ids=filteredComments.filter(item=>!item.text_zh).slice(0,100).map(item=>item.id);if(!ids.length){msg.success('当前评论均已有中文翻译');return}setCommentWorking(true);try{await api.analyzeComments(ids,true);setComments(await api.socialComments());msg.success(`已翻译并分析 ${ids.length} 条评论`)}catch(error){msg.error((error as Error).message)}finally{setCommentWorking(false)}}
   const moveCalendar=(direction:number)=>setCalendarCursor(current=>calendarView==='week'?addDays(current,direction*7):new Date(current.getFullYear(),current.getMonth()+direction,1))
+  const selectedAccount=accounts.find(item=>item.id===selectedAccountId)
+  const insightTotals=insights?.totals
+  const netSubscribers=insightTotals?.subscribers_gained==null?null:insightTotals.subscribers_gained-(insightTotals.subscribers_lost||0)
+  const refreshSelected=()=>{if(!selectedAccountId)return;void loadInsights(selectedAccountId,insightDays,true);void loadMedia(selectedAccountId,true)}
 
   return <div className="workspace-page overview-page">{holder}
-    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading} onClick={load}>刷新</Button></div>
+    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load();refreshSelected()}}>刷新</Button></div>
     <Segmented block className="overview-pager" value={activeSection} onChange={value=>setActiveSection(value as typeof activeSection)} options={[{value:'accounts',label:'账号数据'},{value:'publishing',label:'发布日历'},{value:'fans',label:'粉丝评论'}]}/>
 
     {activeSection==='accounts'&&<section className="overview-section overview-accounts-section">
-      <div className="overview-toolbar"><strong>全部账号</strong><Button type="link" onClick={()=>navigate('/management')}>管理账号 <ArrowRightOutlined/></Button></div>
-      {summary?.matrix.length?<div className="overview-account-grid">{summary.matrix.map(row=><AccountCard key={row.id} row={row}/>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未连接账号"><Button type="primary" onClick={()=>navigate('/management')}>连接账号</Button></Empty>}
+      <div className="account-data-toolbar">
+        <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))}/>
+        <Segmented value={insightDays} onChange={value=>setInsightDays(value as InsightRange)} options={[{value:'all',label:'全部'},{value:'7',label:'7天'},{value:'28',label:'28天'},{value:'90',label:'90天'}]}/>
+        <Button icon={<ReloadOutlined/>} loading={insightLoading||mediaLoading} onClick={refreshSelected}>刷新数据</Button>
+        <Button type="link" onClick={()=>navigate('/management')}>管理账号 <ArrowRightOutlined/></Button>
+      </div>
+      {!accounts.length&&<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未连接账号"><Button type="primary" onClick={()=>navigate('/management')}>连接账号</Button></Empty>}
+      {selectedAccount&&<Spin spinning={insightLoading}>
+        <Card className="account-insight-hero">
+          <div className="account-insight-head">
+            <Avatar size={58} src={selectedAccount.avatar_url} icon={<PlatformLogo platform={selectedAccount.platform} size={28}/>}/>
+            <div className="account-insight-title"><Typography.Title level={3}>{selectedAccount.name}</Typography.Title><PlatformLogo platform={selectedAccount.platform} size={20}/></div>
+            {selectedAccount.profile_url&&<Button href={selectedAccount.profile_url} target="_blank" icon={<ExportOutlined/>}>打开主页</Button>}
+          </div>
+          {insightError?<div className="inline-error">{insightError}</div>:<div className="insight-metric-grid">
+            <InsightMetric label={insightDays==='all'?'全部播放':`近 ${insightDays} 天播放`} value={compact(insightTotals?.views)} sub={insightTotals?.channel_views!=null?`频道累计 ${fmt(insightTotals.channel_views)}`:undefined} muted={insightTotals?.views==null}/>
+            <InsightMetric label="缩略图点击率" value={percent(insightTotals?.ctr)} sub={insightTotals?.impressions!=null?`${fmt(insightTotals.impressions)} 次曝光`:undefined} muted={insightTotals?.ctr==null}/>
+            <InsightMetric label="观看时长" value={duration(insightTotals?.watch_time_seconds)} sub={insightTotals?.average_view_duration_seconds!=null?`平均 ${duration(Math.round(insightTotals.average_view_duration_seconds))}`:undefined} muted={insightTotals?.watch_time_seconds==null}/>
+            <InsightMetric label="广告收入" value={money(insightTotals?.estimated_revenue)} sub="USD" muted={insightTotals?.estimated_revenue==null}/>
+            <InsightMetric label="RPM" value={money(insightTotals?.rpm)} sub="每千次播放" muted={insightTotals?.rpm==null}/>
+            <InsightMetric label="当前订阅数" value={compact(insightTotals?.followers??selectedAccount.follower_count)} sub={netSubscribers==null?undefined:`周期净增 ${netSubscribers>=0?'+':''}${fmt(netSubscribers)}`}/>
+            <InsightMetric label="公开视频" value={fmt(insightTotals?.video_count)} muted={insightTotals?.video_count==null}/>
+            <InsightMetric label="数据区间" value={insights?`${insightDays==='all'?insights.range.start:insights.range.start.slice(5)} — ${insightDays==='all'?insights.range.end:insights.range.end.slice(5)}`:'—'} muted={!insights}/>
+          </div>}
+        </Card>
+
+        {insights&&<div className="account-visual-grid">
+          <Card className="insight-chart-card" title="账号趋势" extra={<Segmented size="small" value={trendMetric} onChange={value=>setTrendMetric(value as TrendMetric)} options={(Object.keys(trendMeta) as TrendMetric[]).map(value=>({value,label:trendMeta[value].label}))}/>}>
+            <TrendChart series={insights.series} metric={trendMetric}/>
+          </Card>
+          <Card className="content-performance-card" title="视频播放表现" extra={<span className="cell-sub">最近读取的 {media.length} 条</span>}><ContentPerformance items={media}/></Card>
+        </div>}
+
+        <Card className="table-card video-data-card account-media-table" title="最近视频详细数据" styles={{body:{padding:0}}}>
+          <Table loading={mediaLoading} rowKey="id" dataSource={media} pagination={{pageSize:8,hideOnSinglePage:true}} scroll={{x:1180}} locale={{emptyText:<Empty description="平台暂未返回视频"/>}} onRow={item=>({onClick:()=>item.url&&window.open(item.url,'_blank','noopener,noreferrer')})} columns={[
+            {title:'视频',dataIndex:'title',width:320,render:(title:string,item:PlatformMedia)=><div className="video-table-title">{item.thumbnail_url?<img src={item.thumbnail_url} alt=""/>:<span><VideoCameraOutlined/></span>}<b>{title||'未命名视频'}</b></div>},
+            {title:'发布时间',dataIndex:'published_at',width:170,render:(value:string|null)=>value?new Date(value).toLocaleString('zh-CN'):'—'},
+            {title:'播放量',dataIndex:'views',width:100,render:fmt},{title:'点赞',dataIndex:'likes',width:90,render:fmt},{title:'评论',dataIndex:'comments',width:90,render:fmt},
+            {title:'点击率',dataIndex:'ctr',width:100,render:percent},{title:'观看时长',dataIndex:'watch_time_seconds',width:140,render:duration},
+            {title:'广告收入',dataIndex:'estimated_revenue',width:110,render:money},{title:'RPM',dataIndex:'rpm',width:100,render:money},{title:'新增订阅',dataIndex:'subscribers_gained',width:100,render:fmt},
+          ]}/>
+        </Card>
+      </Spin>}
     </section>}
 
     {activeSection==='publishing'&&<section className="overview-section publishing-calendar-section">
       <div className="calendar-toolbar">
-        <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:`${platformNames[item.platform]||item.platform} · ${item.name}`}))}/>
+        <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))}/>
         <div className="calendar-navigation"><Button icon={<ArrowLeftOutlined/>} onClick={()=>moveCalendar(-1)}/><Button onClick={()=>setCalendarCursor(new Date())}>今天</Button><Button icon={<ArrowRightOutlined/>} onClick={()=>moveCalendar(1)}/><strong>{calendarView==='week'?`${startOfWeek(calendarCursor).toLocaleDateString('zh-CN',{month:'long',day:'numeric'})} — ${addDays(startOfWeek(calendarCursor),6).toLocaleDateString('zh-CN',{month:'long',day:'numeric'})}`:`${calendarCursor.getFullYear()} 年 ${calendarCursor.getMonth()+1} 月`}</strong></div>
         <Segmented value={calendarView} onChange={value=>setCalendarView(value as typeof calendarView)} options={[{value:'week',label:'周'},{value:'month',label:'月'}]}/>
-        <Button icon={<ReloadOutlined/>} loading={mediaLoading} disabled={!selectedAccountId} onClick={()=>selectedAccountId&&loadMedia(selectedAccountId)}>刷新内容</Button>
+        <Button icon={<ReloadOutlined/>} loading={mediaLoading} disabled={!selectedAccountId} onClick={()=>selectedAccountId&&loadMedia(selectedAccountId,true)}>刷新内容</Button>
       </div>
       <Spin spinning={mediaLoading}>
         <Card className="calendar-card" styles={{body:{padding:0}}}>{calendarView==='week'?<WeekCalendar cursor={calendarCursor} items={media}/>:<MonthCalendar cursor={calendarCursor} items={media}/>}</Card>
@@ -221,10 +320,10 @@ export default function DashboardPage(){
 
     {activeSection==='fans'&&<section className="overview-section comments-overview-section">
       <div className="comments-toolbar">
-        <Select value={commentAccount} onChange={setCommentAccount} options={[{value:'all',label:'全部账号'},...accounts.map(item=>({value:item.id,label:`${platformNames[item.platform]||item.platform} · ${item.name}`}))]}/>
+        <Select value={commentAccount} onChange={setCommentAccount} options={[{value:'all',label:'全部账号'},...accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))]}/>
         <Segmented value={commentSort} onChange={value=>setCommentSort(value as typeof commentSort)} options={[{value:'latest',label:'最新'},{value:'video',label:'按视频'},{value:'user',label:'按用户'}]}/>
         <span className="comment-count">{filteredComments.length} 条评论</span>
-        <Space wrap><Button icon={<TranslationOutlined/>} loading={commentWorking} onClick={translateComments}>AI 翻译</Button><Button type="primary" icon={<SyncOutlined/>} loading={commentWorking} onClick={syncComments}>同步最新评论</Button><Button icon={<ReloadOutlined/>} onClick={()=>api.socialComments().then(setComments).catch(error=>msg.error(error.message))}>刷新</Button></Space>
+        <Space wrap><Button icon={<TranslationOutlined/>} loading={commentWorking} onClick={translateComments}>AI 翻译</Button><Button type="primary" icon={<SyncOutlined/>} loading={commentWorking} onClick={syncComments}>同步最新评论</Button><Button icon={<ReloadOutlined/>} onClick={()=>void loadComments(true)}>刷新</Button></Space>
       </div>
       {filteredComments.length?<div className="comment-groups">{commentGroups.map(group=><section className="comment-group" key={group.key}>{commentSort!=='latest'&&<div className="comment-group-title"><strong>{group.title}</strong><span>{group.items.length}</span></div>}{group.items.map(item=><CommentCard key={item.id} item={item} account={accounts.find(account=>account.id===item.account_id)}/>)}</section>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无评论"><Button type="primary" icon={<SyncOutlined/>} onClick={syncComments}>同步最新评论</Button></Empty>}
     </section>}

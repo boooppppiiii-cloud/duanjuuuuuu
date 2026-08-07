@@ -1,7 +1,9 @@
 import { lazy,Suspense,useEffect,useMemo,useState } from 'react'
-import { CloudUploadOutlined,DashboardOutlined,ExperimentOutlined,FolderOpenOutlined,SendOutlined,SettingOutlined } from '@ant-design/icons'
-import { Layout,Menu,Spin,Tag } from 'antd'
+import { DashboardOutlined,ExperimentOutlined,FolderOpenOutlined,SendOutlined,SettingOutlined } from '@ant-design/icons'
+import { Layout,Menu,Spin } from 'antd'
 import { Navigate,Route,Routes,useLocation,useNavigate } from 'react-router-dom'
+import { PlatformLogo } from './components/PlatformBrand'
+import { JushuLogo } from './components/JushuLogo'
 
 const DashboardPage=lazy(()=>import('./pages/Dashboard'))
 const DramaLibrary=lazy(()=>import('./pages/DramaLibrary'))
@@ -17,7 +19,7 @@ const nav=[
  {key:'factory',icon:<ExperimentOutlined/>,label:'内容工厂'},
  {key:'publishing',icon:<SendOutlined/>,label:'一键发布'},
  {key:'management',icon:<SettingOutlined/>,label:'管理'},
- {key:'meta-delivery',icon:<CloudUploadOutlined/>,label:'Meta 官方投递',className:'meta-nav-item'},
+ {key:'meta-delivery',icon:<PlatformLogo platform="meta" size={17}/>,label:'Meta 官方投递',className:'meta-nav-item'},
 ]
 export default function App(){
  const navigate=useNavigate();const location=useLocation();const[collapsed,setCollapsed]=useState(()=>window.innerWidth<880)
@@ -26,9 +28,8 @@ export default function App(){
  const jump=(key:string)=>navigate(key==='home'?'/':`/${key}`)
  return <Layout className="app-shell">
   <Layout.Sider className="sidebar" width={224} collapsedWidth={68} collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="light">
-   <div className="brand"><span className="brand-mark">媒</span>{!collapsed&&<div><b>社媒中心</b><small>SOCIAL OPS CENTER</small></div>}</div>
+   <div className={`brand ${collapsed?'is-collapsed':''}`}><JushuLogo size={40}/>{!collapsed&&<div><b>剧枢</b><small>DRAMA OPS HUB</small></div>}</div>
    <Menu mode="inline" selectedKeys={[active]} items={nav} onClick={({key})=>jump(String(key))}/>
-   {!collapsed&&<div className="sidebar-foot"><Tag>LOCAL</Tag><div><b>本地工作流</b><small>真实数据 · 官方接口</small></div></div>}
   </Layout.Sider>
   <Layout className="main-layout">
    <Layout.Content className="content"><Suspense fallback={<div className="route-loading"><Spin size="large"/><span>正在加载工作区…</span></div>}><Routes>

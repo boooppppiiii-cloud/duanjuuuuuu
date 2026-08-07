@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react'
-import { Button, Card, DatePicker, Empty, message, Progress, Space, Table, Tag, Typography } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { Button, Card, DatePicker, Empty, message, Space, Table, Tag, Typography } from 'antd'
 import { CloudSyncOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import { api, type Dashboard, type Metric } from '../api'
+import { SmoothLineChart } from '../components/SmoothLineChart'
+
+const fmt=(value:number)=>new Intl.NumberFormat('zh-CN').format(value)
+const compact=(value:number)=>new Intl.NumberFormat('zh-CN',{notation:'compact',maximumFractionDigits:1}).format(value)
 
 export default function Metrics(){
   const [rows,setRows]=useState<Metric[]>([])
@@ -44,7 +48,11 @@ export default function Metrics(){
     {title:'点赞',dataIndex:'likes'},
     {title:'评论',dataIndex:'comments'},
   ]
-  const maxAccount=Math.max(1,...(dashboard?.account_trends.map(x=>x.views)??[]))
+  const accountTrends=useMemo(()=>{
+    const grouped=new Map<string,NonNullable<Dashboard['account_trends']>>()
+    for(const item of dashboard?.account_trends??[])grouped.set(item.account,[...(grouped.get(item.account)??[]),item])
+    return [...grouped.entries()].map(([account,items])=>({account,items:[...items].sort((a,b)=>a.date.localeCompare(b.date))}))
+  },[dashboard])
   return <div className="workspace-page">{context}
     <Space className="page-heading" align="start" wrap>
       <Typography.Title level={2}>数据中台</Typography.Title>
@@ -56,7 +64,7 @@ export default function Metrics(){
       </Space>
     </Space>
     <div className="creative-grid">
-      <Card title="账号播放与涨粉趋势">{dashboard?.account_trends.length?dashboard.account_trends.map((x,i)=><div key={`${x.account}-${x.date}-${i}`} className="trend-row"><Space wrap><b>{x.account}</b><span>{x.date}</span><span>播放 {x.views}</span><span>涨粉 {x.followers}</span></Space><Progress percent={Math.round(x.views/maxAccount*100)} showInfo={false}/></div>):<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="等待首次数据采集"/>}</Card>
+      <Card title="账号播放与涨粉趋势">{accountTrends.length?<div className="legacy-trend-chart-list">{accountTrends.map(group=><div className="legacy-trend-chart" key={group.account}><b>{group.account}</b><SmoothLineChart seriesName="播放量" valueFormat={compact} ariaLabel={`${group.account}播放趋势图`} points={group.items.map(item=>({label:item.date,axisLabel:item.date.slice(5),value:item.views,details:[{label:'播放量',value:fmt(item.views)},{label:'涨粉',value:fmt(item.followers)}]}))}/></div>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="等待首次数据采集"/>}</Card>
       <Card title="剪辑模板 · 平均播放"><Table rowKey="template" pagination={false} dataSource={dashboard?.templates} locale={{emptyText:'暂无真实数据'}} columns={[{title:'模板',dataIndex:'template'},{title:'平均播放',dataIndex:'avg_views'},{title:'样本数',dataIndex:'count'}]}/></Card>
       <Card title="剧目 · 累计播放与最佳单条"><Table rowKey="drama" pagination={false} dataSource={dashboard?.dramas} locale={{emptyText:'暂无真实数据'}} columns={[{title:'剧目',dataIndex:'drama'},{title:'累计播放',dataIndex:'total_views'},{title:'最佳单条',dataIndex:'best_views'}]}/></Card>
       <Card title="创意底图与视频帧表现"><Table rowKey="kind" pagination={false} dataSource={dashboard?.covers} locale={{emptyText:'暂无真实数据'}} columns={[{title:'封面',dataIndex:'kind'},{title:'平均播放',dataIndex:'avg_views'},{title:'平均点赞',dataIndex:'avg_likes'},{title:'样本数',dataIndex:'count'}]}/></Card>

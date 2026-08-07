@@ -64,7 +64,7 @@ def frontend_port_state(port: int) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}", timeout=3) as response:
             body = response.read().decode("utf-8", errors="replace")
-        if response.status == 200 and "社媒运营中心" in body:
+        if response.status == 200 and "剧枢" in body:
             return True, f"端口 {port} 已由本项目服务监听"
     except Exception:
         pass

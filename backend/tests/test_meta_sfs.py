@@ -31,12 +31,14 @@ def request(**overrides) -> MetaSFSRequest:
 
 def make_drama(tmp_path: Path) -> Drama:
     episodes = tmp_path / "episodes"
-    stills = tmp_path / "stills"
+    covers = tmp_path / "covers"
     episodes.mkdir()
-    stills.mkdir()
+    covers.mkdir()
     (episodes / "episode 1.mp4").write_bytes(b"video")
-    Image.new("RGB", (1000, 1500), "#20422f").save(stills / "cover.jpg")
-    return Drama(id=7, title="午夜契约", file_dir=str(tmp_path), source_note="test")
+    vertical = covers / "vertical.jpg"; square = covers / "square.jpg"
+    Image.new("RGB", (1440, 1920), "#20422f").save(vertical)
+    Image.new("RGB", (1200, 1200), "#20422f").save(square)
+    return Drama(id=7, title="午夜契约", file_dir=str(tmp_path), source_note="test", cover_vertical_path=str(vertical), cover_square_path=str(square))
 
 
 def compliant_video(**overrides) -> dict:
@@ -104,6 +106,7 @@ def test_build_package_inherits_task_metadata(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(meta_sfs, "_render_cover", lambda source, target, size: target.write_bytes(b"cover"))
     monkeypatch.setattr(meta_sfs, "get_settings", lambda: SimpleNamespace(media_root=tmp_path / "output"))
     drama = make_drama(tmp_path); drama.description = "Task synopsis"; drama.genres = ["Drama", "Romance"]; drama.is_ai_generated = True; drama.is_dubbed_content = True; drama.total_episode_count = 1
+    horizontal = tmp_path / "covers" / "horizontal.jpg"; Image.new("RGB", (1920, 1080), "#20422f").save(horizontal); drama.cover_horizontal_path = str(horizontal)
 
     output, _ = meta_sfs.build_package(drama, request(description="Ignored synopsis", genres=["Comedy"], ai_content=False, dubbed_content=False, include_thumbnails=False))
     with next(output.rglob("*_series.csv")).open(encoding="utf-8-sig", newline="") as stream:
@@ -113,3 +116,19 @@ def test_build_package_inherits_task_metadata(monkeypatch, tmp_path: Path):
     assert row["Genre"] == "Drama,Romance"
     assert row["AI Content"] == "yes"
     assert row["Dubbed Content"] == "yes"
+    assert next(output.rglob("*_background.jpg")).is_file()
+
+
+def test_build_package_writes_to_selected_local_directory(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video())
+    monkeypatch.setattr(meta_sfs, "_verify_output", lambda _: [])
+    monkeypatch.setattr(meta_sfs, "_normalize_video", lambda source, target, has_audio: target.write_bytes(b"normalized"))
+    monkeypatch.setattr(meta_sfs, "_render_cover", lambda source, target, size: target.write_bytes(b"cover"))
+    monkeypatch.setattr(meta_sfs, "get_settings", lambda: SimpleNamespace(media_root=tmp_path / "default-output"))
+    drama = make_drama(tmp_path); drama.description = "Task synopsis"; drama.genres = ["Drama"]; drama.total_episode_count = 1
+    selected = tmp_path / "selected-output"; selected.mkdir()
+
+    output, _ = meta_sfs.build_package(drama, request(include_thumbnails=False), output_parent=selected)
+
+    assert output.parent == selected
+    assert next(output.rglob("*_series.csv")).is_file()

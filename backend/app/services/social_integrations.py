@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import re
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -15,6 +16,13 @@ from .credentials import CredentialError, resolve_account_secret
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 TIKTOK_API = "https://open.tiktokapis.com"
 META_GRAPH = "https://graph.facebook.com"
+ACCOUNT_INSIGHT_CACHE_TTL = 300
+_account_insight_cache: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+
+
+def _cache_insight(key: tuple[int, str], result: dict[str, Any]) -> dict[str, Any]:
+    _account_insight_cache[key] = (monotonic(), result)
+    return result
 
 
 def _error_detail(response: httpx.Response, platform: str) -> str:
@@ -170,7 +178,8 @@ def _youtube_analytics(token: str, video_ids: list[str]) -> dict[str, dict[str, 
     }
     result: dict[str, dict[str, float]] = {}
     metric_groups = [
-        "views,estimatedMinutesWatched,averageViewDuration,subscribersGained,impressions,impressionClickThroughRate",
+        "views,estimatedMinutesWatched,averageViewDuration,subscribersGained",
+        "videoThumbnailImpressions,videoThumbnailImpressionsClickRate",
         "estimatedRevenue",
     ]
     for metrics in metric_groups:
@@ -188,6 +197,167 @@ def _youtube_analytics(token: str, video_ids: list[str]) -> dict[str, dict[str, 
             if video_id:
                 result.setdefault(video_id, {}).update({key: float(value) for key, value in row.items() if value is not None})
     return result
+
+
+def _youtube_time_report(token: str, start: date, end: date, metrics: str, dimension: str = "day") -> tuple[list[dict[str, float | str]], str]:
+    response = httpx.get(
+        "https://youtubeanalytics.googleapis.com/v2/reports",
+        params={
+            "ids": "channel==MINE",
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "dimensions": dimension,
+            "metrics": metrics,
+            "sort": dimension,
+        },
+        headers=bearer_headers(token),
+        timeout=30,
+    )
+    if response.is_error:
+        return [], _error_detail(response, "YouTube Analytics")
+    payload = response.json()
+    headers = [str(item.get("name") or "") for item in payload.get("columnHeaders", [])]
+    rows = []
+    for values in payload.get("rows", []):
+        row = dict(zip(headers, values))
+        rows.append({key: str(value) if key == dimension else float(value) for key, value in row.items() if value is not None})
+    return rows, ""
+
+
+def account_insights(account: Account, days: int | str = "all", force_refresh: bool = False) -> dict[str, Any]:
+    """Read account-level analytics from official platform APIs without synthetic values."""
+    cache_key = (int(account.id or 0), str(days).lower())
+    cached = _account_insight_cache.get(cache_key)
+    if not force_refresh and cached and monotonic() - cached[0] < ACCOUNT_INSIGHT_CACHE_TTL:
+        return cached[1]
+    all_time = str(days).lower() in {"all", "0", "全部"}
+    end = date.today()
+    selected_days = None if all_time else max(7, min(int(days), 365))
+    start = date(2005, 2, 14) if all_time else end - timedelta(days=selected_days - 1)
+    unavailable: list[str] = []
+
+    if account.platform == "youtube":
+        token = youtube_access_token(account)
+        channel_response = httpx.get(
+            f"{YOUTUBE_API}/channels",
+            params={"part": "snippet,statistics", "mine": "true"},
+            headers=bearer_headers(token),
+            timeout=30,
+        )
+        _raise(channel_response, "YouTube")
+        channel = (channel_response.json().get("items") or [{}])[0]
+        stats = channel.get("statistics", {})
+        published_at = str(channel.get("snippet", {}).get("publishedAt") or "")[:10]
+        if all_time and published_at:
+            start = date.fromisoformat(published_at)
+
+        dimension = "month" if all_time else "day"
+        report_start = start.replace(day=1) if all_time else start
+        report_end = end.replace(day=1) if all_time else end
+
+        daily: dict[str, dict[str, float | str | None]] = {}
+        groups = [
+            ("核心观看数据", "views,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost"),
+            ("曝光与点击率", "videoThumbnailImpressions,videoThumbnailImpressionsClickRate"),
+            ("广告收入", "estimatedRevenue"),
+        ]
+        for label, metrics in groups:
+            rows, error = _youtube_time_report(token, report_start, report_end, metrics, dimension)
+            if error:
+                unavailable.append(f"{label}：{error}")
+                continue
+            for row in rows:
+                key = str(row.get(dimension) or "")
+                if key:
+                    daily.setdefault(key, {"date": key}).update(row)
+
+        series = []
+        cursor = report_start
+        while cursor <= report_end:
+            key = cursor.strftime("%Y-%m") if all_time else cursor.isoformat()
+            row = daily.get(key, {"date": key})
+            series.append({
+                "date": f"{key}-01" if all_time else key,
+                "views": int(row.get("views") or 0),
+                "watch_time_seconds": round(float(row.get("estimatedMinutesWatched") or 0) * 60),
+                "average_view_duration_seconds": float(row["averageViewDuration"]) if row.get("averageViewDuration") is not None else None,
+                "impressions": int(row["videoThumbnailImpressions"]) if row.get("videoThumbnailImpressions") is not None else None,
+                "ctr": float(row["videoThumbnailImpressionsClickRate"]) if row.get("videoThumbnailImpressionsClickRate") is not None else None,
+                "estimated_revenue": float(row["estimatedRevenue"]) if row.get("estimatedRevenue") is not None else None,
+                "subscribers_gained": int(row.get("subscribersGained") or 0),
+                "subscribers_lost": int(row.get("subscribersLost") or 0),
+            })
+            if all_time:
+                cursor = date(cursor.year + (1 if cursor.month == 12 else 0), 1 if cursor.month == 12 else cursor.month + 1, 1)
+            else:
+                cursor += timedelta(days=1)
+
+        views = sum(item["views"] for item in series)
+        watch_time = sum(item["watch_time_seconds"] for item in series)
+        impression_rows = [item for item in series if item["impressions"] is not None]
+        impression_total = sum(int(item["impressions"] or 0) for item in impression_rows)
+        weighted_ctr = sum(int(item["impressions"] or 0) * float(item["ctr"] or 0) for item in impression_rows)
+        revenue_rows = [item for item in series if item["estimated_revenue"] is not None]
+        revenue = sum(float(item["estimated_revenue"] or 0) for item in revenue_rows) if revenue_rows else None
+        followers = int(stats.get("subscriberCount") or account.follower_count or 0)
+        return _cache_insight(cache_key, {
+            "account_id": account.id,
+            "platform": account.platform,
+            "range": {"preset": "all" if all_time else str(selected_days), "days": (end - start).days + 1, "start": start.isoformat(), "end": end.isoformat()},
+            "source": "youtube_analytics",
+            "series_mode": "daily_activity",
+            "totals": {
+                "views": views,
+                "channel_views": int(stats.get("viewCount") or 0),
+                "impressions": impression_total if impression_rows else None,
+                "ctr": weighted_ctr / impression_total if impression_total else None,
+                "watch_time_seconds": watch_time,
+                "average_view_duration_seconds": watch_time / views if views else None,
+                "estimated_revenue": revenue,
+                "rpm": revenue / views * 1000 if revenue is not None and views else None,
+                "subscribers_gained": sum(item["subscribers_gained"] for item in series),
+                "subscribers_lost": sum(item["subscribers_lost"] for item in series),
+                "followers": followers,
+                "video_count": int(stats.get("videoCount") or 0),
+            },
+            "series": series,
+            "unavailable": unavailable,
+        })
+
+    media = list_platform_media(account, 50)
+    daily_media: dict[str, dict[str, Any]] = {}
+    for item in media:
+        published = str(item.get("published_at") or "")[:10]
+        if not published or published < start.isoformat() or published > end.isoformat():
+            continue
+        point = daily_media.setdefault(published, {"date": published, "views": 0, "watch_time_seconds": 0, "estimated_revenue": None, "subscribers_gained": 0, "subscribers_lost": 0, "impressions": None, "ctr": None, "average_view_duration_seconds": None})
+        point["views"] += int(item.get("views") or 0)
+        point["watch_time_seconds"] += int(item.get("watch_time_seconds") or 0)
+    series = [daily_media[key] for key in sorted(daily_media)]
+    period_media = [item for item in media if start.isoformat() <= str(item.get("published_at") or "")[:10] <= end.isoformat()]
+    return _cache_insight(cache_key, {
+        "account_id": account.id,
+        "platform": account.platform,
+        "range": {"preset": "all" if all_time else str(selected_days), "days": (end - start).days + 1, "start": start.isoformat(), "end": end.isoformat()},
+        "source": "platform_media",
+        "series_mode": "published_content_totals",
+        "totals": {
+            "views": sum(int(item.get("views") or 0) for item in period_media),
+            "channel_views": None,
+            "impressions": None,
+            "ctr": None,
+            "watch_time_seconds": None,
+            "average_view_duration_seconds": None,
+            "estimated_revenue": None,
+            "rpm": None,
+            "subscribers_gained": None,
+            "subscribers_lost": None,
+            "followers": account.follower_count,
+            "video_count": len(media),
+        },
+        "series": series,
+        "unavailable": ["当前平台官方接口未返回账号级按日观看、广告收入或点击率；趋势图按发布日期汇总已读取内容。"],
+    })
 
 
 def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any]]:
@@ -218,8 +388,8 @@ def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any
                 "url": f"https://www.youtube.com/watch?v={video_id}",
                 "thumbnail_url": str(snippet.get("thumbnails", {}).get("medium", {}).get("url") or snippet.get("thumbnails", {}).get("default", {}).get("url") or ""),
                 "duration_seconds": _duration_seconds(str(item.get("contentDetails", {}).get("duration") or "")),
-                "impressions": int(extra["impressions"]) if "impressions" in extra else None,
-                "clicks": None, "ctr": extra.get("impressionClickThroughRate"),
+                "impressions": int(extra["videoThumbnailImpressions"]) if "videoThumbnailImpressions" in extra else None,
+                "clicks": None, "ctr": extra.get("videoThumbnailImpressionsClickRate"),
                 "watch_time_seconds": round(extra["estimatedMinutesWatched"] * 60) if "estimatedMinutesWatched" in extra else None,
                 "estimated_revenue": revenue, "rpm": revenue / views * 1000 if revenue is not None and views else None,
                 "subscribers_gained": int(extra["subscribersGained"]) if "subscribersGained" in extra else None,

@@ -3,6 +3,7 @@ export type Drama = {
   id: number; title: string; description:string; genres: string[]; actor_names: string[]; source_note: string
   is_ai_generated: boolean;is_dubbed_content:boolean; episode_count: number; episodes: string[]; stills: string[]; highlights: Highlight[]; file_dir:string
   language:string;promotion_episode_count:number;total_episode_count:number;generated_files:GeneratedFile[]
+  cover_vertical_path:string;cover_square_path:string;cover_horizontal_path:string
 }
 export type GeneratedFile = { name:string;size:number;created_at:string }
 export type ScanLog = { path: string; status: string; message: string }
@@ -16,7 +17,6 @@ export type Clip = {
 export type TextPart = { text: string; hit: boolean }
 export type ModerationResult = { hit_words: string[]; safe: boolean; highlighted_title: TextPart[]; highlighted_caption: TextPart[] }
 export type TitleCandidate = { formula: number; title: string; caption: string; hashtags: string[]; hit_words: string[] }
-export type Basemap = { id: number; drama_id: number; file_path: string; source: string; status: string }
 export type Post = { id: number; clip_id: number; title: string; caption: string; hashtags: string[]; cover_path_169: string; cover_path_916: string; cover_fallback: boolean }
 export type Account = { id: number; platform: string; name: string; account_type: string; is_new: boolean; status: string; strategy_id: number | null; platform_user_id:string;avatar_url:string;profile_url:string;follower_count:number;last_checked_at:string|null;connected_at:string|null;last_error:string;capabilities:string[];configured:boolean;credential_status:Record<string,string|boolean|number> }
 export type AccountStrategy = { id: number; name: string; positioning: string; persona_keywords: string[]; tone_examples: string; daily_posts: number; posting_times: string[]; tag_pool: string[]; default_clip_template: string; title_formula_preference: number; builtin: boolean; confirmed: boolean }
@@ -28,13 +28,16 @@ export type VisualReview = { id:number; clip_id:number; risk:'green'|'yellow'|'r
 export type HotNote = { id:number; content:string; platform:string; expires_at:string; created_at:string }
 export type PublishJob = { id: number; post_id: number; account_id: number; scheduled_at: string; channel: string; status: string; ai_disclosure: boolean; result_log: string; platform_video_id: string; retry_count: number;publish_options:Record<string,unknown>;platform_url:string;status_checked_at:string|null;submitted_at:string|null;completed_at:string|null }
 export type PlatformMedia = { id:string;title:string;published_at:string|null;views:number;likes:number;comments:number;url:string;thumbnail_url:string;duration_seconds:number|null;impressions:number|null;clicks:number|null;ctr:number|null;watch_time_seconds:number|null;estimated_revenue:number|null;rpm:number|null;subscribers_gained:number|null }
+export type AccountInsightPoint = { date:string;views:number;watch_time_seconds:number;average_view_duration_seconds:number|null;impressions:number|null;ctr:number|null;estimated_revenue:number|null;subscribers_gained:number;subscribers_lost:number }
+export type AccountInsights = { account_id:number;platform:string;range:{preset:'all'|string;days:number;start:string;end:string};source:string;series_mode:'daily_activity'|'published_content_totals';totals:{views:number|null;channel_views:number|null;impressions:number|null;ctr:number|null;watch_time_seconds:number|null;average_view_duration_seconds:number|null;estimated_revenue:number|null;rpm:number|null;subscribers_gained:number|null;subscribers_lost:number|null;followers:number;video_count:number|null};series:AccountInsightPoint[];unavailable:string[] }
 export type Metric = { id: number; date: string; views: number; likes: number; comments: number; followers:number; impressions:number|null;clicks:number|null;ctr:number|null;watch_time_seconds:number|null;estimated_revenue:number|null;rpm:number|null;subscribers_gained:number|null; post_title: string; account_name: string; account_type: string; cover_fallback: boolean; clip_id: number | null }
 export type Dashboard = { account_trends:{account:string;date:string;views:number;followers:number}[]; templates:{template:string;avg_views:number;count:number}[]; dramas:{drama:string;total_views:number;best_views:number}[]; covers:{kind:string;avg_views:number;avg_likes:number;count:number}[] }
 export type AccountMatrixRow = { id:number;platform:string;name:string;account_type:string;status:string;strategy_id:number|null;posts_7d:number;published_total:number;failed_total:number;views_7d:number;likes_7d:number;comments_7d:number;views_total:number;impressions:number|null;clicks:number|null;ctr:number|null;watch_time_seconds:number|null;estimated_revenue:number|null;rpm:number|null;subscribers_gained:number|null;followers:number;last_publish_at:string|null;last_error?:string;last_checked_at?:string|null;avatar_url?:string;profile_url?:string;capabilities?:string[];configured?:boolean }
 export type WorkspaceSummary = { kpis:{accounts:number;connected_accounts:number;dramas:number;ready_posts:number;scheduled_jobs:number;views_7d:number;comments_7d:number};workflow:{source:number;processing:number;review:number;ready:number;published:number};alerts:{failed_jobs:number;visual_risk:number;comment_tickets:number};matrix:AccountMatrixRow[];generated_at:string }
-export type MetaSFSInput = { drama_id:number;series_slug:string;description:string;locale:string;genres:string[];release_date:string;cast_list:string[];tags:string[];geogating:string[];ai_content:boolean;dubbed_content:boolean;include_episode_csv:boolean;include_thumbnails:boolean }
-export type MetaPreflight = { ready:boolean;series_slug:string;episode_count:number;assets:{episode:number;source:string;target:string;info:Record<string,number|string|boolean>;issues:string[]}[];cover_source:{path:string;width:number;height:number};blockers:string[];automatic_fixes:string[];requirements:Record<string,string> }
+export type MetaSFSInput = { drama_id:number;series_slug:string;description:string;locale:string;genres:string[];release_date:string;cast_list:string[];tags:string[];geogating:string[];ai_content:boolean;dubbed_content:boolean;include_episode_csv:boolean;include_thumbnails:boolean;local_destination_token?:string }
+export type MetaPreflight = { ready:boolean;series_slug:string;episode_count:number;assets:{episode:number;source:string;target:string;info:Record<string,number|string|boolean>;issues:string[]}[];cover_source:{path:string;width:number;height:number};cover_sources:Record<'vertical'|'square'|'horizontal',{path:string;width:number;height:number}>;blockers:string[];automatic_fixes:string[];requirements:Record<string,string> }
 export type MetaPackage = { id:number;drama_id:number;series_slug:string;output_dir:string;status:string;validation_json:Record<string,unknown>;drive_folder_id:string;drive_folder_url:string;last_error:string;uploaded_at:string|null;created_at:string }
+export type MetaPackageFiles = { folder_name:string;total_bytes:number;files:{path:string;size:number}[] }
 export type SocialComment = { id:number;external_id:string;platform:string;account_id:number|null;video_id:string;video_title:string;video_url:string;author_name:string;author_handle:string;text_original:string;text_zh:string;like_count:number;published_at:string|null;sentiment:string;user_status:string;keyword_category:string;keywords:string[];summary:string;ticket_type:string;severity:string;needs_human:boolean;status:string;suggested_replies:string[];analysis_source:string;reply_id:string;reply_text:string;replied_at:string|null;fetched_at:string }
 export type EngagementSummary = { total:number;analyzed:number;pending:number;needs_human:number;high_risk:number;buyer_intent:number;sentiment:{positive:number;negative:number;neutral:number};health:'healthy'|'watch'|'urgent' }
 export type ScriptSegment = { start:number;end:number;text:string;energy_score:number;energy_reasons:string[];high_energy:boolean;sensitive:Record<string,string[]> }
@@ -75,13 +78,8 @@ export const api = {
   reviewClip: (clipId: number, status: 'approved' | 'blocked', note = '') => request<Clip>(`/api/moderation/clips/${clipId}/review`, { method: 'PUT', body: JSON.stringify({ status, note }) }),
   moderateText: (title: string, caption: string) => request<ModerationResult>('/api/moderation/text', { method: 'POST', body: JSON.stringify({ title, caption }) }),
   moderationConfig: () => request<{ cover_reminder: string }>('/api/moderation/config'),
-  generateTitles: (clipId: number, accountType: string, targetLanguage: string, formula: number | 'auto', accountId?: number, hotTags:string[] = []) => request<{ candidates: TitleCandidate[]; degraded: boolean; provider: string; context_used: string[] }>('/api/creative/titles', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, target_language: targetLanguage, formula, account_id: accountId, hot_tags:hotTags }) }),
+  generateTitles: (clipId: number, accountType: string, targetLanguage: string, formula: number | 'auto', accountId?: number, hotTags:string[] = [], strategyId?:number) => request<{ candidates: TitleCandidate[]; degraded: boolean; provider: string; context_used: string[] }>('/api/creative/titles', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, target_language: targetLanguage, formula, account_id: accountId, strategy_id:strategyId, hot_tags:hotTags }) }),
   createPost: (clipId: number, accountType: string, candidate: TitleCandidate) => request<Post>('/api/creative/posts', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, candidate }) }),
-  basemaps: (dramaId: number) => request<Basemap[]>(`/api/creative/basemaps?drama_id=${dramaId}`),
-  generateBasemaps: (dramaId: number, stillFilename: string) => request<Basemap[]>('/api/creative/basemaps', { method: 'POST', body: JSON.stringify({ drama_id: dramaId, still_filename: stillFilename }) }),
-  reviewBasemap: (id: number, status: 'approved' | 'rejected') => request<Basemap>(`/api/creative/basemaps/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
-  createCovers: (postId: number, accountType: string) => request<Post>('/api/creative/covers', { method: 'POST', body: JSON.stringify({ post_id: postId, account_type: accountType }) }),
-  quotas: () => request<{ month: string; basemap: { used: number; limit: number }; direct: { used: number; limit: number } }>('/api/creative/quotas'),
   posts: () => request<Post[]>('/api/creative/posts'),
   accounts: () => request<Account[]>('/api/publish/accounts'),
   createAccount: (body: object) => request<Account>('/api/publish/accounts', { method: 'POST', body: JSON.stringify(body) }),
@@ -89,6 +87,7 @@ export const api = {
   checkAccount: (id:number) => request<Account>(`/api/publish/accounts/${id}/check`,{method:'POST'}),
   disconnectAccount: (id:number) => request<Account>(`/api/publish/accounts/${id}/disconnect`,{method:'POST'}),
   accountMedia: (id:number,limit=50) => request<PlatformMedia[]>(`/api/publish/accounts/${id}/media?limit=${limit}`),
+  accountInsights: (id:number,days:string|number='all',refresh=false) => request<AccountInsights>(`/api/publish/accounts/${id}/insights?days=${days}&refresh=${refresh}`),
   creatorInfo: (id:number) => request<TikTokCreatorInfo>(`/api/publish/accounts/${id}/creator-info`),
   integrationConfig: () => request<IntegrationConfig>('/api/integrations/config'),
   saveIntegrationConfig: (platform:'youtube'|'meta'|'tiktok',body:object) => request(`/api/integrations/config/${platform}`,{method:'PUT',body:JSON.stringify(body)}),
@@ -138,9 +137,14 @@ export const api = {
   syncFactoryHooks: (dramaId:number) => request<HookAsset[]>(`/api/factory/${dramaId}/hooks/sync`,{method:'POST'}),
   setFactoryHookActive: (hookId:number,active:boolean) => request<HookAsset>(`/api/factory/hooks/${hookId}?active=${active}`,{method:'PATCH'}),
   accountMatrix: () => request<AccountMatrixRow[]>('/api/workspace/account-matrix'),
+  selectMetaOutputDirectory: () => request<{token:string;name:string}>('/api/meta-sfs/select-local-directory',{method:'POST'}),
   metaPreflight: (body:MetaSFSInput) => request<MetaPreflight>('/api/meta-sfs/preflight',{method:'POST',body:JSON.stringify(body)}),
   buildMetaPackage: (body:MetaSFSInput) => request<MetaPackage>('/api/meta-sfs/build',{method:'POST',body:JSON.stringify(body)}),
   metaPackages: () => request<MetaPackage[]>('/api/meta-sfs/packages'),
+  metaPackageFiles: (id:number) => request<MetaPackageFiles>(`/api/meta-sfs/packages/${id}/files`),
+  metaPackageFileUrl: (id:number,path:string) => `/api/meta-sfs/packages/${id}/files/${path.split('/').map(encodeURIComponent).join('/')}`,
+  openMetaPackageFolder: (id:number) => request<{opened:boolean;path:string}>(`/api/meta-sfs/packages/${id}/open-folder`,{method:'POST'}),
+  copyMetaPackageLocal: (id:number,token:string) => request<{path:string;folder_name:string}>(`/api/meta-sfs/packages/${id}/copy-local?token=${encodeURIComponent(token)}`,{method:'POST'}),
   uploadMetaPackage: (id:number) => request<MetaPackage>(`/api/meta-sfs/packages/${id}/upload-drive`,{method:'POST'}),
   engagementSummary: () => request<EngagementSummary>('/api/engagement/summary'),
   socialComments: (filters='') => request<SocialComment[]>(`/api/engagement/comments${filters}`),
@@ -153,7 +157,7 @@ export const api = {
   batchPublish: (postIds:number[],accountIds:number[],scheduledAt:string,runNow=false,aiDisclosure=false,publishOptions:Record<string,unknown>={}) => request<PublishJob[]>('/api/publish/jobs/batch',{method:'POST',body:JSON.stringify({post_ids:postIds,account_ids:accountIds,scheduled_at:scheduledAt,run_now:runNow,ai_disclosure:aiDisclosure,publish_options:publishOptions})}),
   refreshPublishJob: (id:number) => request<PublishJob>(`/api/publish/jobs/${id}/refresh`,{method:'POST'}),
   registerDrama: (title: string, absolutePath: string, sourceNote: string) => request<Drama>('/api/dramas/register', { method: 'POST', body: JSON.stringify({ title, absolute_path: absolutePath, source_note: sourceNote }) }),
-  uploadVideo: async (dramaTitle: string, sourceNote: string, file: File, onProgress: (value: number) => void, destination:'episodes'|'stills'='episodes') => {
+  uploadVideo: async (dramaTitle: string, sourceNote: string, file: File, onProgress: (value: number) => void, destination:'episodes'|'stills'|'publish'|'cover_vertical'|'cover_square'|'cover_horizontal'='episodes') => {
     const chunkSize = 8 * 1024 * 1024; const totalChunks = Math.ceil(file.size / chunkSize)
     const init = await request<{ upload_id: string; received_chunks: number[] }>('/api/dramas/uploads/init', { method: 'POST', body: JSON.stringify({ drama_title: dramaTitle, filename: file.name, total_size: file.size, total_chunks: totalChunks, source_note: sourceNote, destination }) })
     const received = new Set(init.received_chunks)

@@ -15,17 +15,32 @@ class DramaCreateRequest(BaseModel):
 
 
 class DramaUpdate(BaseModel):
-    genres: list[str] = Field(default_factory=list)
-    actor_names: list[str] = Field(default_factory=list)
-    source_note: str = Field(min_length=1)
-    is_ai_generated: bool = False
+    title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    genres: Optional[list[str]] = None
+    actor_names: Optional[list[str]] = None
+    source_note: Optional[str] = Field(default=None, min_length=1)
+    is_ai_generated: Optional[bool] = None
+    is_dubbed_content: Optional[bool] = None
+    language: Optional[str] = Field(default=None, min_length=5, max_length=5)
+    promotion_episode_count: Optional[int] = Field(default=None, ge=1, le=999)
+    total_episode_count: Optional[int] = Field(default=None, ge=1, le=999)
 
     @field_validator("source_note")
     @classmethod
-    def source_note_not_blank(cls, value: str) -> str:
+    def source_note_not_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
         if not value.strip():
             raise ValueError("素材来源不能为空")
         return value.strip()
+
+    @field_validator("language")
+    @classmethod
+    def language_format(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and (len(value) != 5 or value[2] != "_" or not value[:2].islower() or not value[3:].isupper()):
+            raise ValueError("语种必须使用 language_REGION 格式，例如 en_US")
+        return value
 
 
 class Highlight(BaseModel):
@@ -59,6 +74,9 @@ class DramaDetail(BaseModel):
     language: str
     promotion_episode_count: int
     total_episode_count: int
+    cover_vertical_path: str
+    cover_square_path: str
+    cover_horizontal_path: str
     episodes: list[str]
     stills: list[str]
     highlights: list[Highlight]
@@ -93,7 +111,7 @@ class UploadInitRequest(BaseModel):
     total_size: int = Field(gt=0)
     total_chunks: int = Field(gt=0)
     source_note: str = Field(min_length=1)
-    destination: Literal["episodes", "stills"] = "episodes"
+    destination: Literal["episodes", "stills", "publish", "cover_vertical", "cover_square", "cover_horizontal"] = "episodes"
 
 
 class UploadInitResult(BaseModel):
@@ -236,6 +254,7 @@ class TitleGenerationRequest(BaseModel):
     clip_id: int
     account_type: str
     account_id: Optional[int] = None
+    strategy_id: Optional[int] = None
     target_language: str = "English"
     formula: int | str = "auto"
     hot_tags: list[str] = Field(default_factory=list)
@@ -396,6 +415,7 @@ class MetaSFSRequest(BaseModel):
     dubbed_content: bool = False
     include_episode_csv: bool = True
     include_thumbnails: bool = True
+    local_destination_token: str = ""
 
     @field_validator("locale")
     @classmethod

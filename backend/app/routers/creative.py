@@ -25,7 +25,7 @@ def titles(payload: TitleGenerationRequest, session: Session = Depends(get_sessi
     if not clip or not drama:
         raise HTTPException(404, "切片或剧目不存在")
     account = session.get(Account, payload.account_id) if payload.account_id else None
-    strategy = session.get(AccountStrategy, account.strategy_id) if account and account.strategy_id else None
+    strategy = session.get(AccountStrategy, payload.strategy_id) if payload.strategy_id else session.get(AccountStrategy, account.strategy_id) if account and account.strategy_id else None
     account_type = account.account_type if account else payload.account_type
     platform = account.platform if account else "all"
     all_examples = session.exec(select(ContentExample).where(ContentExample.enabled == True)).all()  # noqa: E712
