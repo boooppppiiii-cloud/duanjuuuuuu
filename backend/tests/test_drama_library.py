@@ -70,7 +70,9 @@ def test_direct_video_upload_and_manual_register(tmp_path: Path):
         data = b"chunk-upload-video"
         initialized = client.post("/api/dramas/uploads/init", json={"drama_title": "上传剧", "filename": "upload.mp4", "total_size": len(data), "total_chunks": 2, "source_note": "网页上传测试"}).json()
         upload_id = initialized["upload_id"]
-        assert client.put(f"/api/dramas/uploads/{upload_id}/chunks/0", content=data[:8], headers={"Content-Type": "application/octet-stream"}).status_code == 200
+        first_chunk = client.put(f"/api/dramas/uploads/{upload_id}/chunks/0", content=data[:8], headers={"Content-Type": "application/octet-stream"})
+        assert first_chunk.status_code == 200
+        assert first_chunk.json()["received_chunk"] == 0
         assert client.put(f"/api/dramas/uploads/{upload_id}/chunks/1", content=data[8:], headers={"Content-Type": "application/octet-stream"}).status_code == 200
         completed = client.post(f"/api/dramas/uploads/{upload_id}/complete")
         assert completed.status_code == 200

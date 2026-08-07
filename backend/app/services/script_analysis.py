@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config import Settings
+from ..config import Settings, get_settings
 from .drama_library import episode_files
 from .factory_multimodal import (
     FactoryAIUnavailableError,
@@ -47,20 +47,35 @@ def write_analysis(folder: Path, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def queued_analysis(folder: Path, drama_id: int, title: str, episode_count: int) -> dict[str, Any]:
     return write_analysis(folder, {
         "status": "queued", "progress": 0, "current_step": "等待开始识别", "error_message": "",
         "drama_id": drama_id, "title": title, "episodes": [], "episode_count": episode_count,
         "total_duration": 0, "segment_count": 0, "high_energy_count": 0, "sensitive_count": 0,
-        "sampled_frame_count": 0, "api_call_count": 0,
+        "sampled_frame_count": 0, "api_call_count": 0, "started_at": utc_timestamp(),
+        "updated_at": utc_timestamp(), "resume_count": 0,
+    })
+
+
+def queued_resume_analysis(folder: Path, drama_id: int, title: str, episode_count: int) -> dict[str, Any]:
+    previous = read_analysis(folder) or {}
+    completed = len(previous.get("episodes", []))
+    return write_analysis(folder, {
+        **previous, "status": "queued", "current_step": f"准备从 {completed}/{episode_count} 集继续",
+        "error_message": "", "drama_id": drama_id, "title": title, "episode_count": episode_count,
+        "updated_at": utc_timestamp(),
     })
 
 
 def failed_analysis(folder: Path, drama_id: int, title: str, error: Exception) -> dict[str, Any]:
     previous = read_analysis(folder) or {}
     return write_analysis(folder, {
-        **previous, "status": "failed", "progress": 0, "current_step": "识别失败",
-        "error_message": str(error)[-2000:], "drama_id": drama_id, "title": title,
+        **previous, "status": "failed", "current_step": "识别中断，可从已完成剧集继续",
+        "error_message": str(error)[-2000:], "drama_id": drama_id, "title": title, "updated_at": utc_timestamp(),
     })
 
 
@@ -177,6 +192,7 @@ def analyze_drama(
     energy_words: list[str],
     model: Any = None,
     ai_analyzer: Callable[..., Any] | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     videos = episode_files(folder)
     if not videos:
@@ -190,50 +206,100 @@ def analyze_drama(
         try:
             from faster_whisper import WhisperModel
 
-            model = WhisperModel(settings.whisper_model, device=settings.whisper_device, compute_type=settings.whisper_compute_type)
+            cache_dir = Path(getattr(settings, "whisper_cache_dir", "backend/data/whisper"))
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            model = WhisperModel(
+                settings.whisper_model, device=settings.whisper_device,
+                compute_type=settings.whisper_compute_type, download_root=str(cache_dir),
+            )
         except Exception as exc:
             raise RuntimeError(f"本地语音识别模型加载失败：{exc}") from exc
 
+    previous = read_analysis(folder) if resume else None
+    video_names = {video.name for video in videos}
+    completed_by_name = {
+        str(item.get("episode")): item for item in (previous or {}).get("episodes", [])
+        if isinstance(item, dict) and item.get("episode") in video_names
+    }
     frame_dir = folder / "analysis_frames"
-    if frame_dir.is_dir():
+    if frame_dir.is_dir() and not resume:
         shutil.rmtree(frame_dir)
     frame_dir.mkdir(parents=True, exist_ok=True)
     active_words = sorted({*DEFAULT_ENERGY_WORDS, *[word for word in energy_words if word]})
-    episode_results: list[dict[str, Any]] = []
-    total_segments = total_high_energy = total_sensitive = 0
-    total_duration = sampled_frame_count = api_call_count = 0
+    episode_results: list[dict[str, Any]] = list(completed_by_name.values())
+    total_segments = sum(len(item.get("segments", [])) for item in episode_results)
+    total_high_energy = sum(len(item.get("high_energy", [])) for item in episode_results)
+    total_sensitive = sum(len(item.get("sensitive", [])) for item in episode_results)
+    total_duration = sum(float(item.get("duration", 0)) for item in episode_results)
+    sampled_frame_count = int((previous or {}).get("sampled_frame_count", 0)) if resume else 0
+    api_call_count = int((previous or {}).get("api_call_count", 0)) if resume else 0
     window_seconds = max(120, int(getattr(settings, "factory_analysis_window_seconds", 600)))
     max_frames = max(4, min(20, int(getattr(settings, "factory_analysis_frames_per_window", 12))))
+    beam_size = max(1, min(5, int(getattr(settings, "factory_whisper_beam_size", 1))))
+    started_at = str((previous or {}).get("started_at") or utc_timestamp())
+    resume_count = int((previous or {}).get("resume_count", 0)) + int(resume)
+    video_order = {video.name: index for index, video in enumerate(videos)}
+
+    def ordered_results() -> list[dict[str, Any]]:
+        return sorted(episode_results, key=lambda item: video_order.get(str(item.get("episode")), len(videos)))
+
+    def checkpoint(progress: float, step: str) -> dict[str, Any]:
+        return write_analysis(folder, {
+            **(previous or {}), "status": "processing", "progress": min(99, max(1, round(progress))),
+            "current_step": step, "error_message": "", "drama_id": drama_id, "title": title,
+            "source": f"local_whisper+ffmpeg+{provider}", "provider": provider, "model": provider_model,
+            "episodes": ordered_results(), "episode_count": len(videos), "source_files": [video.name for video in videos],
+            "total_duration": round(total_duration, 2), "segment_count": total_segments,
+            "high_energy_count": total_high_energy, "sensitive_count": total_sensitive,
+            "sampled_frame_count": sampled_frame_count, "api_call_count": api_call_count,
+            "started_at": started_at, "updated_at": utc_timestamp(), "resume_count": resume_count,
+        })
+
+    if resume:
+        checkpoint(5 + len(completed_by_name) / max(1, len(videos)) * 90, f"已恢复 {len(completed_by_name)}/{len(videos)} 集，继续识别")
 
     for episode_index, video in enumerate(videos, start=1):
-        progress = 5 + round((episode_index - 1) / max(1, len(videos)) * 85)
-        write_analysis(folder, {
-            "status": "processing", "progress": progress,
-            "current_step": f"转写并抽帧 {episode_index}/{len(videos)} · {video.name}", "error_message": "",
-            "drama_id": drama_id, "title": title, "provider": provider, "model": provider_model,
-            "episodes": episode_results, "episode_count": len(videos), "total_duration": round(total_duration, 2),
-            "segment_count": total_segments, "high_energy_count": total_high_energy, "sensitive_count": total_sensitive,
-            "sampled_frame_count": sampled_frame_count, "api_call_count": api_call_count,
-        })
+        if video.name in completed_by_name:
+            continue
+        completed_count = len(completed_by_name)
+        episode_base = 5 + completed_count / max(1, len(videos)) * 90
+        episode_share = 90 / max(1, len(videos))
+        checkpoint(episode_base, f"本地转写 {completed_count + 1}/{len(videos)} · {video.name}")
         try:
             duration = media_duration(settings.ffprobe_binary, video)
             peaks = loudness_peaks(settings.ffmpeg_binary, video)
-            transcript, _ = model.transcribe(str(video), vad_filter=True)
+            try:
+                transcript, _ = model.transcribe(
+                    str(video), vad_filter=True, beam_size=beam_size, condition_on_previous_text=False,
+                )
+            except TypeError:
+                transcript, _ = model.transcribe(str(video), vad_filter=True)
             segments = [row for segment in transcript if (row := _segment_row(segment, peaks, active_words))]
         except Exception as exc:
             raise RuntimeError(f"{video.name} 脚本拆解失败：{exc}") from exc
+        checkpoint(episode_base + episode_share * .42, f"转写完成，准备抽帧 · {video.name}")
 
         episode_high: list[dict[str, Any]] = []
         episode_sensitive: list[dict[str, Any]] = []
         summaries: list[str] = []
+        episode_sampled_frames = episode_api_calls = 0
         window_count = max(1, math.ceil(duration / window_seconds))
         for window_index in range(window_count):
             window_start = window_index * window_seconds
             window_end = min(duration, (window_index + 1) * window_seconds)
             window_segments = [row for row in segments if row["end"] >= window_start and row["start"] <= window_end]
+            checkpoint(
+                episode_base + episode_share * (.42 + .5 * window_index / window_count),
+                f"抽取证据帧 {completed_count + 1}/{len(videos)} · 窗口 {window_index + 1}/{window_count}",
+            )
             times = choose_frame_times(window_start, window_end, peaks, max_frames)
             frames = extract_frames(settings, video, frame_dir, episode_index, times)
             sampled_frame_count += len(frames)
+            episode_sampled_frames += len(frames)
+            checkpoint(
+                episode_base + episode_share * (.48 + .44 * window_index / window_count),
+                f"AI 审查 {completed_count + 1}/{len(videos)} · 窗口 {window_index + 1}/{window_count}",
+            )
             if ai_analyzer:
                 raw = ai_analyzer(video.name, window_start, window_end, window_segments, frames)
                 if isinstance(raw, tuple):
@@ -245,6 +311,7 @@ def analyze_drama(
             else:
                 data = _local_test_result(window_segments, window_start, window_end)
             api_call_count += int(production_ai or ai_analyzer is not None)
+            episode_api_calls += int(production_ai or ai_analyzer is not None)
             high, sensitive = _model_candidates(data, segments, frames, window_start, window_end, provider)
             episode_high.extend(high)
             episode_sensitive.extend(sensitive)
@@ -254,21 +321,26 @@ def analyze_drama(
         episode_results.append({
             "episode": video.name, "duration": round(duration, 2), "segment_count": len(segments),
             "segments": segments, "high_energy": episode_high, "sensitive": episode_sensitive,
-            "summary": " ".join(summaries),
+            "summary": " ".join(summaries), "sampled_frame_count": episode_sampled_frames,
+            "api_call_count": episode_api_calls,
         })
+        completed_by_name[video.name] = episode_results[-1]
         total_duration += duration
         total_segments += len(segments)
         total_high_energy += len(episode_high)
         total_sensitive += len(episode_sensitive)
+        checkpoint(5 + len(completed_by_name) / max(1, len(videos)) * 90, f"已完成 {len(completed_by_name)}/{len(videos)} 集")
 
     result = {
         "status": "completed", "progress": 100, "current_step": "识别完成", "error_message": "",
         "drama_id": drama_id, "title": title, "source": f"local_whisper+ffmpeg+{provider}",
-        "provider": provider, "model": provider_model, "generated_at": datetime.now(timezone.utc).isoformat(),
-        "episode_count": len(episode_results), "total_duration": round(total_duration, 2),
+        "provider": provider, "model": provider_model, "generated_at": utc_timestamp(),
+        "episode_count": len(episode_results), "source_files": [video.name for video in videos],
+        "total_duration": round(total_duration, 2),
         "segment_count": total_segments, "high_energy_count": total_high_energy,
         "sensitive_count": total_sensitive, "sampled_frame_count": sampled_frame_count,
-        "api_call_count": api_call_count, "episodes": episode_results,
+        "api_call_count": api_call_count, "episodes": ordered_results(), "started_at": started_at,
+        "updated_at": utc_timestamp(), "resume_count": resume_count,
     }
     return write_analysis(folder, result)
 
@@ -308,13 +380,13 @@ class FactoryAnalysisPipeline:
         with self._guard:
             return drama_id in self._active
 
-    def run(self, folder: Path, drama_id: int, title: str, settings: Settings, words: list[str]) -> None:
+    def run(self, folder: Path, drama_id: int, title: str, settings: Settings, words: list[str], resume: bool = False) -> None:
         with self._guard:
             if drama_id in self._active:
                 return
             self._active.add(drama_id)
         try:
-            analyze_drama(folder, drama_id, title, settings, words)
+            analyze_drama(folder, drama_id, title, settings, words, resume=resume)
         except Exception as exc:
             failed_analysis(folder, drama_id, title, exc)
         finally:
@@ -323,3 +395,35 @@ class FactoryAnalysisPipeline:
 
 
 factory_analysis_pipeline = FactoryAnalysisPipeline()
+
+
+def resume_factory_analyses() -> int:
+    """Continue interrupted analyses after a backend restart without redoing completed episodes."""
+    from sqlmodel import Session, select
+
+    from ..database import engine
+    from ..models import Drama, EmotionWord
+
+    settings = get_settings()
+    try:
+        provider_name(settings)
+    except FactoryAIUnavailableError:
+        return 0
+    with Session(engine) as session:
+        dramas = list(session.exec(select(Drama)).all())
+        words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
+    resumed = 0
+    for drama in dramas:
+        folder = Path(drama.file_dir)
+        data = read_analysis(folder)
+        if not data or data.get("status") not in {"queued", "processing"}:
+            continue
+        threading.Thread(
+            target=factory_analysis_pipeline.run,
+            args=(folder, drama.id, drama.title, settings, words),
+            kwargs={"resume": True},
+            name=f"factory-analysis-recovery-{drama.id}",
+            daemon=True,
+        ).start()
+        resumed += 1
+    return resumed

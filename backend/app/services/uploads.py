@@ -61,13 +61,13 @@ class UploadStore:
         if not folder.is_dir(): raise FileNotFoundError("上传任务不存在")
         return folder
 
-    def write_chunk(self, upload_id: str, index: int, data: bytes) -> list[int]:
+    def write_chunk(self, upload_id: str, index: int, data: bytes) -> int:
         folder = self.safe_folder(upload_id); manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         if index < 0 or index >= manifest["total_chunks"]: raise ValueError("分片序号越界")
         if len(data) > CHUNK_SIZE: raise ValueError("单分片不得超过 8MB")
         temp = folder / f"{index}.tmp"; final = folder / f"{index}.chunk"
         temp.write_bytes(data); temp.replace(final)
-        return self.received(upload_id)
+        return index
 
     def complete(self, upload_id: str) -> tuple[Path, dict]:
         folder = self.safe_folder(upload_id); manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))

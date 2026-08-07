@@ -9,7 +9,7 @@ from ..database import get_session
 from ..models import Clip, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
 from ..schemas import FactoryAnalysisReviewRequest, FactoryJobView, FactoryProcessRequest, GeneratedAssetView, HookAssetView
 from ..services.factory_multimodal import FactoryAIUnavailableError, provider_name
-from ..services.script_analysis import factory_analysis_pipeline, queued_analysis, read_analysis, update_review
+from ..services.script_analysis import factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review
 from ..services.drama_library import episode_files
 from ..services.factory_processing import factory_pipeline, sync_hook_assets
 
@@ -51,7 +51,10 @@ def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
         "api_call_count": 0,
     }
     requires_reanalysis = bool(base.get("status") == "completed" and base.get("provider") not in {"gemini", "qwen"})
-    return {**base, "ai_ready": ai_ready, "configured_provider": provider, "configured_model": model, "requires_reanalysis": requires_reanalysis}
+    return {
+        **base, "ai_ready": ai_ready, "configured_provider": provider, "configured_model": model,
+        "requires_reanalysis": requires_reanalysis, "is_active": factory_analysis_pipeline.is_active(drama_id),
+    }
 
 
 @router.post("/{drama_id}/analyze")
@@ -65,8 +68,13 @@ def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, sessio
     if factory_analysis_pipeline.is_active(drama_id):
         return read_analysis(Path(drama.file_dir))
     words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
-    result = queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
-    background_tasks.add_task(factory_analysis_pipeline.run, Path(drama.file_dir), drama.id, drama.title, settings, words)
+    previous = read_analysis(Path(drama.file_dir)) or {}
+    resume = previous.get("status") in {"queued", "processing", "failed"}
+    result = (
+        queued_resume_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
+        if resume else queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
+    )
+    background_tasks.add_task(factory_analysis_pipeline.run, Path(drama.file_dir), drama.id, drama.title, settings, words, resume)
     return result
 
 

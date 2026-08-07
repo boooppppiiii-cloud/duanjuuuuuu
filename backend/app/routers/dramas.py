@@ -117,7 +117,7 @@ def upload_init(payload: UploadInitRequest):
 
 @router.put("/uploads/{upload_id}/chunks/{index}")
 def upload_chunk(upload_id: str, index: int, data: bytes = Body(..., media_type="application/octet-stream")):
-    try: return {"received_chunks": UploadStore(get_settings().media_root).write_chunk(upload_id, index, data)}
+    try: return {"received_chunk": UploadStore(get_settings().media_root).write_chunk(upload_id, index, data)}
     except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
 

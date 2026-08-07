@@ -26,6 +26,7 @@ from .routers.factory import router as factory_router
 from .scheduler import scheduler
 from .logging_config import configure_logging
 from .services.factory_processing import resume_factory_jobs
+from .services.script_analysis import resume_factory_analyses
 from .services.offline_translation import start_translation_worker
 from .services.storage_paths import reconcile_database_media_paths
 
@@ -41,6 +42,9 @@ async def lifespan(_: FastAPI):
         if repaired:
             logger.info("已修复 %s 个迁移后的媒体路径", repaired)
     resume_factory_jobs()
+    resumed_analyses = resume_factory_analyses()
+    if resumed_analyses:
+        logger.info("已恢复 %s 个内容识别任务", resumed_analyses)
     start_translation_worker()
     if not scheduler.running:
         scheduler.start()

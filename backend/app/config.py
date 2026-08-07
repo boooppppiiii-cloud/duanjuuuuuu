@@ -24,12 +24,16 @@ class Settings(BaseSettings):
     whisper_model: str = "small"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    whisper_cache_dir: Path = Path("backend/data/whisper")
     gemini_api_key: str = ""
     gemini_text_model: str = "gemini-2.5-flash"
     gemini_image_model: str = "gemini-3.1-flash-image"
     factory_analysis_model: str = "gemini-3.5-flash-lite"
     factory_analysis_window_seconds: int = 600
     factory_analysis_frames_per_window: int = 12
+    factory_analysis_request_timeout_seconds: int = 120
+    factory_analysis_api_retries: int = 2
+    factory_whisper_beam_size: int = 1
     qwen_api_key: str = ""
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_model: str = "qwen-plus"

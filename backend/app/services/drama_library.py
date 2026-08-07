@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -11,6 +12,10 @@ VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def natural_file_key(path: Path) -> list[object]:
+    return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", path.name)]
+
+
 def ensure_drama_folders(media_root: Path) -> Path:
     dramas_root = media_root / "dramas"
     dramas_root.mkdir(parents=True, exist_ok=True)
@@ -20,7 +25,7 @@ def ensure_drama_folders(media_root: Path) -> Path:
 def files_with_suffix(folder: Path, suffixes: set[str]) -> list[Path]:
     if not folder.is_dir():
         return []
-    return sorted(path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in suffixes)
+    return sorted((path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in suffixes), key=natural_file_key)
 
 
 def episode_files(folder: Path) -> list[Path]:

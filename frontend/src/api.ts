@@ -42,7 +42,7 @@ export type SocialComment = { id:number;external_id:string;platform:string;accou
 export type EngagementSummary = { total:number;analyzed:number;pending:number;needs_human:number;high_risk:number;buyer_intent:number;sentiment:{positive:number;negative:number;neutral:number};health:'healthy'|'watch'|'urgent' }
 export type ScriptSegment = { start:number;end:number;text:string;energy_score:number;energy_reasons:string[];high_energy:boolean;sensitive:Record<string,string[]>;confidence?:number;review_status?:'not_applicable'|'pending'|'approved'|'rejected';evidence?:string[];frame_files?:string[];source?:string }
 export type EpisodeAnalysis = { episode:string;duration:number;segment_count:number;segments:ScriptSegment[];high_energy:ScriptSegment[];sensitive:ScriptSegment[];summary?:string }
-export type FactoryAnalysis = { status:'not_analyzed'|'queued'|'processing'|'completed'|'failed';progress:number;current_step:string;error_message:string;drama_id:number;title:string;source?:string;provider?:string;model?:string;configured_provider?:string;configured_model?:string;ai_ready?:boolean;requires_reanalysis?:boolean;generated_at?:string;episode_count:number;total_duration:number;segment_count:number;high_energy_count:number;sensitive_count:number;sampled_frame_count:number;api_call_count:number;episodes:EpisodeAnalysis[] }
+export type FactoryAnalysis = { status:'not_analyzed'|'queued'|'processing'|'completed'|'failed';progress:number;current_step:string;error_message:string;drama_id:number;title:string;source?:string;provider?:string;model?:string;configured_provider?:string;configured_model?:string;ai_ready?:boolean;requires_reanalysis?:boolean;is_active?:boolean;generated_at?:string;updated_at?:string;resume_count?:number;episode_count:number;total_duration:number;segment_count:number;high_energy_count:number;sensitive_count:number;sampled_frame_count:number;api_call_count:number;episodes:EpisodeAnalysis[] }
 export type FactoryOutputMode = 'clean_full'|'hook_variants'|'meta_split'
 export type FactoryJob = { id:number;drama_id:number;status:'queued'|'processing'|'completed'|'failed';current_step:string;progress:number;max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:string;output_modes:FactoryOutputMode[];hooks_per_variant:number;selected_hook_ids:number[];source_files:string[];clean_count:number;publish_count:number;meta_count:number;total_duration:number;removed_seconds:number;output_bytes:number;output_dir:string;warnings:string[];error_message:string;created_at:string;started_at:string|null;completed_at:string|null }
 export type GeneratedAsset = { id:number;factory_job_id:number;drama_id:number;kind:'clean_full'|'hook_full'|'meta_episode';sequence:number;filename:string;duration:number;size_bytes:number;hook_asset_id:number|null;hook_asset_ids:number[];clip_id:number|null;created_at:string }
@@ -163,16 +163,26 @@ export const api = {
   refreshPublishJob: (id:number) => request<PublishJob>(`/api/publish/jobs/${id}/refresh`,{method:'POST'}),
   registerDrama: (title: string, absolutePath: string, sourceNote: string) => request<Drama>('/api/dramas/register', { method: 'POST', body: JSON.stringify({ title, absolute_path: absolutePath, source_note: sourceNote }) }),
   uploadVideo: async (dramaTitle: string, sourceNote: string, file: File, onProgress: (value: number) => void, destination:'episodes'|'stills'|'publish'|'cover_vertical'|'cover_square'|'cover_horizontal'='episodes') => {
-    const chunkSize = 8 * 1024 * 1024; const totalChunks = Math.ceil(file.size / chunkSize)
+    if(!file.size)throw new Error('不能上传空文件')
+    const chunkSize = 8 * 1024 * 1024; const totalChunks = Math.ceil(file.size / chunkSize); const concurrency = 4
     const init = await request<{ upload_id: string; received_chunks: number[] }>('/api/dramas/uploads/init', { method: 'POST', body: JSON.stringify({ drama_title: dramaTitle, filename: file.name, total_size: file.size, total_chunks: totalChunks, source_note: sourceNote, destination }) })
     const received = new Set(init.received_chunks)
-    for (let index = 0; index < totalChunks; index++) {
-      if (!received.has(index)) {
-        const response = await fetch(`/api/dramas/uploads/${init.upload_id}/chunks/${index}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize)) })
-        if (!response.ok) throw new Error(await responseError(response, `分片 ${index + 1} 上传失败`))
+    const chunkBytes=(index:number)=>Math.min(file.size,(index+1)*chunkSize)-index*chunkSize
+    let uploadedBytes=[...received].reduce((sum,index)=>sum+chunkBytes(index),0);onProgress(Math.round(uploadedBytes/file.size*100))
+    const pending=Array.from({length:totalChunks},(_,index)=>index).filter(index=>!received.has(index));let cursor=0
+    const uploadChunk=async(index:number)=>{
+      let failure:Error|undefined
+      for(let attempt=0;attempt<3;attempt++){
+        try{
+          const response=await fetch(`/api/dramas/uploads/${init.upload_id}/chunks/${index}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:file.slice(index*chunkSize,Math.min(file.size,(index+1)*chunkSize))})
+          if(!response.ok)throw new Error(await responseError(response,`分片 ${index+1} 上传失败`))
+          return
+        }catch(error){failure=error as Error;if(attempt<2)await new Promise(resolve=>window.setTimeout(resolve,600*2**attempt))}
       }
-      onProgress(Math.round(((index + 1) / totalChunks) * 100))
+      throw failure??new Error(`分片 ${index+1} 上传失败`)
     }
+    const worker=async()=>{while(cursor<pending.length){const index=pending[cursor++];await uploadChunk(index);uploadedBytes+=chunkBytes(index);onProgress(Math.round(uploadedBytes/file.size*100))}}
+    await Promise.all(Array.from({length:Math.min(concurrency,pending.length)},()=>worker()))
     return request<Drama>(`/api/dramas/uploads/${init.upload_id}/complete`, { method: 'POST' })
   },
 }

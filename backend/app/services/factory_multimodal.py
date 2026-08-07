@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,7 +117,8 @@ def _gemini(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple
             f"F{frame.index} · {frame.second:.2f}s",
             types.Part.from_bytes(data=frame.path.read_bytes(), mime_type="image/jpeg"),
         ])
-    client = genai.Client(api_key=settings.gemini_api_key)
+    timeout_ms = max(15, int(getattr(settings, "factory_analysis_request_timeout_seconds", 120))) * 1000
+    client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=timeout_ms))
     response = client.models.generate_content(
         model=model,
         contents=contents,
@@ -142,7 +144,7 @@ def _qwen(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple[d
             "response_format": {"type": "json_object"},
             "temperature": 0.1,
         },
-        timeout=180,
+        timeout=max(15, int(getattr(settings, "factory_analysis_request_timeout_seconds", 120))),
     )
     response.raise_for_status()
     text = response.json()["choices"][0]["message"]["content"]
@@ -159,18 +161,22 @@ def analyze_window(
 ) -> tuple[dict[str, Any], str, str]:
     prompt = _prompt(episode, window_start, window_end, transcript, frames)
     errors: list[str] = []
-    if settings.gemini_api_key:
-        try:
-            data, model = _gemini(settings, prompt, frames)
-            return data, "gemini", model
-        except Exception as exc:
-            errors.append(f"Gemini {type(exc).__name__}")
-    if settings.qwen_api_key:
-        try:
-            data, model = _qwen(settings, prompt, frames)
-            return data, "qwen", model
-        except Exception as exc:
-            errors.append(f"Qwen {type(exc).__name__}")
+    retries = max(1, min(3, int(getattr(settings, "factory_analysis_api_retries", 2))))
+    for attempt in range(retries):
+        if settings.gemini_api_key:
+            try:
+                data, model = _gemini(settings, prompt, frames)
+                return data, "gemini", model
+            except Exception as exc:
+                errors.append(f"Gemini {type(exc).__name__}")
+        if settings.qwen_api_key:
+            try:
+                data, model = _qwen(settings, prompt, frames)
+                return data, "qwen", model
+            except Exception as exc:
+                errors.append(f"Qwen {type(exc).__name__}")
+        if attempt + 1 < retries:
+            time.sleep(1.5 * (attempt + 1))
     if errors:
         raise RuntimeError("；".join(errors))
     raise FactoryAIUnavailableError("内容识别需要多模态模型，请配置 GEMINI_API_KEY 或 QWEN_API_KEY")
