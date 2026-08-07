@@ -202,7 +202,27 @@ def analyze_drama(
         provider, provider_model = provider_name(settings)
     else:
         provider, provider_model = "test", "injected"
+    previous = read_analysis(folder) if resume else None
+    started_at = str((previous or {}).get("started_at") or utc_timestamp())
+    resume_count = int((previous or {}).get("resume_count", 0)) + int(resume)
     if model is None:
+        completed_before_load = len((previous or {}).get("episodes", []))
+        write_analysis(folder, {
+            **(previous or {}),
+            "status": "processing",
+            "progress": max(1, int((previous or {}).get("progress", 1))),
+            "current_step": "正在加载本地语音识别模型（首次运行需下载，后续自动复用）",
+            "error_message": "",
+            "drama_id": drama_id,
+            "title": title,
+            "provider": provider,
+            "model": provider_model,
+            "episode_count": len(videos),
+            "completed_episode_count": completed_before_load,
+            "started_at": started_at,
+            "updated_at": utc_timestamp(),
+            "resume_count": resume_count,
+        })
         try:
             from faster_whisper import WhisperModel
 
@@ -215,7 +235,6 @@ def analyze_drama(
         except Exception as exc:
             raise RuntimeError(f"本地语音识别模型加载失败：{exc}") from exc
 
-    previous = read_analysis(folder) if resume else None
     video_names = {video.name for video in videos}
     completed_by_name = {
         str(item.get("episode")): item for item in (previous or {}).get("episodes", [])
@@ -236,8 +255,6 @@ def analyze_drama(
     window_seconds = max(120, int(getattr(settings, "factory_analysis_window_seconds", 600)))
     max_frames = max(4, min(20, int(getattr(settings, "factory_analysis_frames_per_window", 12))))
     beam_size = max(1, min(5, int(getattr(settings, "factory_whisper_beam_size", 1))))
-    started_at = str((previous or {}).get("started_at") or utc_timestamp())
-    resume_count = int((previous or {}).get("resume_count", 0)) + int(resume)
     video_order = {video.name: index for index, video in enumerate(videos)}
 
     def ordered_results() -> list[dict[str, Any]]:
