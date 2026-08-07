@@ -49,7 +49,12 @@ const dateKey=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).pa
 const addDays=(date:Date,amount:number)=>{const next=new Date(date);next.setDate(next.getDate()+amount);return next}
 const startOfWeek=(date:Date)=>{const next=new Date(date);const day=next.getDay();next.setDate(next.getDate()-(day===0?6:day-1));next.setHours(0,0,0,0);return next}
 const startOfMonthGrid=(date:Date)=>{const first=new Date(date.getFullYear(),date.getMonth(),1);const day=first.getDay();return addDays(first,-(day===0?6:day-1))}
-const validDate=(value:string|null)=>value?new Date(value):null
+const validDate=(value:string|null|undefined)=>{
+  if(!value)return null
+  const date=new Date(value)
+  return Number.isNaN(date.getTime())?null:date
+}
+const calendarDate=(item:PlatformMedia)=>validDate(item.calendar_at||item.scheduled_at||item.published_at)
 const sentimentMeta:Record<string,[string,string]>={positive:['正面','green'],negative:['负面','red'],neutral:['中性','default'],unanalyzed:['待分析','orange']}
 
 function InsightMetric({label,value,sub,muted=false}:{label:string;value:string;sub?:string;muted?:boolean}){
@@ -108,19 +113,21 @@ function ContentPerformance({items}:{items:PlatformMedia[]}){
 }
 
 function VideoPopover({item}:{item:PlatformMedia}){
+  const displayTime=calendarDate(item)
   return <div className="video-hover-card">
     {item.thumbnail_url&&<img src={item.thumbnail_url} alt=""/>}
     <strong>{item.title||'未命名视频'}</strong>
-    <span>{item.published_at?new Date(item.published_at).toLocaleString('zh-CN'):'发布时间未知'}</span>
+    <span>{displayTime?displayTime.toLocaleString('zh-CN'):'发布时间未知'}</span>
     <div><span><EyeOutlined/> {fmt(item.views)}</span><span><LikeOutlined/> {fmt(item.likes)}</span><span><CommentOutlined/> {fmt(item.comments)}</span></div>
     <div><span>点击率 {percent(item.ctr)}</span><span>RPM {money(item.rpm)}</span></div>
   </div>
 }
 
 function VideoEvent({item,compactView=false}:{item:PlatformMedia;compactView?:boolean}){
+  const displayTime=calendarDate(item)
   const event=<div className={`calendar-video ${compactView?'calendar-video-compact':''}`} onClick={()=>item.url&&window.open(item.url,'_blank','noopener,noreferrer')}>
     {item.thumbnail_url?<img src={item.thumbnail_url} alt=""/>:<span className="video-placeholder"><VideoCameraOutlined/></span>}
-    <div><b>{item.title||'未命名视频'}</b>{!compactView&&<small>{item.published_at?new Date(item.published_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):''}</small>}</div>
+    <div><b>{item.title||'未命名视频'}</b>{!compactView&&<small>{displayTime?displayTime.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):''}</small>}</div>
   </div>
   return <Popover content={<VideoPopover item={item}/>} trigger="hover" mouseEnterDelay={.15}>{event}</Popover>
 }
@@ -132,9 +139,9 @@ function WeekCalendar({cursor,items}:{cursor:Date;items:PlatformMedia[]}){
     {days.map(day=><div className={`week-day-head ${dateKey(day)===dateKey(new Date())?'is-today':''}`} key={dateKey(day)}><span>{day.toLocaleDateString('zh-CN',{weekday:'short'})}</span><b>{day.getDate()}</b></div>)}
     <div className="week-time-axis">{hours.map(hour=><span key={hour} style={{top:`${hour/24*100}%`}}>{String(hour).padStart(2,'0')}:00</span>)}</div>
     {days.map(day=>{
-      const dayItems=items.filter(item=>{const published=validDate(item.published_at);return published&&dateKey(published)===dateKey(day)})
+      const dayItems=items.filter(item=>{const published=calendarDate(item);return published&&dateKey(published)===dateKey(day)})
       return <div className={`week-day-column ${dateKey(day)===dateKey(new Date())?'is-today':''}`} key={dateKey(day)}>
-        {dayItems.map((item,index)=>{const published=validDate(item.published_at)!;const minutes=published.getHours()*60+published.getMinutes();return <div className="week-event-position" style={{top:`calc(${minutes/1440*100}% + ${index%3*5}px)`}} key={item.id}><VideoEvent item={item}/></div>})}
+        {dayItems.map((item,index)=>{const published=calendarDate(item)!;const minutes=published.getHours()*60+published.getMinutes();return <div className="week-event-position" style={{top:`calc(${minutes/1440*100}% + ${index%3*5}px)`}} key={item.id}><VideoEvent item={item}/></div>})}
       </div>
     })}
   </div></div>
@@ -144,7 +151,7 @@ function MonthCalendar({cursor,items}:{cursor:Date;items:PlatformMedia[]}){
   const start=startOfMonthGrid(cursor);const days=Array.from({length:42},(_,index)=>addDays(start,index))
   return <div className="calendar-scroll"><div className="month-calendar">
     {['周一','周二','周三','周四','周五','周六','周日'].map(day=><div className="month-weekday" key={day}>{day}</div>)}
-    {days.map(day=>{const dayItems=items.filter(item=>{const published=validDate(item.published_at);return published&&dateKey(published)===dateKey(day)});return <div className={`month-day ${day.getMonth()!==cursor.getMonth()?'is-outside':''} ${dateKey(day)===dateKey(new Date())?'is-today':''}`} key={dateKey(day)}><span className="month-date">{day.getDate()}</span><div className="month-events">{dayItems.slice(0,3).map(item=><VideoEvent key={item.id} item={item} compactView/>)}{dayItems.length>3&&<small>还有 {dayItems.length-3} 条</small>}</div></div>})}
+    {days.map(day=>{const dayItems=items.filter(item=>{const published=calendarDate(item);return published&&dateKey(published)===dateKey(day)});return <div className={`month-day ${day.getMonth()!==cursor.getMonth()?'is-outside':''} ${dateKey(day)===dateKey(new Date())?'is-today':''}`} key={dateKey(day)}><span className="month-date">{day.getDate()}</span><div className="month-events">{dayItems.slice(0,3).map(item=><VideoEvent key={item.id} item={item} compactView/>)}{dayItems.length>3&&<small>还有 {dayItems.length-3} 条</small>}</div></div>})}
   </div></div>
 }
 
@@ -168,6 +175,7 @@ export default function DashboardPage(){
   const [accounts,setAccounts]=useState<Account[]>([])
   const [comments,setComments]=useState<SocialComment[]>([])
   const [media,setMedia]=useState<PlatformMedia[]>([])
+  const [calendarMedia,setCalendarMedia]=useState<PlatformMedia[]>([])
   const [insights,setInsights]=useState<AccountInsights>()
   const [selectedAccountId,setSelectedAccountId]=useState<number>()
   const [activeSection,setActiveSection]=useState<'accounts'|'publishing'|'fans'>('accounts')
@@ -184,6 +192,7 @@ export default function DashboardPage(){
   const [commentWorking,setCommentWorking]=useState(false)
   const [mediaError,setMediaError]=useState('')
   const mediaCache=useRef(new Map<number,PlatformMedia[]>())
+  const calendarCache=useRef(new Map<number,PlatformMedia[]>())
   const insightCache=useRef(new Map<string,AccountInsights>())
   const commentsLoaded=useRef(false)
   const [msg,holder]=message.useMessage()
@@ -207,6 +216,12 @@ export default function DashboardPage(){
     setMediaLoading(true);setMediaError('')
     try{const rows=await api.accountMedia(accountId,50);mediaCache.current.set(accountId,rows);setMedia(rows)}catch(error){setMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
   }
+  const loadCalendar=async(accountId:number,force=false)=>{
+    const cached=calendarCache.current.get(accountId)
+    if(cached&&!force){setCalendarMedia(cached);return}
+    setMediaLoading(true);setMediaError('')
+    try{const rows=await api.accountCalendar(accountId,50);calendarCache.current.set(accountId,rows);setCalendarMedia(rows)}catch(error){setCalendarMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
+  }
   const loadInsights=async(accountId:number,days:InsightRange=insightDays,force=false)=>{
     const key=`${accountId}:${days}`;const cached=insightCache.current.get(key)
     if(cached&&!force){setInsights(cached);return}
@@ -217,7 +232,7 @@ export default function DashboardPage(){
   useEffect(()=>{
     if(!selectedAccountId)return
     if(activeSection==='accounts'){void loadInsights(selectedAccountId,insightDays);void loadMedia(selectedAccountId)}
-    if(activeSection==='publishing')void loadMedia(selectedAccountId)
+    if(activeSection==='publishing')void loadCalendar(selectedAccountId)
     if(activeSection==='fans')void loadComments()
   },[activeSection,selectedAccountId,insightDays])
 
@@ -225,7 +240,7 @@ export default function DashboardPage(){
     if(calendarView==='week'){const start=startOfWeek(calendarCursor);return{start,end:addDays(start,7)}}
     const start=new Date(calendarCursor.getFullYear(),calendarCursor.getMonth(),1);return{start,end:new Date(calendarCursor.getFullYear(),calendarCursor.getMonth()+1,1)}
   },[calendarCursor,calendarView])
-  const visibleMedia=useMemo(()=>media.filter(item=>{const published=validDate(item.published_at);return published&&published>=visibleRange.start&&published<visibleRange.end}).sort((a,b)=>new Date(b.published_at||0).getTime()-new Date(a.published_at||0).getTime()),[media,visibleRange])
+  const visibleMedia=useMemo(()=>calendarMedia.filter(item=>{const published=calendarDate(item);return published&&published>=visibleRange.start&&published<visibleRange.end}).sort((a,b)=>(calendarDate(a)?.getTime()||0)-(calendarDate(b)?.getTime()||0)),[calendarMedia,visibleRange])
   const filteredComments=useMemo(()=>comments.filter(item=>commentAccount==='all'||item.account_id===commentAccount).sort((a,b)=>{
     if(commentSort==='video')return (a.video_title||a.video_id).localeCompare(b.video_title||b.video_id,'zh-CN')||new Date(b.published_at||0).getTime()-new Date(a.published_at||0).getTime()
     if(commentSort==='user')return (a.author_name||a.author_handle).localeCompare(b.author_name||b.author_handle,'zh-CN')||new Date(b.published_at||0).getTime()-new Date(a.published_at||0).getTime()
@@ -299,17 +314,17 @@ export default function DashboardPage(){
         <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))}/>
         <div className="calendar-navigation"><Button icon={<ArrowLeftOutlined/>} onClick={()=>moveCalendar(-1)}/><Button onClick={()=>setCalendarCursor(new Date())}>今天</Button><Button icon={<ArrowRightOutlined/>} onClick={()=>moveCalendar(1)}/><strong>{calendarView==='week'?`${startOfWeek(calendarCursor).toLocaleDateString('zh-CN',{month:'long',day:'numeric'})} — ${addDays(startOfWeek(calendarCursor),6).toLocaleDateString('zh-CN',{month:'long',day:'numeric'})}`:`${calendarCursor.getFullYear()} 年 ${calendarCursor.getMonth()+1} 月`}</strong></div>
         <Segmented value={calendarView} onChange={value=>setCalendarView(value as typeof calendarView)} options={[{value:'week',label:'周'},{value:'month',label:'月'}]}/>
-        <Button icon={<ReloadOutlined/>} loading={mediaLoading} disabled={!selectedAccountId} onClick={()=>selectedAccountId&&loadMedia(selectedAccountId,true)}>刷新内容</Button>
+        <Button icon={<ReloadOutlined/>} loading={mediaLoading} disabled={!selectedAccountId} onClick={()=>selectedAccountId&&loadCalendar(selectedAccountId,true)}>刷新内容</Button>
       </div>
       <Spin spinning={mediaLoading}>
-        <Card className="calendar-card" styles={{body:{padding:0}}}>{calendarView==='week'?<WeekCalendar cursor={calendarCursor} items={media}/>:<MonthCalendar cursor={calendarCursor} items={media}/>}</Card>
+        <Card className="calendar-card" styles={{body:{padding:0}}}>{calendarView==='week'?<WeekCalendar cursor={calendarCursor} items={calendarMedia}/>:<MonthCalendar cursor={calendarCursor} items={calendarMedia}/>}</Card>
         {!selectedAccountId&&<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请选择账号查看发布日历"/>}
         {selectedAccountId&&mediaError&&<div className="inline-error">{mediaError}</div>}
       </Spin>
       <Card className="table-card video-data-card" title={<><CalendarOutlined/> 本期视频数据</>} styles={{body:{padding:0}}}>
         <Table rowKey="id" dataSource={visibleMedia} pagination={{pageSize:10,hideOnSinglePage:true}} scroll={{x:1180}} locale={{emptyText:<Empty description="当前周期没有已发布视频"/>}} onRow={item=>({onClick:()=>item.url&&window.open(item.url,'_blank','noopener,noreferrer')})} columns={[
           {title:'视频',dataIndex:'title',width:300,render:(title:string,item:PlatformMedia)=><div className="video-table-title">{item.thumbnail_url?<img src={item.thumbnail_url} alt=""/>:<span><VideoCameraOutlined/></span>}<b>{title||'未命名视频'}</b></div>},
-          {title:'发布时间',dataIndex:'published_at',width:170,render:(value:string|null)=>value?new Date(value).toLocaleString('zh-CN'):'—'},
+          {title:'发布时间',width:170,render:(_:unknown,item:PlatformMedia)=>calendarDate(item)?.toLocaleString('zh-CN')||'—'},
           {title:'播放量',dataIndex:'views',width:100,render:fmt},{title:'互动',width:120,render:(_:unknown,item:PlatformMedia)=>`${fmt(item.likes)} / ${fmt(item.comments)}`},
           {title:'点击率',dataIndex:'ctr',width:100,render:percent},{title:'观看时长',dataIndex:'watch_time_seconds',width:140,render:duration},
           {title:'广告收入',dataIndex:'estimated_revenue',width:110,render:money},{title:'RPM',dataIndex:'rpm',width:100,render:money},{title:'新增订阅',dataIndex:'subscribers_gained',width:100,render:fmt},

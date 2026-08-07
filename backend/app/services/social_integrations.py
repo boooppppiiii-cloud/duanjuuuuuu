@@ -380,10 +380,20 @@ def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any
         analytics = _youtube_analytics(token, ids)
         rows = []
         for item in details.json().get("items", []):
-            video_id = str(item["id"]); snippet = item.get("snippet", {}); stats = item.get("statistics", {}); extra = analytics.get(video_id, {})
+            video_id = str(item["id"]); snippet = item.get("snippet", {}); status = item.get("status", {}); stats = item.get("statistics", {}); extra = analytics.get(video_id, {})
             views = int(stats.get("viewCount") or 0); revenue = extra.get("estimatedRevenue")
+            published_at = snippet.get("publishedAt")
+            scheduled_at = status.get("publishAt")
+            privacy_status = str(status.get("privacyStatus") or "")
+            # For an owner reading a private upload, YouTube's snippet.publishedAt
+            # is the upload time, not a public release time.  Only place it on the
+            # calendar when YouTube exposes publishAt or the video is no longer private.
+            calendar_at = scheduled_at or (published_at if privacy_status != "private" else None)
             rows.append({
-                "id": video_id, "title": str(snippet.get("title") or ""), "published_at": snippet.get("publishedAt"),
+                "id": video_id, "title": str(snippet.get("title") or ""), "published_at": published_at,
+                "scheduled_at": scheduled_at, "calendar_at": calendar_at,
+                "time_source": "scheduled" if scheduled_at else "published" if calendar_at else "",
+                "publication_status": privacy_status,
                 "views": views, "likes": int(stats.get("likeCount") or 0), "comments": int(stats.get("commentCount") or 0),
                 "url": f"https://www.youtube.com/watch?v={video_id}",
                 "thumbnail_url": str(snippet.get("thumbnails", {}).get("medium", {}).get("url") or snippet.get("thumbnails", {}).get("default", {}).get("url") or ""),
@@ -402,6 +412,9 @@ def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any
         return [{
             "id": str(item["id"]), "title": str(item.get("title") or item.get("video_description") or ""),
             "published_at": datetime.fromtimestamp(int(item.get("create_time") or 0)).isoformat() if item.get("create_time") else None,
+            "scheduled_at": None,
+            "calendar_at": datetime.fromtimestamp(int(item.get("create_time") or 0)).isoformat() if item.get("create_time") else None,
+            "time_source": "published", "publication_status": "published",
             "views": int(item.get("view_count") or 0), "likes": int(item.get("like_count") or 0), "comments": int(item.get("comment_count") or 0),
             "url": str(item.get("share_url") or ""), "thumbnail_url": str(item.get("cover_image_url") or ""),
             "duration_seconds": int(item.get("duration") or 0) or None, "impressions": None, "clicks": None, "ctr": None,
@@ -414,9 +427,11 @@ def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any
     _raise(response, "Meta")
     rows = []
     for item in response.json().get("data", []):
+        published_at = item.get("timestamp") or item.get("created_time")
         rows.append({
             "id": str(item["id"]), "title": str(item.get("title") or item.get("caption") or item.get("description") or "")[:160],
-            "published_at": item.get("timestamp") or item.get("created_time"), "views": int(item.get("views") or 0),
+            "published_at": published_at, "scheduled_at": None, "calendar_at": published_at,
+            "time_source": "published", "publication_status": "published", "views": int(item.get("views") or 0),
             "likes": int(item.get("like_count") or item.get("likes", {}).get("summary", {}).get("total_count") or 0),
             "comments": int(item.get("comments_count") or item.get("comments", {}).get("summary", {}).get("total_count") or 0),
             "url": str(item.get("permalink") or item.get("permalink_url") or ""),

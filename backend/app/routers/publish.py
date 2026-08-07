@@ -175,6 +175,74 @@ def account_media(account_id: int, limit: int = 25, session: Session = Depends(g
         raise HTTPException(422, str(exc)) from exc
 
 
+@router.get("/accounts/{account_id}/calendar")
+def account_calendar(account_id: int, limit: int = 50, session: Session = Depends(get_session)):
+    """Return platform releases and local scheduled jobs on one publication timeline."""
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    try:
+        rows = [dict(item) for item in list_platform_media(account, limit)]
+    except Exception as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    jobs = session.exec(
+        select(PublishJob)
+        .where(PublishJob.account_id == account_id)
+        .order_by(PublishJob.scheduled_at.desc())
+        .limit(200)
+    ).all()
+    jobs_by_video_id = {job.platform_video_id: job for job in jobs if job.platform_video_id}
+    seen_job_ids: set[int] = set()
+    for row in rows:
+        job = jobs_by_video_id.get(str(row.get("id") or ""))
+        if not job:
+            continue
+        seen_job_ids.add(job.id)
+        row["job_id"] = job.id
+        row["event_status"] = job.status
+        row["local_scheduled_at"] = job.scheduled_at
+        # Platform publishAt is authoritative for scheduled platform content.
+        # A public video's publishedAt remains authoritative after release.
+        # For a private upload with neither value, fall back to the app's job time.
+        if not row.get("calendar_at"):
+            row["calendar_at"] = job.scheduled_at
+            row["scheduled_at"] = row.get("scheduled_at") or job.scheduled_at
+            row["time_source"] = "scheduled"
+
+    visible_statuses = {"queued", "uploading", "submitted", "published"}
+    for job in jobs:
+        if job.id in seen_job_ids or job.status not in visible_statuses:
+            continue
+        post = session.get(Post, job.post_id)
+        rows.append({
+            "id": f"job-{job.id}",
+            "job_id": job.id,
+            "title": post.title if post else f"发布任务 #{job.id}",
+            "published_at": None,
+            "scheduled_at": job.scheduled_at,
+            "local_scheduled_at": job.scheduled_at,
+            "calendar_at": job.scheduled_at,
+            "time_source": "scheduled",
+            "publication_status": "scheduled",
+            "event_status": job.status,
+            "views": 0,
+            "likes": 0,
+            "comments": 0,
+            "url": job.platform_url,
+            "thumbnail_url": f"/api/creative/posts/{post.id}/cover/169" if post and post.cover_path_169 else "",
+            "duration_seconds": None,
+            "impressions": None,
+            "clicks": None,
+            "ctr": None,
+            "watch_time_seconds": None,
+            "estimated_revenue": None,
+            "rpm": None,
+            "subscribers_gained": None,
+        })
+    return rows
+
+
 @router.get("/accounts/{account_id}/insights")
 def account_analytics(account_id: int, days: str = "all", refresh: bool = False, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
