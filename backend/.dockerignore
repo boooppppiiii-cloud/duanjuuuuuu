@@ -4,3 +4,7 @@ tests/
 *.pyc
 *.db
 data/app.db
+data/argos/
+data/models/
+data/pytest*/
+data/whisper/
