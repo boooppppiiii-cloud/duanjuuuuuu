@@ -9,7 +9,7 @@ from ..database import get_session
 from ..models import Clip, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
 from ..schemas import FactoryAnalysisReviewRequest, FactoryJobView, FactoryProcessRequest, GeneratedAssetView, HookAssetView
 from ..services.factory_multimodal import FactoryAIUnavailableError, provider_name
-from ..services.script_analysis import factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review
+from ..services.script_analysis import ANALYSIS_VERSION, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review
 from ..services.drama_library import episode_files
 from ..services.factory_processing import factory_pipeline, sync_hook_assets
 
@@ -50,7 +50,10 @@ def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
         "sampled_frame_count": 0,
         "api_call_count": 0,
     }
-    requires_reanalysis = bool(base.get("status") == "completed" and base.get("provider") not in {"gemini", "qwen"})
+    requires_reanalysis = bool(
+        base.get("status") == "completed"
+        and (base.get("provider") not in {"gemini", "qwen"} or int(base.get("analysis_version", 0)) != ANALYSIS_VERSION)
+    )
     return {
         **base, "ai_ready": ai_ready, "configured_provider": provider, "configured_model": model,
         "requires_reanalysis": requires_reanalysis, "is_active": factory_analysis_pipeline.is_active(drama_id),
@@ -69,7 +72,10 @@ def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, sessio
         return read_analysis(Path(drama.file_dir))
     words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
     previous = read_analysis(Path(drama.file_dir)) or {}
-    resume = previous.get("status") in {"queued", "processing", "failed"}
+    resume = (
+        previous.get("status") in {"queued", "processing", "failed"}
+        and int(previous.get("analysis_version", 0)) == ANALYSIS_VERSION
+    )
     result = (
         queued_resume_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
         if resume else queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)

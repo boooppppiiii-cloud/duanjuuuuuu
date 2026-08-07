@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import subprocess
 import time
 from dataclasses import dataclass
@@ -32,19 +33,21 @@ def provider_name(settings: Settings) -> tuple[str, str]:
     raise FactoryAIUnavailableError("内容识别需要多模态模型，请配置 GEMINI_API_KEY 或 QWEN_API_KEY")
 
 
-def choose_frame_times(start: float, end: float, peaks: list[tuple[float, float]], maximum: int = 12) -> list[float]:
-    """Uniform coverage catches quiet visual risks; loudness peaks add likely dramatic moments."""
+def choose_frame_times(start: float, end: float, peaks: list[tuple[float, float]], maximum: int = 36) -> list[float]:
+    """Dense chronological coverage plus short peak bursts supports action-aware review."""
     duration = max(0.0, end - start)
     if duration <= 0 or maximum <= 0:
         return []
-    uniform_count = min(8, maximum, max(1, round(duration / 25)))
-    uniform = [start + duration * (index + 0.5) / uniform_count for index in range(uniform_count)]
     ranked_peaks = [second for second, _ in sorted(peaks, key=lambda row: row[1], reverse=True) if start <= second < end]
-    candidates = [*uniform, *ranked_peaks]
+    burst_reserve = min(maximum // 3 * 3, len(ranked_peaks[:2]) * 3)
+    uniform_count = min(maximum - burst_reserve, max(1, math.ceil(duration / 4)))
+    uniform = [start + duration * (index + 0.5) / uniform_count for index in range(uniform_count)]
+    peak_bursts = [nearby for second in ranked_peaks for nearby in (second - .8, second, second + .8)]
+    candidates = [*peak_bursts, *uniform]
     result: list[float] = []
     for second in candidates:
         second = min(max(start + 0.05, second), max(start + 0.05, end - 0.05))
-        if all(abs(second - existing) >= 1.5 for existing in result):
+        if all(abs(second - existing) >= .65 for existing in result):
             result.append(second)
         if len(result) >= maximum:
             break
@@ -65,7 +68,7 @@ def extract_frames(
         result = subprocess.run(
             [
                 settings.ffmpeg_binary, "-y", "-ss", f"{second:.3f}", "-i", str(video),
-                "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", str(target),
+                "-frames:v", "1", "-vf", "scale=512:-2", "-q:v", "4", str(target),
             ],
             capture_output=True,
             timeout=60,
@@ -89,7 +92,7 @@ def _prompt(episode: str, window_start: float, window_end: float, transcript: li
         f"[{row['start']:.2f}-{row['end']:.2f}] {str(row.get('text', ''))[:400]}" for row in transcript
     )[:30000]
     frame_text = ", ".join(f"F{row.index}={row.second:.2f}s" for row in frames)
-    return f"""你是短剧内容安全审核与增长剪辑专家。结合带时间戳的对白脚本和抽帧画面做判断，不得只看关键词。
+    return f"""你是短剧内容安全审核与增长剪辑专家。结合带时间戳的 ASR 对白和按时间顺序排列的连续抽帧做判断，不得只看关键词，也不得只按裸露程度判断。
 
 剧集：{episode}
 分析窗口：{window_start:.2f}s - {window_end:.2f}s
@@ -98,12 +101,19 @@ def _prompt(episode: str, window_start: float, window_end: float, transcript: li
 {transcript_text or '该窗口没有可识别对白'}
 
 任务：
-1. sensitive：识别画面或剧情中需要剪除的色情裸露、明显性行为/性暗示、性暴力、血腥伤口、肢解、严重殴打、枪击/刀刺等。普通争吵、拥抱、接吻、仅对白提及暴力不要直接判为高风险；不确定时 confidence 低于 0.75。
+1. sensitive：重点检测软色情、性暗示、性行为、性暴力、血腥伤口、肢解、严重殴打、枪击/刀刺。软色情必须从以下 5 个维度联合评分（每项 0-100）：
+   - body_focus：镜头是否持续聚焦胸部、臀部、胯部、大腿或裙底，是否出现床上、湿身、换衣、睡衣、贴身衣物等画面。
+   - action：是否出现抚摸敏感部位、拉扯衣物、压床、贴身控制、暧昧距离、反复身体/骨盆撞击等动作；必须比较相邻 F 帧理解动作变化。
+   - dialogue_context：把 ASR 台词与人物位置、服装和动作结合判断；单独无害的台词在暧昧情境中可以构成风险。
+   - expression_audio：是否出现色情化表情、喘息/呻吟语义、挑逗姿态或明显暧昧氛围。
+   - scene_context：床、浴室、裙底、封闭空间、强迫控制关系，以及尾巴/触手/棍状物伸入裙底或接触胯部等性暗示道具互动。
+   特别规则：尾巴、触手或其他物体伸入裙底，人物反复身体撞击/骨盆运动，伴随色情化面部表情时，即使没有裸露也必须报为“性暗示”或“软色情”，action 与 scene_context 应为高分。总风险 30-59 为注意，60-100 为高风险；总风险达到 30 就必须输出候选，宁可低置信交给人工复核，不得漏报。
+   普通争吵、普通拥抱、普通接吻、仅对白提及暴力且画面无对应行为时不要判成高风险。
 2. high_energy：识别适合放在片头作为黄金 3 秒钩子的反转、身份揭晓、强冲突、强情绪、悬念或动作瞬间。每个候选应给出可直接裁剪的 2-8 秒范围，最多 5 个，避免纯对白铺垫。
-3. 时间必须位于本窗口内；frame_indices 只能使用上面列出的 F 编号。
+3. sensitive 的 start/end 要覆盖完整风险动作；frame_indices 提供最能证明风险的 1-4 帧。时间必须位于本窗口内；frame_indices 只能使用上面列出的 F 编号。
 
 只输出严格 JSON：
-{{"summary":"中文概括","sensitive":[{{"start":0,"end":0,"category":"色情|暴力|血腥|其他","confidence":0.0,"reasons":["中文依据"],"frame_indices":[1]}}],"high_energy":[{{"start":0,"end":0,"score":0,"reasons":["中文依据"],"frame_indices":[1]}}]}}"""
+{{"summary":"中文概括","sensitive":[{{"start":0,"end":0,"category":"软色情|性暗示|色情|性暴力|暴力|血腥|其他","confidence":0.0,"overall_risk_score":0,"risk_scores":{{"body_focus":0,"action":0,"dialogue_context":0,"expression_audio":0,"scene_context":0}},"reasons":["必须同时描述画面/动作与台词上下文"],"frame_indices":[1]}}],"high_energy":[{{"start":0,"end":0,"score":0,"reasons":["中文依据"],"frame_indices":[1]}}]}}"""
 
 
 def _gemini(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple[dict[str, Any], str]:

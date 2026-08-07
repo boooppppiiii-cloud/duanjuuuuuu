@@ -21,6 +21,22 @@ def test_frame_sampling_combines_coverage_and_loudness_peaks():
     assert values == sorted(values)
 
 
+def test_default_sampling_is_dense_enough_for_short_actions():
+    values = choose_frame_times(0, 120, [], maximum=36)
+
+    assert len(values) == 30
+    assert max(right - left for left, right in zip(values, values[1:])) <= 4.1
+
+
+def test_prompt_requires_contextual_soft_sexual_review():
+    prompt = factory_multimodal._prompt("01.mp4", 0, 120, [], [])
+
+    assert "尾巴、触手或其他物体伸入裙底" in prompt
+    assert "body_focus" in prompt
+    assert "相邻 F 帧理解动作变化" in prompt
+    assert "ASR 台词与人物位置" in prompt
+
+
 def test_analysis_falls_back_to_qwen_when_gemini_fails(monkeypatch):
     settings = SimpleNamespace(gemini_api_key="gemini", qwen_api_key="qwen")
     monkeypatch.setattr(factory_multimodal, "_gemini", lambda *_: (_ for _ in ()).throw(RuntimeError("offline")))
@@ -48,7 +64,12 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
         return {
             "summary": "身份揭晓后发生肢体冲突",
             "high_energy": [{"start": 1, "end": 4, "score": 92, "reasons": ["身份反转"], "frame_indices": [1]}],
-            "sensitive": [{"start": 5, "end": 7, "category": "暴力", "confidence": .88, "reasons": ["画面出现严重殴打"], "frame_indices": [1]}],
+            "sensitive": [{
+                "start": 5, "end": 7, "category": "性暗示", "confidence": .7,
+                "overall_risk_score": 86,
+                "risk_scores": {"body_focus": 55, "action": 92, "dialogue_context": 60, "expression_audio": 72, "scene_context": 88},
+                "reasons": ["连续画面出现裙底接触与身体撞击"], "frame_indices": [1],
+            }],
         }
 
     settings = SimpleNamespace(
@@ -63,6 +84,8 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
     assert result["episodes"][0]["high_energy"][0]["review_status"] == "pending"
     risk = result["episodes"][0]["sensitive"][0]
     assert risk["review_status"] == "approved"
+    assert risk["overall_risk_score"] == 86
+    assert risk["risk_scores"]["action"] == 92
     assert risk["frame_files"] == [frame.name]
 
     updated = script_analysis.update_review(tmp_path, "01.mp4", "sensitive", 5, 7, "rejected")

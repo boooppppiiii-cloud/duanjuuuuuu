@@ -21,6 +21,8 @@ from .hook_recommender import loudness_peaks, media_duration
 
 
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
+ANALYSIS_VERSION = 2
+RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
 SENSITIVE_TERMS = {
     "暴力": ["杀", "打死", "砍", "枪", "血", "尸体", "绑架", "虐待", "暴力"],
     "色情": ["裸", "床戏", "性侵", "强奸", "色情", "胸部", "脱衣", "性行为"],
@@ -57,7 +59,7 @@ def queued_analysis(folder: Path, drama_id: int, title: str, episode_count: int)
         "drama_id": drama_id, "title": title, "episodes": [], "episode_count": episode_count,
         "total_duration": 0, "segment_count": 0, "high_energy_count": 0, "sensitive_count": 0,
         "sampled_frame_count": 0, "api_call_count": 0, "started_at": utc_timestamp(),
-        "updated_at": utc_timestamp(), "resume_count": 0,
+        "updated_at": utc_timestamp(), "resume_count": 0, "analysis_version": ANALYSIS_VERSION,
     })
 
 
@@ -159,11 +161,28 @@ def _model_candidates(
             confidence = min(1.0, max(0.0, float(raw.get("confidence", 0))))
         except (TypeError, ValueError):
             confidence = 0.0
+        risk_scores: dict[str, int] = {}
+        raw_scores = raw.get("risk_scores") if isinstance(raw.get("risk_scores"), dict) else {}
+        for key in RISK_SCORE_KEYS:
+            try:
+                risk_scores[key] = round(min(100.0, max(0.0, float(raw_scores.get(key, 0)))))
+            except (TypeError, ValueError):
+                risk_scores[key] = 0
+        try:
+            overall_risk_score = round(min(100.0, max(0.0, float(raw.get("overall_risk_score", 0)))))
+        except (TypeError, ValueError):
+            overall_risk_score = 0
+        if not overall_risk_score and any(risk_scores.values()):
+            overall_risk_score = round(max(risk_scores.values()))
+        confidence = max(confidence, overall_risk_score / 100)
         sensitive.append({
             "start": start, "end": end, "text": _text_for_range(segments, start, end),
             "energy_score": 0.0, "energy_reasons": [], "high_energy": False,
             "sensitive": {category: reasons or ["模型结合脚本与画面识别"]},
-            "confidence": round(confidence, 2), "review_status": "approved" if confidence >= 0.75 else "pending",
+            "confidence": round(confidence, 2),
+            "overall_risk_score": overall_risk_score,
+            "risk_scores": risk_scores,
+            "review_status": "approved" if overall_risk_score >= 60 or confidence >= 0.75 else "pending",
             "evidence": reasons, "frame_files": _candidate_frames(raw, frames), "source": source,
         })
     return high_energy, sensitive
@@ -203,6 +222,9 @@ def analyze_drama(
     else:
         provider, provider_model = "test", "injected"
     previous = read_analysis(folder) if resume else None
+    if previous and int(previous.get("analysis_version", 0)) != ANALYSIS_VERSION:
+        previous = None
+        resume = False
     started_at = str((previous or {}).get("started_at") or utc_timestamp())
     resume_count = int((previous or {}).get("resume_count", 0)) + int(resume)
     if model is None:
@@ -222,6 +244,7 @@ def analyze_drama(
             "started_at": started_at,
             "updated_at": utc_timestamp(),
             "resume_count": resume_count,
+            "analysis_version": ANALYSIS_VERSION,
         })
         try:
             from faster_whisper import WhisperModel
@@ -253,7 +276,7 @@ def analyze_drama(
     sampled_frame_count = int((previous or {}).get("sampled_frame_count", 0)) if resume else 0
     api_call_count = int((previous or {}).get("api_call_count", 0)) if resume else 0
     window_seconds = max(120, int(getattr(settings, "factory_analysis_window_seconds", 600)))
-    max_frames = max(4, min(20, int(getattr(settings, "factory_analysis_frames_per_window", 12))))
+    max_frames = max(8, min(48, int(getattr(settings, "factory_analysis_frames_per_window", 36))))
     beam_size = max(1, min(5, int(getattr(settings, "factory_whisper_beam_size", 1))))
     video_order = {video.name: index for index, video in enumerate(videos)}
 
@@ -270,6 +293,7 @@ def analyze_drama(
             "high_energy_count": total_high_energy, "sensitive_count": total_sensitive,
             "sampled_frame_count": sampled_frame_count, "api_call_count": api_call_count,
             "started_at": started_at, "updated_at": utc_timestamp(), "resume_count": resume_count,
+            "analysis_version": ANALYSIS_VERSION,
         })
 
     if resume:
@@ -358,6 +382,7 @@ def analyze_drama(
         "sensitive_count": total_sensitive, "sampled_frame_count": sampled_frame_count,
         "api_call_count": api_call_count, "episodes": ordered_results(), "started_at": started_at,
         "updated_at": utc_timestamp(), "resume_count": resume_count,
+        "analysis_version": ANALYSIS_VERSION,
     }
     return write_analysis(folder, result)
 

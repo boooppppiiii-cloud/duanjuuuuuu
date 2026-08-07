@@ -54,6 +54,7 @@ def test_interrupted_analysis_resumes_without_repeating_completed_episode(monkey
     script_analysis.write_analysis(tmp_path, {
         "status": "processing", "progress": 50, "episodes": [existing_episode],
         "sampled_frame_count": 0, "api_call_count": 0, "resume_count": 0,
+        "analysis_version": script_analysis.ANALYSIS_VERSION,
     })
     model = CountingModel()
     settings = SimpleNamespace(ffprobe_binary="ffprobe", ffmpeg_binary="ffmpeg")
@@ -64,6 +65,25 @@ def test_interrupted_analysis_resumes_without_repeating_completed_episode(monkey
     assert [item["episode"] for item in result["episodes"]] == [first.name, second.name]
     assert result["resume_count"] == 1
     assert result["status"] == "completed"
+
+
+def test_old_detection_version_is_reanalyzed_from_the_start(monkeypatch, tmp_path: Path):
+    first = tmp_path / "Episode1.mp4"; second = tmp_path / "Episode2.mp4"
+    first.write_bytes(b"first"); second.write_bytes(b"second")
+    monkeypatch.setattr(script_analysis, "episode_files", lambda _folder: [first, second])
+    monkeypatch.setattr(script_analysis, "media_duration", lambda *_: 3.0)
+    monkeypatch.setattr(script_analysis, "loudness_peaks", lambda *_: [])
+    script_analysis.write_analysis(tmp_path, {
+        "status": "processing", "progress": 50, "episodes": [{"episode": first.name}],
+        "analysis_version": script_analysis.ANALYSIS_VERSION - 1,
+    })
+    model = CountingModel()
+    settings = SimpleNamespace(ffprobe_binary="ffprobe", ffmpeg_binary="ffmpeg")
+
+    result = script_analysis.analyze_drama(tmp_path, 1, "测试剧", settings, [], model=model, resume=True)
+
+    assert model.calls == [first.name, second.name]
+    assert result["analysis_version"] == script_analysis.ANALYSIS_VERSION
 
 
 def test_episode_files_use_natural_number_order(tmp_path: Path):
