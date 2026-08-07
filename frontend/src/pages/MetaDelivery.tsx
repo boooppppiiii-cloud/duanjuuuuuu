@@ -178,10 +178,10 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
   <Card title="3. 已生成文件夹" className="table-card">{packages.length?<Table rowKey="id" dataSource={packages} pagination={false} scroll={{x:760}} columns={[
     {title:'剧目',render:(_,row)=>dramas.find(x=>x.id===row.drama_id)?.title||row.series_slug},
     {title:'文件夹名',dataIndex:'series_slug'},
-    {title:'状态',width:130,render:()=> <Tag color="green">服务器已生成</Tag>},
+    {title:'状态',width:140,render:(_,row)=>row.status==='missing'?<Tag color="red">文件不在服务器</Tag>:<Tag color="green">服务器已生成</Tag>},
     {title:'生成时间',width:180,dataIndex:'created_at',render:(x:string)=>new Date(x).toLocaleString()},
     {title:'服务器存档',dataIndex:'output_dir',render:(x:string)=><Typography.Text ellipsis={{tooltip:x}} copyable>{x}</Typography.Text>},
-    {title:'保存',width:220,render:(_,row)=><Space><Button size="small" type="primary" icon={<FolderOpenOutlined/>} loading={action===`export-${row.id}`||action===`selecting-${row.id}`} disabled={building&&action!==`export-${row.id}`&&action!==`selecting-${row.id}`} onClick={()=>saveExisting(row)}>{directFolderSave||localRuntime?'保存到本机':'下载 ZIP'}</Button>{localRuntime&&<Button size="small" disabled={building} onClick={()=>openExisting(row)}>打开当前文件夹</Button>}</Space>},
+    {title:'保存',width:220,render:(_,row)=><Space><Button size="small" type="primary" icon={<FolderOpenOutlined/>} loading={action===`export-${row.id}`||action===`selecting-${row.id}`} disabled={row.status==='missing'||(building&&action!==`export-${row.id}`&&action!==`selecting-${row.id}`)} onClick={()=>saveExisting(row)}>{directFolderSave||localRuntime?'保存到本机':'下载 ZIP'}</Button>{localRuntime&&<Button size="small" disabled={row.status==='missing'||building} onClick={()=>openExisting(row)}>打开当前文件夹</Button>}</Space>},
     {title:'下一步',width:150,render:()=> <Button type="primary" icon={<PlatformLogo platform="instagram" size={15}/>} href="https://www.instagram.com/sfs_tools" target="_blank">打开 SFS Tools</Button>},
   ]}/>:<Alert type="info" showIcon message="选择电脑上的保存位置后，系统会自动创建完整的 Meta 合规文件夹"/>}</Card>
  </div>

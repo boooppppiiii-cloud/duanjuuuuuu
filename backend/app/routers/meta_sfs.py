@@ -126,7 +126,23 @@ def create_package(payload: MetaSFSRequest, session: Session = Depends(get_sessi
 
 @router.get("/packages", response_model=list[MetaDeliveryPackage])
 def list_packages(session: Session = Depends(get_session)):
-    return session.exec(select(MetaDeliveryPackage).order_by(MetaDeliveryPackage.created_at.desc())).all()
+    items = session.exec(select(MetaDeliveryPackage).order_by(MetaDeliveryPackage.created_at.desc())).all()
+    changed = False
+    for item in items:
+        available = Path(item.output_dir).is_dir()
+        if not available and item.status != "missing":
+            item.status = "missing"
+            session.add(item)
+            changed = True
+        elif available and item.status == "missing":
+            item.status = "ready"
+            session.add(item)
+            changed = True
+    if changed:
+        session.commit()
+        for item in items:
+            session.refresh(item)
+    return items
 
 
 @router.get("/packages/{package_id}/files")
