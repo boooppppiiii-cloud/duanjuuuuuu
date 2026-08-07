@@ -68,7 +68,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   list: () => request<Drama[]>('/api/dramas'),
-  createDramaTask: (body:{title:string;description:string;total_episode_count:number;genres:string[];is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
+  createDramaTask: (body:{title:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),
   get: (id: string) => request<Drama>(`/api/dramas/${id}`),
   update: (id: number, body: object) => request<Drama>(`/api/dramas/${id}`, { method: 'PUT', body: JSON.stringify(body) }),

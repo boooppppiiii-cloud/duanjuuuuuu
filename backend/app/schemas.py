@@ -10,8 +10,16 @@ class DramaCreateRequest(BaseModel):
     description: str = Field(min_length=1, max_length=2000)
     total_episode_count: int = Field(ge=1, le=999)
     genres: list[str] = Field(min_length=1)
+    language: str = Field(default="en_US", min_length=5, max_length=5)
     is_ai_generated: bool = False
     is_dubbed_content: bool = False
+
+    @field_validator("language")
+    @classmethod
+    def language_format(cls, value: str) -> str:
+        if len(value) != 5 or value[2] != "_" or not value[:2].islower() or not value[3:].isupper():
+            raise ValueError("语种必须使用 language_REGION 格式，例如 en_US")
+        return value
 
 
 class DramaUpdate(BaseModel):

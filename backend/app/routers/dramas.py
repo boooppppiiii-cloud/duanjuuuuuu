@@ -68,7 +68,7 @@ def create_drama_task(payload: DramaCreateRequest, session: Session = Depends(ge
         is_dubbed_content=payload.is_dubbed_content,
         file_dir=str(folder),
         source_note="剧目任务",
-        language="en_US",
+        language=payload.language,
         promotion_episode_count=payload.total_episode_count,
         total_episode_count=payload.total_episode_count,
     )

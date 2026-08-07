@@ -91,9 +91,9 @@ def test_task_metadata_cover_upload_and_approved_asset_library(tmp_path: Path):
     with TestClient(app.main.app) as client:
         invalid = client.post("/api/dramas", json={"title": "错误任务", "description": "", "total_episode_count": 3, "genres": []})
         assert invalid.status_code == 422
-        created = client.post("/api/dramas", json={"title": "海外测试剧", "description": "A mistaken marriage becomes a second chance at love.", "total_episode_count": 12, "genres": ["Drama", "Romance"], "is_ai_generated": True, "is_dubbed_content": True})
+        created = client.post("/api/dramas", json={"title": "海外测试剧", "description": "A mistaken marriage becomes a second chance at love.", "total_episode_count": 12, "genres": ["Drama", "Romance"], "language": "es_LA", "is_ai_generated": True, "is_dubbed_content": True})
         assert created.status_code == 200
-        drama = created.json(); assert drama["episode_count"] == 0; assert drama["description"].startswith("A mistaken marriage"); assert drama["genres"] == ["Drama", "Romance"]; assert drama["is_ai_generated"] is True; assert drama["is_dubbed_content"] is True; assert drama["total_episode_count"] == 12
+        drama = created.json(); assert drama["episode_count"] == 0; assert drama["description"].startswith("A mistaken marriage"); assert drama["genres"] == ["Drama", "Romance"]; assert drama["language"] == "es_LA"; assert drama["is_ai_generated"] is True; assert drama["is_dubbed_content"] is True; assert drama["total_episode_count"] == 12
         folder = Path(drama["file_dir"]); assert (folder / "episodes").is_dir(); assert (folder / "stills").is_dir(); assert (folder / "generated").is_dir()
 
         edited = client.put(f"/api/dramas/{drama['id']}", json={"title": "海外测试剧新版", "description": "Updated synopsis", "total_episode_count": 15, "promotion_episode_count": 5, "genres": ["Thriller"], "language": "en_US", "is_ai_generated": False, "is_dubbed_content": False, "source_note": "授权素材", "actor_names": ["Actor A"]})
