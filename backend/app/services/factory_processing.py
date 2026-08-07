@@ -128,7 +128,8 @@ def read_sensitive_ranges(drama_dir: Path) -> dict[str, list[tuple[float, float]
         result[str(episode.get("episode", ""))] = [
             (max(0.0, float(row.get("start", 0)) - 0.25), float(row.get("end", 0)) + 0.25)
             for row in episode.get("sensitive", [])
-            if float(row.get("end", 0)) > float(row.get("start", 0))
+            if row.get("review_status", "approved") != "rejected"
+            and float(row.get("end", 0)) > float(row.get("start", 0))
         ]
     return result
 
@@ -144,6 +145,8 @@ def sync_hook_assets(session: Session, drama: Drama) -> list[HookAsset]:
         data = json.loads(analysis_path.read_text(encoding="utf-8"))
         for episode in data.get("episodes", []):
             for row in episode.get("high_energy", []):
+                if row.get("review_status", "approved") != "approved":
+                    continue
                 candidates.append((
                     str(episode.get("episode", "")), float(row.get("start", 0)), float(row.get("end", 0)),
                     "；".join(row.get("energy_reasons", [])) or str(row.get("text", ""))[:80], "analysis", float(row.get("energy_score", 0)),

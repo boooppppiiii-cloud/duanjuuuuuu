@@ -7,8 +7,9 @@ from sqlmodel import Session, select
 from ..config import get_settings
 from ..database import get_session
 from ..models import Clip, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
-from ..schemas import FactoryJobView, FactoryProcessRequest, GeneratedAssetView, HookAssetView
-from ..services.script_analysis import analyze_drama, read_analysis
+from ..schemas import FactoryAnalysisReviewRequest, FactoryJobView, FactoryProcessRequest, GeneratedAssetView, HookAssetView
+from ..services.factory_multimodal import FactoryAIUnavailableError, provider_name
+from ..services.script_analysis import factory_analysis_pipeline, queued_analysis, read_analysis, update_review
 from ..services.drama_library import episode_files
 from ..services.factory_processing import factory_pipeline, sync_hook_assets
 
@@ -27,8 +28,17 @@ def get_drama(drama_id: int, session: Session) -> Drama:
 def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
     drama = get_drama(drama_id, session)
     result = read_analysis(Path(drama.file_dir))
-    return result or {
+    settings = get_settings()
+    try:
+        provider, model = provider_name(settings)
+        ai_ready = True
+    except FactoryAIUnavailableError:
+        provider, model, ai_ready = "", "", False
+    base = result or {
         "status": "not_analyzed",
+        "progress": 0,
+        "current_step": "等待识别",
+        "error_message": "",
         "drama_id": drama.id,
         "title": drama.title,
         "episodes": [],
@@ -37,17 +47,49 @@ def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
         "segment_count": 0,
         "high_energy_count": 0,
         "sensitive_count": 0,
+        "sampled_frame_count": 0,
+        "api_call_count": 0,
     }
+    requires_reanalysis = bool(base.get("status") == "completed" and base.get("provider") not in {"gemini", "qwen"})
+    return {**base, "ai_ready": ai_ready, "configured_provider": provider, "configured_model": model, "requires_reanalysis": requires_reanalysis}
 
 
 @router.post("/{drama_id}/analyze")
-def run_script_analysis(drama_id: int, session: Session = Depends(get_session)):
+def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
     drama = get_drama(drama_id, session)
-    words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
+    settings = get_settings()
     try:
-        return analyze_drama(Path(drama.file_dir), drama.id, drama.title, get_settings(), words)
-    except RuntimeError as exc:
+        provider_name(settings)
+    except FactoryAIUnavailableError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if factory_analysis_pipeline.is_active(drama_id):
+        return read_analysis(Path(drama.file_dir))
+    words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
+    result = queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
+    background_tasks.add_task(factory_analysis_pipeline.run, Path(drama.file_dir), drama.id, drama.title, settings, words)
+    return result
+
+
+@router.patch("/{drama_id}/analysis/review")
+def review_analysis(drama_id: int, payload: FactoryAnalysisReviewRequest, session: Session = Depends(get_session)):
+    drama = get_drama(drama_id, session)
+    try:
+        return update_review(
+            Path(drama.file_dir), payload.episode, payload.kind, payload.start, payload.end,
+            payload.decision, payload.new_start, payload.new_end,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/{drama_id}/analysis/frames/{filename}")
+def analysis_frame(drama_id: int, filename: str, session: Session = Depends(get_session)):
+    drama = get_drama(drama_id, session)
+    root = (Path(drama.file_dir) / "analysis_frames").resolve()
+    path = (root / Path(filename).name).resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(404, "证据帧不存在")
+    return FileResponse(path, media_type="image/jpeg", filename=path.name)
 
 
 @router.post("/{drama_id}/process", response_model=FactoryJobView)
@@ -56,7 +98,10 @@ def start_processing(drama_id: int, payload: FactoryProcessRequest, background_t
     sources = episode_files(Path(drama.file_dir))
     if not sources:
         raise HTTPException(422, "请先导入原片视频")
-    if payload.remove_sensitive and set(payload.output_modes) & {"clean_full", "hook_variants"} and not read_analysis(Path(drama.file_dir)):
+    analysis = read_analysis(Path(drama.file_dir))
+    if payload.remove_sensitive and set(payload.output_modes) & {"clean_full", "hook_variants"} and (
+        not analysis or analysis.get("status") != "completed" or analysis.get("provider") not in {"gemini", "qwen"}
+    ):
         raise HTTPException(422, "请先完成脚本与敏感内容识别，再生成净化版或高能片头版")
     active = session.exec(select(FactoryJob).where(FactoryJob.drama_id == drama_id, FactoryJob.status.in_(["queued", "processing"]))).first()
     if active:

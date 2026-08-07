@@ -183,6 +183,16 @@ class FactoryProcessRequest(BaseModel):
         return unique
 
 
+class FactoryAnalysisReviewRequest(BaseModel):
+    episode: str = Field(min_length=1)
+    kind: Literal["high_energy", "sensitive"]
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    decision: Literal["approved", "rejected", "pending"]
+    new_start: Optional[float] = Field(default=None, ge=0)
+    new_end: Optional[float] = Field(default=None, gt=0)
+
+
 class FactoryJobView(BaseModel):
     id: int
     drama_id: int

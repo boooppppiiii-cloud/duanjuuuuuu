@@ -15,6 +15,7 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 backend/data/models/
 backend/data/argos/
+backend/data/pytest*/
 media/clips/
 media/posts/
 tmp/

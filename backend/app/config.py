@@ -27,9 +27,13 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_text_model: str = "gemini-2.5-flash"
     gemini_image_model: str = "gemini-3.1-flash-image"
+    factory_analysis_model: str = ""
+    factory_analysis_window_seconds: int = 600
+    factory_analysis_frames_per_window: int = 12
     qwen_api_key: str = ""
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_model: str = "qwen-plus"
+    qwen_vision_model: str = "qwen-vl-plus"
     youtube_api_key: str = ""
     youtube_channel_ids: str = ""
     public_api_origin: str = "http://127.0.0.1:8000"
