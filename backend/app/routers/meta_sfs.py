@@ -3,15 +3,19 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.background import BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from ..database import get_session
+from ..config import get_settings
 from ..models import Drama, MetaDeliveryPackage
 from ..schemas import MetaSFSRequest
 from ..services.meta_sfs import build_package, preflight
@@ -37,6 +41,25 @@ def _package_file(root: Path, relative_path: str) -> Path:
     if not target.is_file():
         raise HTTPException(404, "文件不存在")
     return target
+
+
+def _create_package_archive(root: Path, export_root: Path, reserve_bytes: int) -> Path:
+    total_bytes = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+    export_root.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(export_root).free < total_bytes + reserve_bytes:
+        raise HTTPException(507, "服务器空间不足，无法创建本机下载包；请先清理旧投递包")
+    descriptor, archive_name = tempfile.mkstemp(prefix=f"{root.name}_", suffix=".zip", dir=export_root)
+    os.close(descriptor)
+    archive = Path(archive_name)
+    try:
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as output:
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    output.write(path, arcname=(Path(root.name) / path.relative_to(root)).as_posix())
+    except Exception:
+        archive.unlink(missing_ok=True)
+        raise
+    return archive
 
 
 def _take_local_destination(token: str) -> Path | None:
@@ -127,6 +150,18 @@ def download_package_file(package_id: int, relative_path: str, session: Session 
         raise HTTPException(404, "投递文件夹不存在")
     target = _package_file(_package_root(item), relative_path)
     return FileResponse(target, filename=target.name)
+
+
+@router.get("/packages/{package_id}/archive")
+def download_package_archive(package_id: int, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
+    item = session.get(MetaDeliveryPackage, package_id)
+    if not item:
+        raise HTTPException(404, "投递文件夹不存在")
+    root = _package_root(item)
+    settings = get_settings()
+    archive = _create_package_archive(root, settings.media_root / "downloads", settings.upload_free_space_reserve_bytes)
+    background_tasks.add_task(archive.unlink, missing_ok=True)
+    return FileResponse(archive, media_type="application/zip", filename=f"{root.name}.zip", background=background_tasks)
 
 
 @router.post("/packages/{package_id}/open-folder")

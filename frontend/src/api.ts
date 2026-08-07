@@ -143,6 +143,7 @@ export const api = {
   metaPackages: () => request<MetaPackage[]>('/api/meta-sfs/packages'),
   metaPackageFiles: (id:number) => request<MetaPackageFiles>(`/api/meta-sfs/packages/${id}/files`),
   metaPackageFileUrl: (id:number,path:string) => `/api/meta-sfs/packages/${id}/files/${path.split('/').map(encodeURIComponent).join('/')}`,
+  metaPackageArchiveUrl: (id:number) => `/api/meta-sfs/packages/${id}/archive`,
   openMetaPackageFolder: (id:number) => request<{opened:boolean;path:string}>(`/api/meta-sfs/packages/${id}/open-folder`,{method:'POST'}),
   copyMetaPackageLocal: (id:number,token:string) => request<{path:string;folder_name:string}>(`/api/meta-sfs/packages/${id}/copy-local?token=${encodeURIComponent(token)}`,{method:'POST'}),
   uploadMetaPackage: (id:number) => request<MetaPackage>(`/api/meta-sfs/packages/${id}/upload-drive`,{method:'POST'}),

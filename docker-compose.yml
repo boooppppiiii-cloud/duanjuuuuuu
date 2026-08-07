@@ -33,6 +33,7 @@ services:
     volumes:
       - ./media:/app/media
       - ./backend/data:/app/backend/data
+      - ./logs:/app/logs
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     restart: unless-stopped

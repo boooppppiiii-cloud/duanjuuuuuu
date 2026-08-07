@@ -31,11 +31,12 @@ export default function DramaLibrary(){
  const[editForm]=Form.useForm()
  const navigate=useNavigate()
  const[msg,context]=message.useMessage()
+ const localRuntime=['localhost','127.0.0.1','::1'].includes(window.location.hostname)
 
  const load=async()=>{try{setItems(await api.list())}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
  useEffect(()=>{void load()},[])
  useEffect(()=>()=>{if(cropReview?.previewUrl)URL.revokeObjectURL(cropReview.previewUrl)},[cropReview])
- const scan=async()=>{setLoading(true);try{const result=await api.scan();setLogs(result.logs);await load();msg.success('本地素材已同步')}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
+ const scan=async()=>{setLoading(true);try{const result=await api.scan();setLogs(result.logs);await load();msg.success('共享剧库已同步')}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
  const createTask=async(values:{title:string;description:string;total_episode_count:number;genres:string[];is_ai_generated:boolean;is_dubbed_content:boolean})=>{try{const item=await api.createDramaTask(values);msg.success('剧目任务已建立');setCreateOpen(false);createForm.resetFields();await load();navigate(`/factory?drama=${item.id}`)}catch(e){msg.error((e as Error).message)}}
  const register=async(values:{title:string;absolute_path:string;source_note:string})=>{try{await api.registerDrama(values.title,values.absolute_path,values.source_note);msg.success('已有素材已登记');setRegisterOpen(false);registerForm.resetFields();await load()}catch(e){msg.error((e as Error).message)}}
  const openEdit=(item:Drama)=>{setEditing(item);editForm.setFieldsValue({title:item.title,description:item.description,total_episode_count:item.total_episode_count,promotion_episode_count:item.promotion_episode_count,genres:item.genres,language:item.language,is_ai_generated:item.is_ai_generated,is_dubbed_content:item.is_dubbed_content,source_note:item.source_note,actor_names:item.actor_names});setEditOpen(true)}
@@ -47,7 +48,7 @@ export default function DramaLibrary(){
  const logColor:Record<string,string>={imported:'green',updated:'blue',skipped:'orange',info:'default'}
 
  return <div className="workspace-page local-library">{context}
-  <div className="page-heading page-heading-rich"><Typography.Title level={2}>剧库</Typography.Title><Space wrap><Button icon={<FolderOpenOutlined/>} onClick={()=>setRegisterOpen(true)}>登记已有素材</Button><Button icon={<ReloadOutlined/>} onClick={scan}>同步本地文件</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>setCreateOpen(true)}>新建剧目任务</Button></Space></div>
+  <div className="page-heading page-heading-rich"><Typography.Title level={2}>剧库</Typography.Title><Space wrap>{localRuntime&&<Button icon={<FolderOpenOutlined/>} onClick={()=>setRegisterOpen(true)}>登记已有素材</Button>}<Button icon={<ReloadOutlined/>} onClick={scan}>{localRuntime?'同步素材目录':'刷新共享剧库'}</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>setCreateOpen(true)}>新建剧目任务</Button></Space></div>
   <Segmented block className="overview-pager library-pager" value={view} onChange={value=>setView(value as typeof view)} options={[{value:'tasks',label:`剧目任务 ${items.length}`},{value:'generated',label:`已生成 ${generated.length}`}]}/>
   {!!logs.length&&<Collapse className="scan-logs" items={[{key:'logs',label:`本次同步记录（${logs.length} 条）`,children:logs.map((entry,index)=><div className="scan-log-line" key={index}><Tag color={logColor[entry.status]}>{entry.status}</Tag><code>{entry.path}</code><span>{entry.message}</span></div>)}]}/>}
   <Spin spinning={loading}>{view==='tasks'?(items.length?<div className="card-grid local-drama-grid">{items.map(item=>{
@@ -94,11 +95,11 @@ export default function DramaLibrary(){
    {cropReview&&<div className="cover-crop-review"><div className={`cover-crop-preview is-${cropReview.kind}`}><img src={cropReview.previewUrl} alt="自动裁剪预览"/></div><div className="cover-crop-summary"><b>{coverImageSpecs[cropReview.kind].label}</b><div><span>原图</span><strong>{cropReview.sourceWidth} × {cropReview.sourceHeight}</strong></div><div><span>输出</span><strong>{cropReview.targetWidth} × {cropReview.targetHeight} JPG</strong></div><p>{cropReview.cropped?'已从画面中央裁剪到目标比例。':'原图比例已符合要求，无需裁边。'}{cropReview.resized?' 同时已转换为官方要求尺寸。':''}</p></div></div>}
   </Modal>
 
-  <Modal title="登记已有本地素材" open={registerOpen} onCancel={()=>setRegisterOpen(false)} footer={null} destroyOnHidden><Form form={registerForm} layout="vertical" onFinish={register}>
+  {localRuntime&&<Modal title="登记已有本地素材" open={registerOpen} onCancel={()=>setRegisterOpen(false)} footer={null} destroyOnHidden><Form form={registerForm} layout="vertical" onFinish={register}>
     <Form.Item name="title" label="剧名" rules={[{required:true}]}><Input/></Form.Item>
     <Form.Item name="absolute_path" label="本地文件夹路径" rules={[{required:true}]}><Input placeholder="例如 D:\短剧素材\我的短剧"/></Form.Item>
     <Form.Item name="source_note" label="素材来源" initialValue="已获授权素材" rules={[{required:true}]}><Input/></Form.Item>
     <Button block type="primary" htmlType="submit">校验并登记</Button>
-  </Form></Modal>
+  </Form></Modal>}
  </div>
 }

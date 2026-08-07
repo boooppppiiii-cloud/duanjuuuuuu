@@ -6,7 +6,9 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
-from .database import create_db_and_tables
+from sqlmodel import Session
+
+from .database import create_db_and_tables, engine
 from .routers.dramas import router as dramas_router
 from .routers.clips import router as clips_router
 from .routers.moderation import router as moderation_router
@@ -25,6 +27,7 @@ from .scheduler import scheduler
 from .logging_config import configure_logging
 from .services.factory_processing import resume_factory_jobs
 from .services.offline_translation import start_translation_worker
+from .services.storage_paths import reconcile_database_media_paths
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -33,6 +36,10 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_db_and_tables()
+    with Session(engine) as session:
+        repaired = reconcile_database_media_paths(session, get_settings().media_root)
+        if repaired:
+            logger.info("已修复 %s 个迁移后的媒体路径", repaired)
     resume_factory_jobs()
     start_translation_worker()
     if not scheduler.running:

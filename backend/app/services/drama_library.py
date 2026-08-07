@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 
 from ..models import Drama
 from ..schemas import Highlight
+from .storage_paths import rebase_media_path
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -44,9 +45,17 @@ def scan_dramas_with_logs(session: Session, media_root: Path) -> tuple[list[Dram
         existing = session.exec(select(Drama).where(Drama.file_dir == str(folder.resolve()))).first()
         same_title = session.exec(select(Drama).where(Drama.title == folder.name)).first()
         if same_title and not existing:
-            logs.append({"path": str(folder.resolve()), "status": "skipped", "message": f"跳过：已存在同名剧，原路径为 {same_title.file_dir}"})
-            continue
-        drama = existing or Drama(title=folder.name, file_dir=str(folder.resolve()))
+            previous = Path(same_title.file_dir)
+            if previous.exists():
+                logs.append({"path": str(folder.resolve()), "status": "skipped", "message": f"跳过：已存在同名剧，原路径为 {same_title.file_dir}"})
+                continue
+            same_title.file_dir = str(folder.resolve())
+            for field in ("cover_vertical_path", "cover_square_path", "cover_horizontal_path"):
+                setattr(same_title, field, rebase_media_path(getattr(same_title, field), media_root))
+            drama = same_title
+            logs.append({"path": str(folder.resolve()), "status": "updated", "message": "已将剧目记录迁移到当前共享素材目录"})
+        else:
+            drama = existing or Drama(title=folder.name, file_dir=str(folder.resolve()))
         drama.episode_count = len(episodes)
         if not drama.description.strip():
             drama.total_episode_count = max(drama.total_episode_count, len(episodes))

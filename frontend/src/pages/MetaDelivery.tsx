@@ -15,7 +15,7 @@ type LocalWritable={write:(data:Uint8Array|Blob)=>Promise<void>;close:()=>Promis
 type LocalFileHandle={createWritable:()=>Promise<LocalWritable>}
 type LocalDirectoryHandle={name:string;getDirectoryHandle:(name:string,options:{create:boolean})=>Promise<LocalDirectoryHandle>;getFileHandle:(name:string,options:{create:boolean})=>Promise<LocalFileHandle>}
 type DirectoryPickerWindow=Window&{showDirectoryPicker?:(options:{mode:'readwrite'})=>Promise<LocalDirectoryHandle>}
-type OutputDestination={kind:'browser';handle:LocalDirectoryHandle}|{kind:'server';token:string;name:string}
+type OutputDestination={kind:'browser';handle:LocalDirectoryHandle}|{kind:'server';token:string;name:string}|{kind:'download'}
 const fileKey=(file:File)=>file.webkitRelativePath||`${file.name}-${file.size}-${file.lastModified}`
 const fileLabel=(file:File)=>file.webkitRelativePath||file.name
 const formatBytes=(bytes:number)=>bytes>=1024**3?`${(bytes/1024**3).toFixed(1)}GB`:`${(bytes/1024**2).toFixed(bytes>=100*1024**2?0:1)}MB`
@@ -37,12 +37,21 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const totalBytes=useMemo(()=>files.reduce((sum,file)=>sum+file.size,0),[files])
  const uploadedCount=files.filter(file=>uploadStates[fileKey(file)]?.phase==='done').length
  const building=action!==null
+ const localRuntime=['localhost','127.0.0.1','::1'].includes(window.location.hostname)
+ const directFolderSave=window.isSecureContext&&Boolean((window as DirectoryPickerWindow).showDirectoryPicker)
 
  const chooseOutputDirectory=async()=>{
    const picker=(window as DirectoryPickerWindow).showDirectoryPicker
-   if(picker)return {kind:'browser',handle:await picker.call(window,{mode:'readwrite'})} satisfies OutputDestination
-   const selected=await api.selectMetaOutputDirectory()
-   return {kind:'server',...selected} satisfies OutputDestination
+   if(window.isSecureContext&&picker)return {kind:'browser',handle:await picker.call(window,{mode:'readwrite'})} satisfies OutputDestination
+   if(localRuntime){const selected=await api.selectMetaOutputDirectory();return {kind:'server',...selected} satisfies OutputDestination}
+   return {kind:'download'} satisfies OutputDestination
+ }
+ const downloadPackage=(item:MetaPackage)=>{
+   const link=document.createElement('a')
+   link.href=api.metaPackageArchiveUrl(item.id)
+   link.download=`${item.series_slug}.zip`
+   document.body.appendChild(link);link.click();link.remove()
+   return '本机下载目录'
  }
  const savePackageToDirectory=async(item:MetaPackage,destination:LocalDirectoryHandle)=>{
    const manifest=await api.metaPackageFiles(item.id)
@@ -133,20 +142,20 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    if(!result.ready){msg.warning(`发现 ${result.blockers.length} 个必须处理的问题`);return}
    if(!values.series_slug)form.setFieldValue('series_slug',result.series_slug)
    const item=await api.buildMetaPackage({...body(values),series_slug:result.series_slug,local_destination_token:destination.kind==='server'?destination.token:''})
-   const savedPath=destination.kind==='browser'?await savePackageToDirectory(item,destination.handle):item.output_dir
+   const savedPath=destination.kind==='browser'?await savePackageToDirectory(item,destination.handle):destination.kind==='download'?downloadPackage(item):item.output_dir
    msg.success(`合规文件夹已保存到 ${savedPath}`);setFiles([]);setUploadStates({});await load()
  }catch(e){if(!cancelled(e))msg.error((e as Error).message)}finally{setAction(null);setExportProgress(null)}}
  const chooseAndBuild=async()=>{try{setAction('selecting');const destination=await chooseOutputDirectory();setAction(null);await build(destination)}catch(e){if(!cancelled(e))msg.error((e as Error).message);setAction(null)}}
  const saveExisting=async(item:MetaPackage)=>{try{
    setAction(`selecting-${item.id}`);const destination=await chooseOutputDirectory();setAction(`export-${item.id}`);setExportProgress(null)
-   const savedPath=destination.kind==='browser'?await savePackageToDirectory(item,destination.handle):(await api.copyMetaPackageLocal(item.id,destination.token)).path
+   const savedPath=destination.kind==='browser'?await savePackageToDirectory(item,destination.handle):destination.kind==='download'?downloadPackage(item):(await api.copyMetaPackageLocal(item.id,destination.token)).path
    msg.success(`已保存到 ${savedPath}`)
  }catch(e){if(!cancelled(e))msg.error((e as Error).message)}finally{setAction(null);setExportProgress(null)}}
  const openExisting=async(item:MetaPackage)=>{try{const result=await api.openMetaPackageFolder(item.id);msg.success(`已打开 ${result.path}`)}catch(e){msg.error((e as Error).message)}}
 
  return <div className={embedded?'meta-delivery':'workspace-page meta-delivery'}>{ctx}
   {!embedded&&<div className="page-heading"><Typography.Title level={2}><Space><PlatformLogo platform="meta" size={27}/><span>官方投递</span></Space></Typography.Title></div>}
-  <div className="module-toolbar"><Space><PlatformLogo platform="meta" size={22}/><b>官方投递</b><Tag icon={<SafetyCertificateOutlined/>} color="green">v260626</Tag><Tag>不调用 AI</Tag></Space></div>
+  <div className="module-toolbar"><Space><PlatformLogo platform="meta" size={22}/><b>官方投递</b><Tag icon={<SafetyCertificateOutlined/>} color="green">v260626</Tag><Tag>{directFolderSave||localRuntime?'保存到本机文件夹':'保存为本机 ZIP'}</Tag></Space></div>
   <Steps size="small" current={check?.ready?2:files.length||drama?.episode_count?1:0} className="meta-steps" items={[{title:'选择剧目与本地文件'},{title:'自动命名与校验'},{title:'生成上传文件夹'}]}/>
   <Form form={form} layout="vertical" initialValues={defaults}><div className="split-workbench meta-workbench"><Card title="1. 选择文件夹">
     <Form.Item name="drama_id" label="剧目任务" rules={[{required:true,message:'请选择剧目任务'}]}><Select showSearch optionFilterProp="label" options={dramas.map(x=>({value:x.id,label:`${x.title} · 全集 ${x.total_episode_count}`}))}/></Form.Item>
@@ -160,7 +169,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
     <div className="form-grid"><Form.Item name="locale" label="语种代码" rules={[{required:true}]}><Input/></Form.Item><Form.Item name="release_date" label="首发日期 MM/DD/YYYY" rules={[{required:true}]}><Input/></Form.Item></div>
     <Form.Item name="genres" label="题材分类（来自剧目任务）" rules={[{required:true}]}><Select mode="multiple" disabled={Boolean(drama?.genres.length)} options={genres.map(x=>({value:x,label:x}))}/></Form.Item>
     <Space size="large" wrap><Form.Item name="ai_content" valuePropName="checked" label="AI 标识（来自剧目任务）"><Switch disabled={Boolean(drama)}/></Form.Item><Form.Item name="dubbed_content" valuePropName="checked" label="配音标识（来自剧目任务）"><Switch disabled={Boolean(drama)}/></Form.Item></Space>
-    <Button block size="large" type="primary" loading={action==='build'||action==='selecting'} disabled={building||!drama||(!files.length&&!drama.episode_count)} icon={<FolderOpenOutlined/>} onClick={chooseAndBuild}>选择保存位置并生成</Button>
+    <Button block size="large" type="primary" loading={action==='build'||action==='selecting'} disabled={building||!drama||(!files.length&&!drama.episode_count)} icon={<FolderOpenOutlined/>} onClick={chooseAndBuild}>{directFolderSave||localRuntime?'选择本机位置并生成':'生成并下载 ZIP 到本机'}</Button>
     {action==='build'&&<div className="meta-build-status">{exportProgress?<><Typography.Text>{exportProgress.label}</Typography.Text><Progress percent={exportProgress.percent}/></>:<Alert type="info" showIcon message="正在校验并转换视频，完成后会自动写入你选择的文件夹"/>}</div>}
   </Card></div></Form>
 
@@ -169,10 +178,10 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
   <Card title="3. 已生成文件夹" className="table-card">{packages.length?<Table rowKey="id" dataSource={packages} pagination={false} scroll={{x:760}} columns={[
     {title:'剧目',render:(_,row)=>dramas.find(x=>x.id===row.drama_id)?.title||row.series_slug},
     {title:'文件夹名',dataIndex:'series_slug'},
-    {title:'状态',width:130,render:()=> <Tag color="green">本地校验通过</Tag>},
+    {title:'状态',width:130,render:()=> <Tag color="green">服务器已生成</Tag>},
     {title:'生成时间',width:180,dataIndex:'created_at',render:(x:string)=>new Date(x).toLocaleString()},
-    {title:'临时生成位置',dataIndex:'output_dir',render:(x:string)=><Typography.Text ellipsis={{tooltip:x}} copyable>{x}</Typography.Text>},
-    {title:'保存',width:220,render:(_,row)=><Space><Button size="small" type="primary" icon={<FolderOpenOutlined/>} loading={action===`export-${row.id}`||action===`selecting-${row.id}`} disabled={building&&action!==`export-${row.id}`&&action!==`selecting-${row.id}`} onClick={()=>saveExisting(row)}>选择位置</Button><Button size="small" disabled={building} onClick={()=>openExisting(row)}>打开当前文件夹</Button></Space>},
+    {title:'服务器存档',dataIndex:'output_dir',render:(x:string)=><Typography.Text ellipsis={{tooltip:x}} copyable>{x}</Typography.Text>},
+    {title:'保存',width:220,render:(_,row)=><Space><Button size="small" type="primary" icon={<FolderOpenOutlined/>} loading={action===`export-${row.id}`||action===`selecting-${row.id}`} disabled={building&&action!==`export-${row.id}`&&action!==`selecting-${row.id}`} onClick={()=>saveExisting(row)}>{directFolderSave||localRuntime?'保存到本机':'下载 ZIP'}</Button>{localRuntime&&<Button size="small" disabled={building} onClick={()=>openExisting(row)}>打开当前文件夹</Button>}</Space>},
     {title:'下一步',width:150,render:()=> <Button type="primary" icon={<PlatformLogo platform="instagram" size={15}/>} href="https://www.instagram.com/sfs_tools" target="_blank">打开 SFS Tools</Button>},
   ]}/>:<Alert type="info" showIcon message="选择电脑上的保存位置后，系统会自动创建完整的 Meta 合规文件夹"/>}</Card>
  </div>
