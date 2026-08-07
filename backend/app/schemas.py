@@ -166,7 +166,7 @@ class ClipView(BaseModel):
 
 class FactoryProcessRequest(BaseModel):
     max_duration_seconds: int = Field(default=180, ge=60, le=180)
-    hook_duration_seconds: float = Field(default=3, ge=1, le=5)
+    hook_duration_seconds: float = Field(default=15, ge=15, le=30)
     publish_variant_count: int = Field(default=5, ge=0, le=50)
     remove_sensitive: bool = True
     compression_profile: Literal["balanced", "small"] = "balanced"

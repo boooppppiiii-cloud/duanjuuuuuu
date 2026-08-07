@@ -41,6 +41,12 @@ def natural_key(value: str) -> list[object]:
     return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", value)]
 
 
+def hook_clip_range(start: float, media_duration: float, requested_duration: float) -> tuple[float, float]:
+    clip_duration = min(media_duration, max(15.0, min(30.0, requested_duration)))
+    clip_start = max(0.0, min(start, media_duration - clip_duration))
+    return clip_start, min(media_duration, clip_start + clip_duration)
+
+
 def probe_media(ffprobe: str, path: Path) -> dict:
     result = subprocess.run(
         [ffprobe, "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", str(path)],
@@ -432,6 +438,7 @@ class FactoryPipeline:
                         job.warnings = [*job.warnings, f"不重复片头组合最多 {possible} 组，本次生成 {len(groups)} 个版本"]
 
                     encoded_hooks: dict[int, Path] = {}
+                    encoded_hook_ranges: dict[int, tuple[float, float]] = {}
                     for index, group in enumerate(groups, start=1):
                         self._save(session, job, f"生成高能片头版本 {index}/{len(groups)}", 42 + round(index / max(1, len(groups)) * 28))
                         hook_files: list[Path] = []
@@ -444,14 +451,19 @@ class FactoryPipeline:
                                 job.warnings = [*job.warnings, f"高能点 #{hook.id} 的原片不存在，已跳过该版本"]
                                 valid_hooks = []
                                 break
-                            hook_end = min(hook.end, hook.start + job.hook_duration_seconds)
+                            hook_start, hook_end = hook_clip_range(
+                                hook.start,
+                                probe_media(settings.ffprobe_binary, hook_source)["duration"],
+                                job.hook_duration_seconds,
+                            )
                             if hook.id not in encoded_hooks:
                                 hook_file = hooks_dir / f"H{hook.id:04d}.mp4"
-                                _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, TimelinePart(hook_source, hook.episode, hook.start, hook_end), hook_file, job.compression_profile)
+                                _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, TimelinePart(hook_source, hook.episode, hook_start, hook_end), hook_file, job.compression_profile)
                                 encoded_hooks[hook.id] = hook_file
+                                encoded_hook_ranges[hook.id] = (hook_start, hook_end)
                                 hook.file_path = str(hook_file.resolve())
                             hook_files.append(encoded_hooks[hook.id])
-                            hook_seconds += hook_end - hook.start
+                            hook_seconds += hook_end - hook_start
                             valid_hooks.append(hook)
                         if not valid_hooks:
                             continue
@@ -462,9 +474,10 @@ class FactoryPipeline:
                         _concat_files(settings.ffmpeg_binary, [*hook_files, body_target], target, work / f"hook_{index:03d}.txt")
                         duration = hook_seconds + body_duration
                         first = valid_hooks[0]
+                        first_start, first_end = encoded_hook_ranges[first.id]
                         clip = Clip(
                             drama_id=drama.id, template_name="hook_full", source_eps=[hook.episode for hook in valid_hooks],
-                            source_start=first.start, source_end=min(first.end, first.start + job.hook_duration_seconds),
+                            source_start=first_start, source_end=first_end,
                             duration=duration, file_path=str(target.resolve()), status="approved", progress=100,
                             current_step="completed", hook_asset_id=first.id, factory_job_id=job.id, asset_kind="hook_full",
                         )

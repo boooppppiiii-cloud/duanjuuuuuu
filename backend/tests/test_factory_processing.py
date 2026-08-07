@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import Drama, FactoryJob, HookAsset
-from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
+from app.schemas import FactoryProcessRequest
+from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, hook_clip_range, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
 
 
 def test_natural_order_and_balanced_four_minutes():
@@ -14,6 +17,22 @@ def test_natural_order_and_balanced_four_minutes():
     assert len(lengths) == 2
     assert lengths == [120, 120]
     assert max(lengths) <= 180
+
+
+def test_hook_clip_range_is_between_fifteen_and_thirty_seconds():
+    assert hook_clip_range(30, 120, 15) == (30, 45)
+    assert hook_clip_range(30, 120, 30) == (30, 60)
+    assert hook_clip_range(116, 120, 15) == (105, 120)
+    assert hook_clip_range(5, 12, 15) == (0, 12)
+    assert hook_clip_range(30, 120, 3) == (30, 45)
+
+
+def test_factory_request_accepts_only_fifteen_to_thirty_second_hooks():
+    assert FactoryProcessRequest().hook_duration_seconds == 15
+    with pytest.raises(ValidationError):
+        FactoryProcessRequest(hook_duration_seconds=14)
+    with pytest.raises(ValidationError):
+        FactoryProcessRequest(hook_duration_seconds=31)
 
 
 def test_hook_groups_support_multiple_unique_hooks_per_version():
