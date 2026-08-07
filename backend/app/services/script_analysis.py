@@ -21,7 +21,7 @@ from .hook_recommender import loudness_peaks, media_duration
 
 
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
 SENSITIVE_TERMS = {
     "暴力": ["杀", "打死", "砍", "枪", "血", "尸体", "绑架", "虐待", "暴力"],
@@ -174,6 +174,8 @@ def _model_candidates(
             overall_risk_score = 0
         if not overall_risk_score and any(risk_scores.values()):
             overall_risk_score = round(max(risk_scores.values()))
+        if "overall_risk_score" in raw and overall_risk_score < 30:
+            continue
         confidence = max(confidence, overall_risk_score / 100)
         sensitive.append({
             "start": start, "end": end, "text": _text_for_range(segments, start, end),

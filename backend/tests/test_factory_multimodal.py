@@ -69,6 +69,11 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
                 "overall_risk_score": 86,
                 "risk_scores": {"body_focus": 55, "action": 92, "dialogue_context": 60, "expression_audio": 72, "scene_context": 88},
                 "reasons": ["连续画面出现裙底接触与身体撞击"], "frame_indices": [1],
+            }, {
+                "start": 1, "end": 2, "category": "其他", "confidence": .15,
+                "overall_risk_score": 15,
+                "risk_scores": {"body_focus": 0, "action": 10, "dialogue_context": 15, "expression_audio": 0, "scene_context": 0},
+                "reasons": ["仅有侮辱性台词，无违规行为"], "frame_indices": [],
             }],
         }
 
@@ -83,6 +88,7 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
     assert result["api_call_count"] == 1
     assert result["episodes"][0]["high_energy"][0]["review_status"] == "pending"
     risk = result["episodes"][0]["sensitive"][0]
+    assert len(result["episodes"][0]["sensitive"]) == 1
     assert risk["review_status"] == "approved"
     assert risk["overall_risk_score"] == 86
     assert risk["risk_scores"]["action"] == 92
