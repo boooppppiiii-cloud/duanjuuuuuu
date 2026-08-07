@@ -119,7 +119,7 @@ def _gemini(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple
     response = genai.Client(api_key=settings.gemini_api_key).models.generate_content(
         model=model,
         contents=contents,
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1),
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
     return json.loads(_strip_fences(response.text)), model
 
