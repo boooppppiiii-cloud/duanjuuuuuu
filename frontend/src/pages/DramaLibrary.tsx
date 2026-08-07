@@ -77,7 +77,7 @@ export default function DramaLibrary(){
       {title:'成品文件',render:(_,row)=><Typography.Text copyable>{row.file.name}</Typography.Text>},
       {title:'大小',width:120,render:(_,row)=>`${(row.file.size/1024/1024).toFixed(1)} MB`},
       {title:'生成时间',width:190,render:(_,row)=>new Date(row.file.created_at).toLocaleString()},
-      {title:'操作',width:230,render:(_,row)=><Space><Button href={`/api/dramas/${row.drama.id}/generated/${encodeURIComponent(row.file.name)}`} target="_blank">下载</Button>{row.file.name.includes('_发布_')&&<Button type="primary" icon={<RocketOutlined/>} onClick={()=>navigate(`/publishing?drama=${row.drama.id}`)}>一键发布</Button>}</Space>},
+      {title:'操作',width:230,render:(_,row)=><Space><Button href={`/api/dramas/${row.drama.id}/generated/${row.file.name.split('/').map(encodeURIComponent).join('/')}`} target="_blank">下载</Button>{row.file.name.includes('_hook_')&&<Button type="primary" icon={<RocketOutlined/>} onClick={()=>navigate(`/publishing?drama=${row.drama.id}`)}>一键发布</Button>}</Space>},
     ]}/>:<Empty description="内容工厂终审通过的成品会出现在这里"/>}</Card>
   )}</Spin>
 

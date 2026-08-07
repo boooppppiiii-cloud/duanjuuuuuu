@@ -3,8 +3,8 @@ from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.models import Drama, FactoryJob
-from app.services.factory_processing import TimelinePart, balanced_lengths, natural_key, read_sensitive_ranges, resume_factory_jobs, safe_ranges, slice_timeline
+from app.models import Drama, FactoryJob, HookAsset
+from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, natural_key, read_sensitive_ranges, resume_factory_jobs, safe_ranges, slice_timeline
 
 
 def test_natural_order_and_balanced_four_minutes():
@@ -14,6 +14,14 @@ def test_natural_order_and_balanced_four_minutes():
     assert len(lengths) == 2
     assert lengths == [120, 120]
     assert max(lengths) <= 180
+
+
+def test_hook_groups_support_multiple_unique_hooks_per_version():
+    hooks = [HookAsset(id=index, drama_id=1, episode=f"{index}.mp4", start=0, end=3) for index in range(1, 5)]
+    groups = build_hook_groups(hooks, variant_count=4, hooks_per_variant=2)
+    ids = [[hook.id for hook in group] for group in groups]
+    assert ids == [[1, 2], [1, 3], [1, 4], [2, 3]]
+    assert len({tuple(group) for group in ids}) == 4
 
 
 def test_sensitive_ranges_are_removed_and_merged():

@@ -1,7 +1,7 @@
 import { Alert,Button,Card,Form,Input,List,Progress,Select,Space,Steps,Switch,Table,Tag,Typography,Upload,message } from 'antd'
 import { CheckCircleOutlined,EditOutlined,FolderOpenOutlined,SafetyCertificateOutlined } from '@ant-design/icons'
 import { useEffect,useMemo,useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Drama,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
 
@@ -30,6 +30,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const[exportProgress,setExportProgress]=useState<{label:string;percent:number}|null>(null)
  const[msg,ctx]=message.useMessage()
  const navigate=useNavigate()
+ const[params]=useSearchParams()
  const[form]=Form.useForm()
  const dramaId=Form.useWatch('drama_id',form)
  const drama=dramas.find(x=>x.id===dramaId)
@@ -92,7 +93,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  }
  const cancelled=(error:unknown)=>(error instanceof DOMException&&error.name==='AbortError')||(error instanceof Error&&error.message.includes('已取消选择保存位置'))
 
- const load=async()=>{const[d,p]=await Promise.all([api.list(),api.metaPackages()]);setDramas(d);setPackages(p);if(!form.getFieldValue('drama_id')&&d[0])form.setFieldValue('drama_id',d[0].id)}
+ const load=async()=>{const[d,p]=await Promise.all([api.list(),api.metaPackages()]);setDramas(d);setPackages(p);const requested=Number(params.get('drama'));if(!form.getFieldValue('drama_id'))form.setFieldValue('drama_id',d.some(item=>item.id===requested)?requested:d[0]?.id)}
  useEffect(()=>{load().catch(e=>msg.error(e.message))},[])
  useEffect(()=>{if(!drama)return;form.setFieldsValue({description:drama.description,genres:drama.genres,ai_content:drama.is_ai_generated,dubbed_content:drama.is_dubbed_content,locale:drama.language||'en_US'})},[drama?.id])
  const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})

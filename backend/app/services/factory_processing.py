@@ -6,6 +6,7 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import combinations, islice
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -92,6 +93,14 @@ def balanced_lengths(total: float, maximum: float) -> list[float]:
     return values
 
 
+def build_hook_groups(hooks: list[HookAsset], variant_count: int, hooks_per_variant: int) -> list[list[HookAsset]]:
+    """生成互不重复的片头组合；同一成品内不会重复使用同一个高能点。"""
+    if variant_count <= 0 or not hooks:
+        return []
+    group_size = min(max(1, hooks_per_variant), len(hooks))
+    return [list(group) for group in islice(combinations(hooks, group_size), variant_count)]
+
+
 def slice_timeline(parts: list[TimelinePart], offset: float, duration: float) -> list[TimelinePart]:
     end_at = offset + duration
     cursor = 0.0
@@ -175,7 +184,12 @@ def _encode_piece(ffmpeg: str, ffprobe: str, part: TimelinePart, output: Path, p
 
 
 def _concat_files(ffmpeg: str, pieces: list[Path], output: Path, concat_path: Path) -> None:
-    concat_path.write_text("".join(f"file '{item.resolve().as_posix()}'\n" for item in pieces), encoding="utf-8")
+    lines = []
+    for item in pieces:
+        escaped = item.resolve().as_posix().replace("'", "'\\''")
+        lines.append(f"file '{escaped}'\n")
+    concat_path.parent.mkdir(parents=True, exist_ok=True)
+    concat_path.write_text("".join(lines), encoding="utf-8")
     run_command([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path.resolve()), "-c", "copy", "-movflags", "+faststart", str(output.resolve())])
 
 
@@ -190,6 +204,15 @@ def render_timeline_slice(parts: list[TimelinePart], output: Path, work: Path, p
         raise ValueError("没有可输出的安全内容")
     _concat_files(settings.ffmpeg_binary, encoded, output, work / "concat.txt")
     return sum(item.duration for item in parts)
+
+
+def _write_meta_manifest(drama_dir: Path, job_id: int, files: list[Path]) -> None:
+    manifest = drama_dir / "generated" / "meta_current.json"
+    manifest.write_text(json.dumps({
+        "factory_job_id": job_id,
+        "files": [str(path.resolve()) for path in files],
+        "generated_at": _utcnow().isoformat(),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _utcnow() -> datetime:
@@ -235,9 +258,13 @@ class FactoryPipeline:
                 sources = sorted(episode_files(Path(drama.file_dir)), key=lambda path: natural_key(path.name))
                 if not sources:
                     raise ValueError("请先导入原片视频")
+                modes = set(job.output_modes or ["clean_full", "hook_variants"])
+                if not modes & {"clean_full", "hook_variants", "meta_split"}:
+                    raise ValueError("至少选择一种产出流程")
                 work.mkdir(parents=True, exist_ok=True)
                 generated_dir = Path(drama.file_dir) / "generated"
                 hooks_dir = Path(drama.file_dir) / "hooks"
+                meta_dir = generated_dir / "meta" / f"J{job.id:04d}"
                 generated_dir.mkdir(parents=True, exist_ok=True)
                 hooks_dir.mkdir(parents=True, exist_ok=True)
                 stale_assets = session.exec(select(GeneratedAsset).where(GeneratedAsset.factory_job_id == job.id)).all()
@@ -250,99 +277,165 @@ class FactoryPipeline:
                 for stale_file in generated_dir.glob(f"J{job.id:04d}_*.mp4"):
                     if stale_file.is_file():
                         stale_file.unlink()
+                if meta_dir.is_dir():
+                    shutil.rmtree(meta_dir)
                 job.clean_count = 0
                 job.publish_count = 0
+                job.meta_count = 0
                 job.output_bytes = 0
                 job.error_message = ""
+                job.warnings = []
                 session.commit()
                 job.output_dir = str(generated_dir.resolve())
                 job.source_files = [path.name for path in sources]
-                self._save(session, job, "读取原片与敏感区间", 5)
+                self._save(session, job, "读取源文件", 5)
 
-                sensitive = read_sensitive_ranges(Path(drama.file_dir)) if job.remove_sensitive else {}
-                timeline: list[TimelinePart] = []
-                removed = 0.0
+                source_info: list[tuple[Path, float]] = []
                 for source in sources:
                     duration = probe_media(settings.ffprobe_binary, source)["duration"]
-                    blocked = sensitive.get(source.name, [])
-                    removed += sum(end - start for start, end in merge_ranges(blocked, duration))
-                    ranges = safe_ranges(duration, blocked) if blocked else [(0.0, duration)]
-                    timeline.extend(TimelinePart(source, source.name, start, end) for start, end in ranges)
-                total = sum(row.duration for row in timeline)
-                if total <= 0:
-                    raise ValueError("敏感内容剔除后没有可用视频")
-                job.total_duration = total
-                job.removed_seconds = removed
+                    source_info.append((source, duration))
 
-                hooks = sync_hook_assets(session, drama)
-                if job.selected_hook_ids:
-                    selected = [session.get(HookAsset, hook_id) for hook_id in dict.fromkeys(job.selected_hook_ids)]
-                    hooks = [row for row in selected if row and row.active]
-                else:
-                    hooks = sorted((row for row in hooks if row.active), key=lambda row: (row.energy_score, -row.id), reverse=True)
-                requested_variants = min(job.publish_variant_count, len(hooks))
-                if job.publish_variant_count and not hooks:
-                    job.warnings = [*job.warnings, "没有可用高能点，本次只生成无钩子的完整分段"]
-                elif requested_variants < job.publish_variant_count:
-                    job.warnings = [*job.warnings, f"可用高能点只有 {len(hooks)} 个，已生成 {requested_variants} 个不重复钩子版本"]
+                body_target: Path | None = None
+                body_duration = 0.0
+                if modes & {"clean_full", "hook_variants"}:
+                    sensitive = read_sensitive_ranges(Path(drama.file_dir)) if job.remove_sensitive else {}
+                    timeline: list[TimelinePart] = []
+                    removed = 0.0
+                    for source, duration in source_info:
+                        blocked = sensitive.get(source.name, [])
+                        removed += sum(end - start for start, end in merge_ranges(blocked, duration))
+                        ranges = safe_ranges(duration, blocked) if blocked else [(0.0, duration)]
+                        timeline.extend(TimelinePart(source, source.name, start, end) for start, end in ranges)
+                    body_duration = sum(row.duration for row in timeline)
+                    if body_duration <= 0:
+                        raise ValueError("敏感内容剔除后没有可用视频")
+                    job.total_duration = body_duration
+                    job.removed_seconds = removed
+                    body_filename = f"J{job.id:04d}_clean_full.mp4"
+                    body_target = generated_dir / body_filename if "clean_full" in modes else work / body_filename
+                    self._save(session, job, "按剧集顺序合并并移除敏感内容", 18)
+                    body_duration = render_timeline_slice(timeline, body_target, work / "clean_full", job.compression_profile)
+                    if "clean_full" in modes:
+                        clip = Clip(
+                            drama_id=drama.id, template_name="clean_full", source_eps=[path.name for path in sources],
+                            duration=body_duration, file_path=str(body_target.resolve()), status="approved", progress=100,
+                            current_step="completed", factory_job_id=job.id, asset_kind="clean_full",
+                        )
+                        session.add(clip)
+                        session.commit()
+                        session.refresh(clip)
+                        session.add(GeneratedAsset(
+                            factory_job_id=job.id, drama_id=drama.id, kind="clean_full", sequence=1,
+                            file_path=str(body_target.resolve()), filename=body_filename, duration=body_duration,
+                            size_bytes=body_target.stat().st_size, clip_id=clip.id,
+                        ))
+                        session.commit()
+                        job.clean_count = 1
 
-                body_limit = float(job.max_duration_seconds - job.hook_duration_seconds) if requested_variants else float(job.max_duration_seconds)
-                lengths = balanced_lengths(total, body_limit)
-                offset = 0.0
-                clean_assets: list[GeneratedAsset] = []
-                for index, length in enumerate(lengths, start=1):
-                    self._save(session, job, f"生成原剧分段 {index}/{len(lengths)}", 10 + round(index / len(lengths) * 55))
-                    portions = slice_timeline(timeline, offset, length)
-                    filename = f"J{job.id:04d}_原剧_{index:03d}.mp4"
-                    target = generated_dir / filename
-                    actual = render_timeline_slice(portions, target, work / f"clean_{index:03d}", job.compression_profile)
-                    asset = GeneratedAsset(factory_job_id=job.id, drama_id=drama.id, kind="clean", sequence=index, file_path=str(target.resolve()), filename=filename, duration=actual, size_bytes=target.stat().st_size)
-                    session.add(asset)
-                    clean_assets.append(asset)
-                    offset += length
-                session.commit()
-                for asset in clean_assets:
-                    session.refresh(asset)
-                job.clean_count = len(clean_assets)
+                if "hook_variants" in modes:
+                    if not body_target:
+                        raise ValueError("高能片头版本缺少完整原剧")
+                    hooks = sync_hook_assets(session, drama)
+                    if job.selected_hook_ids:
+                        selected = [session.get(HookAsset, hook_id) for hook_id in dict.fromkeys(job.selected_hook_ids)]
+                        hooks = [row for row in selected if row and row.active]
+                    else:
+                        hooks = sorted((row for row in hooks if row.active), key=lambda row: (row.energy_score, -row.id), reverse=True)
+                    groups = build_hook_groups(hooks, job.publish_variant_count, job.hooks_per_variant)
+                    possible = math.comb(len(hooks), min(job.hooks_per_variant, len(hooks))) if hooks else 0
+                    if not hooks:
+                        job.warnings = [*job.warnings, "没有可用高能点，未生成高能片头版本"]
+                    elif job.hooks_per_variant > len(hooks):
+                        job.warnings = [*job.warnings, f"可用高能点只有 {len(hooks)} 个，每版已改用 {len(hooks)} 个"]
+                    if groups and len(groups) < job.publish_variant_count:
+                        job.warnings = [*job.warnings, f"不重复片头组合最多 {possible} 组，本次生成 {len(groups)} 个版本"]
 
-                publish_count = min(requested_variants, len(clean_assets))
-                for index in range(publish_count):
-                    hook = hooks[index]
-                    source_drama = session.get(Drama, hook.drama_id)
-                    if not source_drama:
-                        job.warnings = [*job.warnings, f"高能点 #{hook.id} 的剧目不存在，已跳过"]
-                        continue
-                    hook_source = next((path for path in episode_files(Path(source_drama.file_dir)) if path.name == hook.episode), None)
-                    if not hook_source:
-                        job.warnings = [*job.warnings, f"高能点 #{hook.id} 的原片不存在，已跳过"]
-                        continue
-                    self._save(session, job, f"生成差异化钩子版本 {index + 1}/{publish_count}", 68 + round((index + 1) / max(1, publish_count) * 27))
-                    hook_file = hooks_dir / f"H{hook.id:04d}.mp4"
-                    hook_end = min(hook.end, hook.start + job.hook_duration_seconds)
-                    _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, TimelinePart(hook_source, hook.episode, hook.start, hook_end), hook_file, job.compression_profile)
-                    hook.file_path = str(hook_file.resolve())
-                    hook.use_count += 1
-                    hook.last_used_at = _utcnow()
-                    body = clean_assets[index]
-                    filename = f"J{job.id:04d}_发布_{index + 1:03d}_H{hook.id:04d}.mp4"
-                    target = generated_dir / filename
-                    _concat_files(settings.ffmpeg_binary, [hook_file, Path(body.file_path)], target, work / f"publish_{index + 1:03d}.txt")
-                    duration = min(float(job.max_duration_seconds), job.hook_duration_seconds + body.duration)
-                    clip = Clip(
-                        drama_id=drama.id, template_name="unique_3s_hook", source_eps=[hook.episode], source_start=hook.start,
-                        source_end=hook_end, duration=duration, file_path=str(target.resolve()), status="approved", progress=100,
-                        current_step="completed", hook_asset_id=hook.id, factory_job_id=job.id, asset_kind="publish",
-                    )
-                    session.add(clip)
+                    encoded_hooks: dict[int, Path] = {}
+                    for index, group in enumerate(groups, start=1):
+                        self._save(session, job, f"生成高能片头版本 {index}/{len(groups)}", 42 + round(index / max(1, len(groups)) * 28))
+                        hook_files: list[Path] = []
+                        hook_seconds = 0.0
+                        valid_hooks: list[HookAsset] = []
+                        for hook in group:
+                            source_drama = session.get(Drama, hook.drama_id)
+                            hook_source = next((path for path in episode_files(Path(source_drama.file_dir)) if path.name == hook.episode), None) if source_drama else None
+                            if not hook_source:
+                                job.warnings = [*job.warnings, f"高能点 #{hook.id} 的原片不存在，已跳过该版本"]
+                                valid_hooks = []
+                                break
+                            hook_end = min(hook.end, hook.start + job.hook_duration_seconds)
+                            if hook.id not in encoded_hooks:
+                                hook_file = hooks_dir / f"H{hook.id:04d}.mp4"
+                                _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, TimelinePart(hook_source, hook.episode, hook.start, hook_end), hook_file, job.compression_profile)
+                                encoded_hooks[hook.id] = hook_file
+                                hook.file_path = str(hook_file.resolve())
+                            hook_files.append(encoded_hooks[hook.id])
+                            hook_seconds += hook_end - hook.start
+                            valid_hooks.append(hook)
+                        if not valid_hooks:
+                            continue
+                        hook_ids = [hook.id for hook in valid_hooks]
+                        suffix = "_".join(f"H{hook_id:04d}" for hook_id in hook_ids)
+                        filename = f"J{job.id:04d}_hook_{index:03d}_{suffix}.mp4"
+                        target = generated_dir / filename
+                        _concat_files(settings.ffmpeg_binary, [*hook_files, body_target], target, work / f"hook_{index:03d}.txt")
+                        duration = hook_seconds + body_duration
+                        first = valid_hooks[0]
+                        clip = Clip(
+                            drama_id=drama.id, template_name="hook_full", source_eps=[hook.episode for hook in valid_hooks],
+                            source_start=first.start, source_end=min(first.end, first.start + job.hook_duration_seconds),
+                            duration=duration, file_path=str(target.resolve()), status="approved", progress=100,
+                            current_step="completed", hook_asset_id=first.id, factory_job_id=job.id, asset_kind="hook_full",
+                        )
+                        session.add(clip)
+                        session.commit()
+                        session.refresh(clip)
+                        session.add(GeneratedAsset(
+                            factory_job_id=job.id, drama_id=drama.id, kind="hook_full", sequence=index,
+                            file_path=str(target.resolve()), filename=filename, duration=duration,
+                            size_bytes=target.stat().st_size, hook_asset_id=first.id, hook_asset_ids=hook_ids, clip_id=clip.id,
+                        ))
+                        for hook in valid_hooks:
+                            hook.use_count += 1
+                            hook.last_used_at = _utcnow()
+                            session.add(hook)
+                        session.commit()
+                        job.publish_count += 1
+
+                if "meta_split" in modes:
+                    meta_dir.mkdir(parents=True, exist_ok=True)
+                    meta_files: list[Path] = []
+                    sequence = 0
+                    total_sources = len(source_info)
+                    for episode_index, (source, duration) in enumerate(source_info, start=1):
+                        lengths = balanced_lengths(duration, float(job.max_duration_seconds))
+                        offset = 0.0
+                        for part_index, length in enumerate(lengths, start=1):
+                            sequence += 1
+                            self._save(session, job, f"生成 Meta 单集 {episode_index}/{total_sources} · 分段 {part_index}/{len(lengths)}", 72 + round(episode_index / total_sources * 23))
+                            suffix = source.suffix.casefold() if len(lengths) == 1 else ".mp4"
+                            filename = f"J{job.id:04d}_E{episode_index:03d}_P{part_index:02d}{suffix}"
+                            target = meta_dir / filename
+                            if len(lengths) == 1:
+                                shutil.copy2(source, target)
+                                actual = duration
+                            else:
+                                actual = render_timeline_slice(
+                                    [TimelinePart(source, source.name, offset, offset + length)], target,
+                                    work / f"meta_{episode_index:03d}_{part_index:02d}", job.compression_profile,
+                                )
+                            offset += length
+                            meta_files.append(target)
+                            session.add(GeneratedAsset(
+                                factory_job_id=job.id, drama_id=drama.id, kind="meta_episode", sequence=sequence,
+                                file_path=str(target.resolve()), filename=filename, duration=actual, size_bytes=target.stat().st_size,
+                            ))
                     session.commit()
-                    session.refresh(clip)
-                    session.add(GeneratedAsset(
-                        factory_job_id=job.id, drama_id=drama.id, kind="publish", sequence=index + 1, file_path=str(target.resolve()),
-                        filename=filename, duration=duration, size_bytes=target.stat().st_size, hook_asset_id=hook.id, clip_id=clip.id,
-                    ))
-                    session.add(hook)
-                    session.commit()
-                    job.publish_count += 1
+                    job.meta_count = len(meta_files)
+                    if not modes & {"clean_full", "hook_variants"}:
+                        job.total_duration = sum(duration for _, duration in source_info)
+                        job.removed_seconds = 0
+                    _write_meta_manifest(Path(drama.file_dir), job.id, meta_files)
 
                 assets = session.exec(select(GeneratedAsset).where(GeneratedAsset.factory_job_id == job.id)).all()
                 job.output_bytes = sum(row.size_bytes for row in assets)
@@ -355,6 +448,13 @@ class FactoryPipeline:
             except Exception as exc:
                 if drama:
                     generated_root = (Path(drama.file_dir) / "generated").resolve()
+                    manifest = generated_root / "meta_current.json"
+                    if manifest.is_file():
+                        try:
+                            if json.loads(manifest.read_text(encoding="utf-8")).get("factory_job_id") == job.id:
+                                manifest.unlink()
+                        except Exception:
+                            pass
                     partial_assets = session.exec(select(GeneratedAsset).where(GeneratedAsset.factory_job_id == job.id)).all()
                     for asset in partial_assets:
                         target = Path(asset.file_path).resolve()

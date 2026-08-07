@@ -112,10 +112,13 @@ class FactoryJob(SQLModel, table=True):
     publish_variant_count: int = 5
     remove_sensitive: bool = True
     compression_profile: str = "balanced"
+    output_modes: list[str] = Field(default_factory=lambda: ["clean_full", "hook_variants"], sa_column=Column(JSON))
+    hooks_per_variant: int = 1
     selected_hook_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
     source_files: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     clean_count: int = 0
     publish_count: int = 0
+    meta_count: int = 0
     total_duration: float = 0
     removed_seconds: float = 0
     output_bytes: int = 0
@@ -138,6 +141,7 @@ class GeneratedAsset(SQLModel, table=True):
     duration: float = 0
     size_bytes: int = 0
     hook_asset_id: Optional[int] = Field(default=None, foreign_key="hookasset.id", index=True)
+    hook_asset_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
     clip_id: Optional[int] = Field(default=None, foreign_key="clip.id", index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 

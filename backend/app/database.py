@@ -50,6 +50,22 @@ def create_db_and_tables() -> None:
             for name, definition in additions.items():
                 if name not in existing:
                     connection.execute(text(f"ALTER TABLE clip ADD COLUMN {name} {definition}"))
+    if settings.database_url.startswith("sqlite") and "factoryjob" in inspect(engine).get_table_names():
+        existing = {item["name"] for item in inspect(engine).get_columns("factoryjob")}
+        additions = {
+            "output_modes": "JSON NOT NULL DEFAULT '[\"clean_full\",\"hook_variants\"]'",
+            "hooks_per_variant": "INTEGER NOT NULL DEFAULT 1",
+            "meta_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        with engine.begin() as connection:
+            for name, definition in additions.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE factoryjob ADD COLUMN {name} {definition}"))
+    if settings.database_url.startswith("sqlite") and "generatedasset" in inspect(engine).get_table_names():
+        existing = {item["name"] for item in inspect(engine).get_columns("generatedasset")}
+        with engine.begin() as connection:
+            if "hook_asset_ids" not in existing:
+                connection.execute(text("ALTER TABLE generatedasset ADD COLUMN hook_asset_ids JSON NOT NULL DEFAULT '[]'"))
     if settings.database_url.startswith("sqlite") and "account" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("account")}
         additions = {

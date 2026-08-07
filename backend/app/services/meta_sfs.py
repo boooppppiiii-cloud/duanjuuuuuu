@@ -69,6 +69,21 @@ def _cover_candidates(drama_dir: Path) -> list[Path]:
     return candidates
 
 
+def delivery_sources(drama_dir: Path) -> tuple[list[Path], str]:
+    """优先使用内容工厂最近一次生成的 Meta 单集，未生成时回退到源文件。"""
+    manifest = drama_dir / "generated" / "meta_current.json"
+    meta_root = (drama_dir / "generated" / "meta").resolve()
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            files = [Path(value).resolve() for value in data.get("files", [])]
+            if files and all(path.is_file() and meta_root in path.parents for path in files):
+                return files, "factory_meta_split"
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+    return episode_files(drama_dir), "source_episodes"
+
+
 def _cover_info(path: Path | None) -> dict:
     if not path:
         return {"path": "", "width": 0, "height": 0}
@@ -96,8 +111,8 @@ def _cover_issue(path: Path, ratio: float, min_width: int, min_height: int, labe
 
 def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
     drama_dir = Path(drama.file_dir)
-    sources = episode_files(drama_dir)
-    expected_total = max(int(drama.total_episode_count or 0), 1)
+    sources, source_mode = delivery_sources(drama_dir)
+    expected_total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
     effective_description = drama.description.strip() or payload.description.strip()
     effective_genres = drama.genres or payload.genres
     slug = payload.series_slug.strip() or suggest_slug(drama.title, drama.id or 0)
@@ -107,8 +122,10 @@ def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
         blockers.append("系列英文标识必须是 kebab-case，只能包含小写字母、数字和短横线")
     if not sources:
         blockers.append("剧目目录中没有可投递的视频")
-    elif len(sources) != expected_total:
+    elif source_mode != "factory_meta_split" and len(sources) != expected_total:
         blockers.append(f"剧目任务登记为 {expected_total} 集，但当前选择了 {len(sources)} 个视频；Meta 要求视频数量、文件名总集数与系列 CSV 完全一致")
+    elif source_mode == "factory_meta_split":
+        fixable.append(f"将使用内容工厂生成的 {len(sources)} 个 Meta 单集文件")
     if not effective_description:
         blockers.append("剧目任务缺少剧情简介")
     if not effective_genres or any(item not in ALLOWED_GENRES for item in effective_genres):
@@ -167,6 +184,7 @@ def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
         "ready": not blockers,
         "series_slug": slug,
         "episode_count": expected_total,
+        "source_mode": source_mode,
         "assets": assets,
         "cover_source": cover_sources["vertical"],
         "cover_sources": cover_sources,
@@ -228,8 +246,8 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
     series_dir = package_root / slug
     series_dir.mkdir(parents=True, exist_ok=False)
 
-    sources = episode_files(Path(drama.file_dir))
-    total = max(int(drama.total_episode_count or 0), 1)
+    sources, source_mode = delivery_sources(Path(drama.file_dir))
+    total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
     description = drama.description.strip() or payload.description.strip()
     genres = drama.genres or payload.genres
     output_checks = []

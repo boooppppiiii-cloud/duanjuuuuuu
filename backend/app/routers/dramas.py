@@ -34,7 +34,8 @@ def to_detail(drama: Drama) -> DramaDetail:
     folder = Path(drama.file_dir)
     episodes = episode_files(folder)
     stills = files_with_suffix(folder / "stills", IMAGE_SUFFIXES)
-    generated = files_with_suffix(folder / "generated", VIDEO_SUFFIXES)
+    generated_root = folder / "generated"
+    generated = sorted(path for path in generated_root.rglob("*") if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES) if generated_root.is_dir() else []
     data = drama.model_dump()
     data["episode_count"] = len(episodes)
     data["total_episode_count"] = max(drama.total_episode_count, 1)
@@ -43,7 +44,7 @@ def to_detail(drama: Drama) -> DramaDetail:
         episodes=[path.name for path in episodes],
         stills=[DramaDetail.safe_relative(path, media_root) for path in stills],
         highlights=read_highlights(folder),
-        generated_files=[GeneratedFile(name=path.name, size=path.stat().st_size, created_at=datetime.fromtimestamp(path.stat().st_mtime)) for path in generated],
+        generated_files=[GeneratedFile(name=path.relative_to(generated_root).as_posix(), size=path.stat().st_size, created_at=datetime.fromtimestamp(path.stat().st_mtime)) for path in generated],
     )
 
 
@@ -184,14 +185,14 @@ def get_drama(drama_id: int, session: Session = Depends(get_session)):
     return to_detail(get_drama_or_404(drama_id, session))
 
 
-@router.get("/{drama_id}/generated/{filename}")
+@router.get("/{drama_id}/generated/{filename:path}")
 def get_generated_video(drama_id: int, filename: str, session: Session = Depends(get_session)):
     drama = get_drama_or_404(drama_id, session)
     generated_dir = (Path(drama.file_dir) / "generated").resolve()
-    target = (generated_dir / Path(filename).name).resolve()
-    if target.parent != generated_dir or not target.is_file() or target.suffix.lower() not in VIDEO_SUFFIXES:
+    target = (generated_dir / filename).resolve()
+    if generated_dir not in target.parents or not target.is_file() or target.suffix.lower() not in VIDEO_SUFFIXES:
         raise HTTPException(404, "成品不存在")
-    return FileResponse(target, media_type="video/mp4", filename=target.name)
+    return FileResponse(target, filename=target.name)
 
 
 @router.put("/{drama_id}", response_model=DramaDetail)

@@ -170,7 +170,17 @@ class FactoryProcessRequest(BaseModel):
     publish_variant_count: int = Field(default=5, ge=0, le=50)
     remove_sensitive: bool = True
     compression_profile: Literal["balanced", "small"] = "balanced"
+    output_modes: list[Literal["clean_full", "hook_variants", "meta_split"]] = Field(default_factory=lambda: ["clean_full", "hook_variants"])
+    hooks_per_variant: int = Field(default=1, ge=1, le=3)
     hook_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("output_modes")
+    @classmethod
+    def output_modes_required(cls, value: list[str]) -> list[str]:
+        unique = list(dict.fromkeys(value))
+        if not unique:
+            raise ValueError("至少选择一种产出流程")
+        return unique
 
 
 class FactoryJobView(BaseModel):
@@ -184,10 +194,13 @@ class FactoryJobView(BaseModel):
     publish_variant_count: int
     remove_sensitive: bool
     compression_profile: str
+    output_modes: list[str]
+    hooks_per_variant: int
     selected_hook_ids: list[int]
     source_files: list[str]
     clean_count: int
     publish_count: int
+    meta_count: int
     total_duration: float
     removed_seconds: float
     output_bytes: int
@@ -209,6 +222,7 @@ class GeneratedAssetView(BaseModel):
     duration: float
     size_bytes: int
     hook_asset_id: Optional[int]
+    hook_asset_ids: list[int]
     clip_id: Optional[int]
     created_at: datetime
 

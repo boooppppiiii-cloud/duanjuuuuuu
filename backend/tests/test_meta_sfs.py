@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,6 +79,24 @@ def test_preflight_blocks_noncompliant_duration(monkeypatch, tmp_path: Path):
 
     assert result["ready"] is False
     assert any("60 秒到 3 分钟" in item for item in result["blockers"])
+
+
+def test_preflight_prefers_factory_meta_split_outputs(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video(duration=120.0))
+    drama = make_drama(tmp_path)
+    output = tmp_path / "generated" / "meta" / "J0008"
+    output.mkdir(parents=True)
+    files = [output / "J0008_E001_P01.mp4", output / "J0008_E001_P02.mp4"]
+    for path in files:
+        path.write_bytes(b"video")
+    (tmp_path / "generated" / "meta_current.json").write_text(json.dumps({"factory_job_id": 8, "files": [str(path) for path in files]}), encoding="utf-8")
+
+    result = meta_sfs.preflight(drama, request())
+
+    assert result["ready"] is True
+    assert result["source_mode"] == "factory_meta_split"
+    assert result["episode_count"] == 2
+    assert result["assets"][1]["target"] == "midnight-contract_ep002_002.mp4"
 
 
 def test_preflight_rejects_invalid_genre_and_date(monkeypatch, tmp_path: Path):

@@ -56,6 +56,8 @@ def start_processing(drama_id: int, payload: FactoryProcessRequest, background_t
     sources = episode_files(Path(drama.file_dir))
     if not sources:
         raise HTTPException(422, "请先导入原片视频")
+    if payload.remove_sensitive and set(payload.output_modes) & {"clean_full", "hook_variants"} and not read_analysis(Path(drama.file_dir)):
+        raise HTTPException(422, "请先完成脚本与敏感内容识别，再生成净化版或高能片头版")
     active = session.exec(select(FactoryJob).where(FactoryJob.drama_id == drama_id, FactoryJob.status.in_(["queued", "processing"]))).first()
     if active:
         raise HTTPException(409, f"该剧已有加工任务 #{active.id} 正在运行")
@@ -71,6 +73,8 @@ def start_processing(drama_id: int, payload: FactoryProcessRequest, background_t
         publish_variant_count=payload.publish_variant_count,
         remove_sensitive=payload.remove_sensitive,
         compression_profile=payload.compression_profile,
+        output_modes=payload.output_modes,
+        hooks_per_variant=payload.hooks_per_variant,
         selected_hook_ids=list(dict.fromkeys(payload.hook_ids)),
         source_files=[path.name for path in sources],
     )
@@ -111,7 +115,7 @@ def download_asset(asset_id: int, session: Session = Depends(get_session)):
     root = (Path(drama.file_dir) / "generated").resolve()
     if root not in path.parents or not path.is_file():
         raise HTTPException(404, "成品文件不存在")
-    return FileResponse(path, media_type="video/mp4", filename=asset.filename)
+    return FileResponse(path, filename=asset.filename)
 
 
 def hook_view(item: HookAsset, session: Session) -> HookAssetView:
