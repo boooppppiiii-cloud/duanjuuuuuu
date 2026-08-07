@@ -8,6 +8,7 @@ import re
 from ..config import get_settings
 from .llm import _gemini, _qwen, strip_fences
 from .llm import LLMUnavailableError
+from .offline_translation import translate_to_chinese
 
 POSITIVE = {"love", "great", "amazing", "best", "good", "beautiful", "喜欢", "好看", "精彩", "爱了", "excelente", "bom"}
 NEGATIVE = {"bad", "hate", "worst", "scam", "boring", "angry", "terrible", "垃圾", "难看", "诈骗", "生气", "refund", "cancel"}
@@ -42,7 +43,7 @@ def local_analysis(text: str) -> dict:
         "We appreciate you letting us know. Please share a little more detail so our team can help.",
         "Thank you for watching. We have noted this and will follow up with the most relevant information.",
     ]
-    chinese_text = text if re.search(r"[\u4e00-\u9fff]", text) else ""
+    chinese_text = translate_to_chinese(text, allow_download=False)
     return {"sentiment": sentiment, "user_status": user_status, "keyword_category": category, "keywords": important, "summary": f"{intent_label}，情绪为{sentiment}。", "ticket_type": ticket_type, "severity": severity, "needs_human": needs_human, "suggested_replies": replies, "analysis_source": "local", "text_zh": chinese_text}
 
 

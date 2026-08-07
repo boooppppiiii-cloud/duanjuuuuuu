@@ -155,7 +155,7 @@ function CommentCard({item,account}:{item:SocialComment;account?:Account}){
     <div className="comment-card-main">
       <div className="comment-card-meta"><strong>{item.author_name||'匿名用户'}</strong>{item.author_handle&&<span>{item.author_handle}</span>}<time>{item.published_at?new Date(item.published_at).toLocaleString('zh-CN'):'时间未知'}</time></div>
       <p className="comment-original">{item.text_original}</p>
-      <div className={`comment-translation ${item.text_zh?'':'is-pending'}`}><TranslationOutlined/><span>{item.text_zh||'等待 AI 翻译'}</span></div>
+      <div className={`comment-translation ${item.text_zh?'':'is-pending'}`}><TranslationOutlined/><span>{item.text_zh||(/\p{L}/u.test(item.text_original)?'暂无中文翻译':'仅表情，无需翻译')}</span></div>
       <div className="comment-card-footer">
         <Space size={7} wrap><PlatformBadge platform={item.platform}/>{account&&<span>{account.name}</span>}<Tag color={sentiment[1]}>{sentiment[0]}</Tag><span><LikeOutlined/> {fmt(item.like_count)}</span></Space>
         {item.video_url?<a href={item.video_url} target="_blank" rel="noreferrer"><VideoCameraOutlined/> {item.video_title||item.video_id||'来源视频'} <ExportOutlined/></a>:<span><VideoCameraOutlined/> {item.video_title||item.video_id||'来源视频未知'}</span>}
@@ -237,8 +237,7 @@ export default function DashboardPage(){
     filteredComments.forEach(item=>{const key=commentSort==='video'?(item.video_title||item.video_id||'未知视频'):(item.author_name||item.author_handle||'匿名用户');map.set(key,[...(map.get(key)||[]),item])})
     return Array.from(map.entries()).map(([key,items])=>({key,title:key,items}))
   },[filteredComments,commentSort])
-  const syncComments=async()=>{setCommentWorking(true);try{const connected=accounts.filter(item=>item.status==='connected').map(item=>item.id);const result=await api.syncComments(connected,300);msg.success(`已同步 ${result.created+result.updated} 条评论`);setComments(await api.socialComments())}catch(error){msg.error((error as Error).message)}finally{setCommentWorking(false)}}
-  const translateComments=async()=>{const ids=filteredComments.filter(item=>!item.text_zh).slice(0,100).map(item=>item.id);if(!ids.length){msg.success('当前评论均已有中文翻译');return}setCommentWorking(true);try{await api.analyzeComments(ids,true);setComments(await api.socialComments());msg.success(`已翻译并分析 ${ids.length} 条评论`)}catch(error){msg.error((error as Error).message)}finally{setCommentWorking(false)}}
+  const syncComments=async()=>{setCommentWorking(true);try{const connected=accounts.filter(item=>item.status==='connected').map(item=>item.id);const result=await api.syncComments(connected,300);msg.success(`已同步并本地翻译 ${result.created+result.updated} 条评论`);setComments(await api.socialComments())}catch(error){msg.error((error as Error).message)}finally{setCommentWorking(false)}}
   const moveCalendar=(direction:number)=>setCalendarCursor(current=>calendarView==='week'?addDays(current,direction*7):new Date(current.getFullYear(),current.getMonth()+direction,1))
   const selectedAccount=accounts.find(item=>item.id===selectedAccountId)
   const insightTotals=insights?.totals
@@ -323,7 +322,7 @@ export default function DashboardPage(){
         <Select value={commentAccount} onChange={setCommentAccount} options={[{value:'all',label:'全部账号'},...accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))]}/>
         <Segmented value={commentSort} onChange={value=>setCommentSort(value as typeof commentSort)} options={[{value:'latest',label:'最新'},{value:'video',label:'按视频'},{value:'user',label:'按用户'}]}/>
         <span className="comment-count">{filteredComments.length} 条评论</span>
-        <Space wrap><Button icon={<TranslationOutlined/>} loading={commentWorking} onClick={translateComments}>AI 翻译</Button><Button type="primary" icon={<SyncOutlined/>} loading={commentWorking} onClick={syncComments}>同步最新评论</Button><Button icon={<ReloadOutlined/>} onClick={()=>void loadComments(true)}>刷新</Button></Space>
+        <Space wrap><Button type="primary" icon={<SyncOutlined/>} loading={commentWorking} onClick={syncComments}>同步最新评论</Button><Button icon={<ReloadOutlined/>} onClick={()=>void loadComments(true)}>刷新</Button></Space>
       </div>
       {filteredComments.length?<div className="comment-groups">{commentGroups.map(group=><section className="comment-group" key={group.key}>{commentSort!=='latest'&&<div className="comment-group-title"><strong>{group.title}</strong><span>{group.items.length}</span></div>}{group.items.map(item=><CommentCard key={item.id} item={item} account={accounts.find(account=>account.id===item.account_id)}/>)}</section>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无评论"><Button type="primary" icon={<SyncOutlined/>} onClick={syncComments}>同步最新评论</Button></Empty>}
     </section>}

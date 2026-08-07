@@ -14,6 +14,7 @@ frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
 backend/data/models/
+backend/data/argos/
 media/clips/
 media/posts/
 tmp/

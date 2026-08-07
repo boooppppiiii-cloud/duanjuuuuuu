@@ -1,7 +1,14 @@
 from functools import lru_cache
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_translation_model_dir() -> Path:
+    if os.name == "nt":
+        return Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "Jushu" / "argos" / "packages"
+    return Path("backend/data/argos/packages")
 
 
 class Settings(BaseSettings):
@@ -35,6 +42,11 @@ class Settings(BaseSettings):
     serverchan_key: str = ""
     visual_daily_limit: int = 200
     log_dir: Path = Path("logs")
+    offline_translation_enabled: bool = True
+    offline_translation_languages: str = "auto"
+    offline_translation_target: str = "zh"
+    offline_translation_auto_install: bool = True
+    offline_translation_model_dir: Path = _default_translation_model_dir()
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
@@ -48,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def api_origin(self) -> str:
         return self.public_api_origin.rstrip("/")
+
+    @property
+    def offline_translation_language_list(self) -> list[str]:
+        return [item.strip().lower() for item in self.offline_translation_languages.split(",") if item.strip()]
 
 
 @lru_cache

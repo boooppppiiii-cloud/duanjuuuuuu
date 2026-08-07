@@ -13,6 +13,7 @@ from ..schemas import CommentAnalyzeRequest, CommentImportRequest, CommentReplyR
 from ..services.sentiment import ai_analysis, local_analysis
 from ..services.llm import LLMUnavailableError
 from ..services.social_integrations import list_comments, reply_to_comment
+from ..services.offline_translation import translate_to_chinese, translation_status
 
 router = APIRouter(prefix="/api/engagement", tags=["评论舆情"])
 
@@ -20,6 +21,14 @@ router = APIRouter(prefix="/api/engagement", tags=["评论舆情"])
 def _external_id(value: str, *parts: str) -> str:
     if value.strip(): return f"{parts[0]}:{value.strip()}"
     return "local-" + hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _refresh_local_translation(item: SocialComment, previous_text: str = "") -> None:
+    if item.text_zh and previous_text == item.text_original:
+        return
+    translated = translate_to_chinese(item.text_original)
+    if translated:
+        item.text_zh = translated
 
 
 @router.get("/comments", response_model=list[SocialComment])
@@ -46,6 +55,11 @@ def summary(session: Session = Depends(get_session)):
     }
 
 
+@router.get("/translation/status")
+def local_translation_status():
+    return translation_status()
+
+
 @router.post("/comments/import")
 def import_comments(payload: CommentImportRequest, session: Session = Depends(get_session)):
     created = 0; updated = 0
@@ -54,10 +68,13 @@ def import_comments(payload: CommentImportRequest, session: Session = Depends(ge
         item = session.exec(select(SocialComment).where(SocialComment.external_id == external_id)).first()
         data = raw.model_dump(exclude={"external_id"})
         if item:
+            previous_text = item.text_original
             for key, value in data.items(): setattr(item, key, value)
             updated += 1
         else:
+            previous_text = ""
             item = SocialComment(external_id=external_id, **data); created += 1
+        _refresh_local_translation(item, previous_text)
         session.add(item)
     session.commit()
     return {"created": created, "updated": updated}
@@ -102,10 +119,13 @@ def sync_connected_accounts(payload: CommentSyncRequest, session: Session = Depe
                 values = {**raw, "platform": account.platform, "account_id": account.id, "published_at": _youtube_datetime(raw.get("published_at"))}
                 values.pop("external_id", None)
                 if item:
+                    previous_text = item.text_original
                     for key, value in values.items(): setattr(item, key, value)
                     updated += 1
                 else:
+                    previous_text = ""
                     item = SocialComment(external_id=external_id, **values); created += 1
+                _refresh_local_translation(item, previous_text)
                 session.add(item)
             session.commit()
             result["created"] += created; result["updated"] += updated
@@ -192,10 +212,13 @@ def sync_youtube(payload: YouTubeSyncRequest, session: Session = Depends(get_ses
                         "like_count": int(snippet.get("likeCount") or 0), "published_at": _youtube_datetime(snippet.get("publishedAt")),
                     }
                     if item:
+                        previous_text = item.text_original
                         for key, value in values.items(): setattr(item, key, value)
                         updated += 1
                     else:
+                        previous_text = ""
                         item = SocialComment(external_id=external_id, **values); created += 1
+                    _refresh_local_translation(item, previous_text)
                     session.add(item)
                 session.commit()
                 token = page.get("nextPageToken")

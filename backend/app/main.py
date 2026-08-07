@@ -24,6 +24,7 @@ from .routers.factory import router as factory_router
 from .scheduler import scheduler
 from .logging_config import configure_logging
 from .services.factory_processing import resume_factory_jobs
+from .services.offline_translation import start_translation_worker
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     create_db_and_tables()
     resume_factory_jobs()
+    start_translation_worker()
     if not scheduler.running:
         scheduler.start()
     yield
