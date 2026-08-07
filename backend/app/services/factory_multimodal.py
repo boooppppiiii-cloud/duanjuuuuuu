@@ -116,7 +116,8 @@ def _gemini(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple
             f"F{frame.index} · {frame.second:.2f}s",
             types.Part.from_bytes(data=frame.path.read_bytes(), mime_type="image/jpeg"),
         ])
-    response = genai.Client(api_key=settings.gemini_api_key).models.generate_content(
+    client = genai.Client(api_key=settings.gemini_api_key)
+    response = client.models.generate_content(
         model=model,
         contents=contents,
         config=types.GenerateContentConfig(response_mime_type="application/json"),
@@ -157,10 +158,19 @@ def analyze_window(
     frames: list[FrameSample],
 ) -> tuple[dict[str, Any], str, str]:
     prompt = _prompt(episode, window_start, window_end, transcript, frames)
+    errors: list[str] = []
     if settings.gemini_api_key:
-        data, model = _gemini(settings, prompt, frames)
-        return data, "gemini", model
+        try:
+            data, model = _gemini(settings, prompt, frames)
+            return data, "gemini", model
+        except Exception as exc:
+            errors.append(f"Gemini {type(exc).__name__}")
     if settings.qwen_api_key:
-        data, model = _qwen(settings, prompt, frames)
-        return data, "qwen", model
+        try:
+            data, model = _qwen(settings, prompt, frames)
+            return data, "qwen", model
+        except Exception as exc:
+            errors.append(f"Qwen {type(exc).__name__}")
+    if errors:
+        raise RuntimeError("；".join(errors))
     raise FactoryAIUnavailableError("内容识别需要多模态模型，请配置 GEMINI_API_KEY 或 QWEN_API_KEY")

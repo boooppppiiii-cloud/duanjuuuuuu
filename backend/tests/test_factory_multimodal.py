@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.services import script_analysis
+from app.services import factory_multimodal, script_analysis
 from app.services.factory_multimodal import FrameSample, choose_frame_times
 
 
@@ -19,6 +19,18 @@ def test_frame_sampling_combines_coverage_and_loudness_peaks():
     assert any(abs(value - 13) <= 1.5 for value in values)
     assert len(values) <= 8
     assert values == sorted(values)
+
+
+def test_analysis_falls_back_to_qwen_when_gemini_fails(monkeypatch):
+    settings = SimpleNamespace(gemini_api_key="gemini", qwen_api_key="qwen")
+    monkeypatch.setattr(factory_multimodal, "_gemini", lambda *_: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(factory_multimodal, "_qwen", lambda *_: ({"summary": "ok"}, "qwen3-vl-plus"))
+
+    data, provider, model = factory_multimodal.analyze_window(settings, "episode", 0, 10, [], [])
+
+    assert data == {"summary": "ok"}
+    assert provider == "qwen"
+    assert model == "qwen3-vl-plus"
 
 
 def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tmp_path: Path):
