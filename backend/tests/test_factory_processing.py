@@ -4,7 +4,7 @@ from pathlib import Path
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import Drama, FactoryJob, HookAsset
-from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, natural_key, read_sensitive_ranges, resume_factory_jobs, safe_ranges, slice_timeline
+from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
 
 
 def test_natural_order_and_balanced_four_minutes():
@@ -36,6 +36,31 @@ def test_timeline_slice_can_cross_episode_boundary(tmp_path: Path):
         ("01.mp4", 90, 100),
         ("02.mp4", 5, 25),
     ]
+
+
+def test_render_timeline_reports_progress_across_all_parts(monkeypatch, tmp_path: Path):
+    import app.services.factory_processing as module
+
+    parts = [
+        TimelinePart(tmp_path / "01.mp4", "01.mp4", 0, 10),
+        TimelinePart(tmp_path / "02.mp4", "02.mp4", 0, 30),
+    ]
+    progress: list[float] = []
+
+    def fake_encode(_ffmpeg, _ffprobe, _part, output, _profile, callback=None):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"video")
+        if callback:
+            callback(.5)
+            callback(1)
+
+    monkeypatch.setattr(module, "_encode_piece", fake_encode)
+    monkeypatch.setattr(module, "_concat_files", lambda _ffmpeg, _pieces, output, _manifest: output.write_bytes(b"joined"))
+
+    duration = render_timeline_slice(parts, tmp_path / "output.mp4", tmp_path / "work", "balanced", progress.append)
+
+    assert duration == 40
+    assert progress == [.125, .25, .625, 1, 1]
 
 
 def test_analysis_sensitive_segments_get_safety_buffer(tmp_path: Path):

@@ -15,6 +15,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           colorPrimary:'#171b16', colorInfo:'#45a990', colorSuccess:'#78a83c', colorWarning:'#c59c26', colorError:'#cf5f5b',
           colorText:'#171b16', colorTextSecondary:'#737b72', colorBorder:'#dfe7da', colorBgLayout:'#f3f7f2',
           borderRadius:12, borderRadiusLG:17, controlHeight:38, fontFamily:'Inter, "Microsoft YaHei", sans-serif', fontSize:13,
+          motion:false,
         },
         components: {
           Button:{primaryShadow:'none',defaultShadow:'none',fontWeight:650},

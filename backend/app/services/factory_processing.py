@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations, islice
 from pathlib import Path
+from typing import Callable
 
 from sqlmodel import Session, select
 
@@ -31,8 +32,8 @@ class TimelinePart:
 
 
 PROFILES = {
-    "balanced": {"crf": "23", "preset": "medium", "audio": "128k"},
-    "small": {"crf": "28", "preset": "slow", "audio": "96k"},
+    "balanced": {"crf": "23", "preset": "veryfast", "audio": "128k"},
+    "small": {"crf": "28", "preset": "fast", "audio": "96k"},
 }
 
 
@@ -168,7 +169,44 @@ def sync_hook_assets(session: Session, drama: Drama) -> list[HookAsset]:
     return existing
 
 
-def _encode_piece(ffmpeg: str, ffprobe: str, part: TimelinePart, output: Path, profile_name: str) -> None:
+def _run_ffmpeg_with_progress(args: list[str], duration: float, on_progress: Callable[[float], None]) -> None:
+    command = [*args[:2], "-nostats", "-loglevel", "error", "-progress", "pipe:1", *args[2:]]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert process.stdout is not None
+    last_percent = -1
+    for line in process.stdout:
+        key, _, raw_value = line.strip().partition("=")
+        if key not in {"out_time_us", "out_time_ms"} or duration <= 0:
+            continue
+        try:
+            percent = min(99, max(0, int(float(raw_value) / 1_000_000 / duration * 100)))
+        except ValueError:
+            continue
+        if percent != last_percent:
+            last_percent = percent
+            on_progress(percent / 100)
+    stderr = process.stderr.read() if process.stderr else ""
+    return_code = process.wait()
+    if return_code:
+        raise MediaCommandError(stderr[-2000:] or "媒体命令执行失败")
+    on_progress(1.0)
+
+
+def _encode_piece(
+    ffmpeg: str,
+    ffprobe: str,
+    part: TimelinePart,
+    output: Path,
+    profile_name: str,
+    on_progress: Callable[[float], None] | None = None,
+) -> None:
     profile = PROFILES[profile_name]
     info = probe_media(ffprobe, part.path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -179,11 +217,15 @@ def _encode_piece(ffmpeg: str, ffprobe: str, part: TimelinePart, output: Path, p
         base += ["-f", "lavfi", "-t", f"{part.duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
         mapping = ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
     video_filter = "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,fps=30"
-    run_command(base + mapping + [
+    command = base + mapping + [
         "-vf", video_filter, "-c:v", "libx264", "-preset", profile["preset"], "-crf", profile["crf"],
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", profile["audio"], "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart", str(output),
-    ])
+    ]
+    if on_progress:
+        _run_ffmpeg_with_progress(command, part.duration, on_progress)
+    else:
+        run_command(command)
 
 
 def _concat_files(ffmpeg: str, pieces: list[Path], output: Path, concat_path: Path) -> None:
@@ -196,17 +238,32 @@ def _concat_files(ffmpeg: str, pieces: list[Path], output: Path, concat_path: Pa
     run_command([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path.resolve()), "-c", "copy", "-movflags", "+faststart", str(output.resolve())])
 
 
-def render_timeline_slice(parts: list[TimelinePart], output: Path, work: Path, profile: str) -> float:
+def render_timeline_slice(
+    parts: list[TimelinePart],
+    output: Path,
+    work: Path,
+    profile: str,
+    on_progress: Callable[[float], None] | None = None,
+) -> float:
     settings = get_settings()
     encoded: list[Path] = []
+    total_duration = sum(item.duration for item in parts)
+    completed_duration = 0.0
     for index, part in enumerate(parts, start=1):
         piece = work / f"part_{index:04d}.mp4"
-        _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, part, piece, profile)
+        def report_piece(ratio: float, *, before: float = completed_duration, length: float = part.duration) -> None:
+            if on_progress and total_duration > 0:
+                on_progress(min(1.0, (before + length * ratio) / total_duration))
+
+        _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, part, piece, profile, report_piece if on_progress else None)
         encoded.append(piece)
+        completed_duration += part.duration
     if not encoded:
         raise ValueError("没有可输出的安全内容")
     _concat_files(settings.ffmpeg_binary, encoded, output, work / "concat.txt")
-    return sum(item.duration for item in parts)
+    if on_progress:
+        on_progress(1.0)
+    return total_duration
 
 
 def _write_meta_manifest(drama_dir: Path, job_id: int, files: list[Path]) -> None:
@@ -317,7 +374,28 @@ class FactoryPipeline:
                     body_filename = f"J{job.id:04d}_clean_full.mp4"
                     body_target = generated_dir / body_filename if "clean_full" in modes else work / body_filename
                     self._save(session, job, "按剧集顺序合并并移除敏感内容", 18)
-                    body_duration = render_timeline_slice(timeline, body_target, work / "clean_full", job.compression_profile)
+                    reported_progress = 18
+
+                    def report_clean(ratio: float) -> None:
+                        nonlocal reported_progress
+                        progress = 18 + round(ratio * 22)
+                        if progress <= reported_progress:
+                            return
+                        reported_progress = progress
+                        self._save(
+                            session,
+                            job,
+                            f"正在合并净化视频 · {progress}%",
+                            progress,
+                        )
+
+                    body_duration = render_timeline_slice(
+                        timeline,
+                        body_target,
+                        work / "clean_full",
+                        job.compression_profile,
+                        report_clean,
+                    )
                     if "clean_full" in modes:
                         clip = Clip(
                             drama_id=drama.id, template_name="clean_full", source_eps=[path.name for path in sources],

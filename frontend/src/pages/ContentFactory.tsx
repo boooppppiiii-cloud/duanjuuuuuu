@@ -55,11 +55,11 @@ export default function ContentFactory(){
     </>}</div>}
 
     {tab==='process'&&<div className="factory-inner">
-      <div className="factory-output-grid">
+      <Card title="选择产出方式"><div className="factory-output-grid">
         <button type="button" className={`factory-output-card ${outputModes.includes('clean_full')?'is-selected':''}`} onClick={()=>toggleMode('clean_full')}><span className="factory-output-index">01</span><VideoCameraOutlined/><b>原剧合并净化</b><small>顺序拼接 · 敏感内容去除 · 完整视频</small>{outputModes.includes('clean_full')&&<CheckCircleFilled/>}</button>
         <button type="button" className={`factory-output-card ${outputModes.includes('hook_variants')?'is-selected':''}`} onClick={()=>toggleMode('hook_variants')}><span className="factory-output-index">02</span><FireOutlined/><b>高能片头批量版</b><small>1–3个片头 · 多版本 · 完整视频</small>{outputModes.includes('hook_variants')&&<CheckCircleFilled/>}</button>
         <button type="button" className={`factory-output-card ${outputModes.includes('meta_split')?'is-selected':''}`} onClick={()=>toggleMode('meta_split')}><span className="factory-output-index">03</span><ScissorOutlined/><b>Meta 逐集切分</b><small>不拼接 · 单集≤3分钟 · 自动均分</small>{outputModes.includes('meta_split')&&<CheckCircleFilled/>}</button>
-      </div>
+      </div></Card>
       <div className="factory-process-grid"><Card title="加工参数"><div className="factory-settings">
         <label><span>压缩档位</span><Select value={profile} onChange={setProfile} options={[{value:'balanced',label:'均衡 · CRF 23'},{value:'small',label:'省空间 · CRF 28'}]}/></label>
         {outputModes.some(x=>x!=='meta_split')&&<label><span>敏感内容去除</span><Switch checked={removeSensitive} onChange={setRemoveSensitive}/></label>}
