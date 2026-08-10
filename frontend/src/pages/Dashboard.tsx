@@ -186,6 +186,7 @@ export default function DashboardPage(){
   const [commentSort,setCommentSort]=useState<'latest'|'video'|'user'>('latest')
   const [commentAccount,setCommentAccount]=useState<number|'all'>('all')
   const [loading,setLoading]=useState(false)
+  const [accountDataRequested,setAccountDataRequested]=useState(false)
   const [mediaLoading,setMediaLoading]=useState(false)
   const [insightLoading,setInsightLoading]=useState(false)
   const [insightError,setInsightError]=useState('')
@@ -198,29 +199,29 @@ export default function DashboardPage(){
   const [msg,holder]=message.useMessage()
   const navigate=useNavigate()
 
-  const load=async()=>{
+  const load=async(force=false)=>{
     setLoading(true)
     try{
-      const accountRows=await api.accounts()
+      const accountRows=await api.accounts(force)
       setAccounts(accountRows)
       setSelectedAccountId(current=>current&&accountRows.some(item=>item.id===current)?current:accountRows[0]?.id)
     }catch(error){msg.error((error as Error).message)}finally{setLoading(false)}
   }
   const loadComments=async(force=false)=>{
     if(commentsLoaded.current&&!force)return
-    try{setComments(await api.socialComments());commentsLoaded.current=true}catch(error){msg.error((error as Error).message)}
+    try{setComments(await api.socialComments('',force));commentsLoaded.current=true}catch(error){msg.error((error as Error).message)}
   }
   const loadMedia=async(accountId:number,force=false)=>{
     const cached=mediaCache.current.get(accountId)
     if(cached&&!force){setMedia(cached);return}
     setMediaLoading(true);setMediaError('')
-    try{const rows=await api.accountMedia(accountId,50);mediaCache.current.set(accountId,rows);setMedia(rows)}catch(error){setMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
+    try{const rows=await api.accountMedia(accountId,50,force);mediaCache.current.set(accountId,rows);setMedia(rows)}catch(error){setMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
   }
   const loadCalendar=async(accountId:number,force=false)=>{
     const cached=calendarCache.current.get(accountId)
     if(cached&&!force){setCalendarMedia(cached);return}
     setMediaLoading(true);setMediaError('')
-    try{const rows=await api.accountCalendar(accountId,50);calendarCache.current.set(accountId,rows);setCalendarMedia(rows)}catch(error){setCalendarMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
+    try{const rows=await api.accountCalendar(accountId,50,force);calendarCache.current.set(accountId,rows);setCalendarMedia(rows)}catch(error){setCalendarMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
   }
   const loadInsights=async(accountId:number,days:InsightRange=insightDays,force=false)=>{
     const key=`${accountId}:${days}`;const cached=insightCache.current.get(key)
@@ -228,13 +229,13 @@ export default function DashboardPage(){
     setInsightLoading(true);setInsightError('')
     try{const result=await api.accountInsights(accountId,days,force);insightCache.current.set(key,result);setInsights(result)}catch(error){setInsights(undefined);setInsightError((error as Error).message)}finally{setInsightLoading(false)}
   }
-  useEffect(()=>{void load();void loadComments()},[])
+  useEffect(()=>{void load()},[])
   useEffect(()=>{
     if(!selectedAccountId)return
-    if(activeSection==='accounts'){void loadInsights(selectedAccountId,insightDays);void loadMedia(selectedAccountId)}
+    if(activeSection==='accounts'&&accountDataRequested){void loadInsights(selectedAccountId,insightDays);void loadMedia(selectedAccountId)}
     if(activeSection==='publishing')void loadCalendar(selectedAccountId)
     if(activeSection==='fans')void loadComments()
-  },[activeSection,selectedAccountId,insightDays])
+  },[activeSection,selectedAccountId,insightDays,accountDataRequested])
 
   const visibleRange=useMemo(()=>{
     if(calendarView==='week'){const start=startOfWeek(calendarCursor);return{start,end:addDays(start,7)}}
@@ -257,21 +258,21 @@ export default function DashboardPage(){
   const selectedAccount=accounts.find(item=>item.id===selectedAccountId)
   const insightTotals=insights?.totals
   const netSubscribers=insightTotals?.subscribers_gained==null?null:insightTotals.subscribers_gained-(insightTotals.subscribers_lost||0)
-  const refreshSelected=()=>{if(!selectedAccountId)return;void loadInsights(selectedAccountId,insightDays,true);void loadMedia(selectedAccountId,true)}
+  const refreshSelected=()=>{if(!selectedAccountId)return;if(!accountDataRequested){setAccountDataRequested(true);return}void loadInsights(selectedAccountId,insightDays,true);void loadMedia(selectedAccountId,true)}
 
   return <div className="workspace-page overview-page">{holder}
-    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load();refreshSelected()}}>刷新</Button></div>
+    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load(true);if(accountDataRequested)refreshSelected()}}>刷新</Button></div>
     <Segmented block className="overview-pager" value={activeSection} onChange={value=>setActiveSection(value as typeof activeSection)} options={[{value:'accounts',label:'账号数据'},{value:'publishing',label:'发布日历'},{value:'fans',label:'粉丝评论'}]}/>
 
     {activeSection==='accounts'&&<section className="overview-section overview-accounts-section">
       <div className="account-data-toolbar">
         <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))}/>
         <Segmented value={insightDays} onChange={value=>setInsightDays(value as InsightRange)} options={[{value:'all',label:'全部'},{value:'7',label:'7天'},{value:'28',label:'28天'},{value:'90',label:'90天'}]}/>
-        <Button icon={<ReloadOutlined/>} loading={insightLoading||mediaLoading} onClick={refreshSelected}>刷新数据</Button>
+        <Button type={accountDataRequested?'default':'primary'} icon={<ReloadOutlined/>} loading={insightLoading||mediaLoading} disabled={!selectedAccountId} onClick={refreshSelected}>{accountDataRequested?'刷新数据':'加载平台数据'}</Button>
         <Button type="link" onClick={()=>navigate('/management')}>管理账号 <ArrowRightOutlined/></Button>
       </div>
       {!accounts.length&&<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未连接账号"><Button type="primary" onClick={()=>navigate('/management')}>连接账号</Button></Empty>}
-      {selectedAccount&&<Spin spinning={insightLoading}>
+      {selectedAccount&&!accountDataRequested?<Card><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="页面已就绪，点击后再读取平台官方数据"><Button type="primary" onClick={refreshSelected}>加载平台数据</Button></Empty></Card>:selectedAccount&&<Spin spinning={insightLoading}>
         <Card className="account-insight-hero">
           <div className="account-insight-head">
             <Avatar size={58} src={selectedAccount.avatar_url} icon={<PlatformLogo platform={selectedAccount.platform} size={28}/>}/>

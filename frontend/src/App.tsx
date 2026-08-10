@@ -9,14 +9,24 @@ import { AuthContext } from './auth'
 import AuthPage from './pages/AuthPage'
 import { flushTelemetry } from './telemetry'
 
-const DashboardPage=lazy(()=>import('./pages/Dashboard'))
-const DramaLibrary=lazy(()=>import('./pages/DramaLibrary'))
-const DramaDetail=lazy(()=>import('./pages/DramaDetail'))
-const ContentFactory=lazy(()=>import('./pages/ContentFactory'))
-const PublishingCenter=lazy(()=>import('./pages/PublishingCenter'))
-const Management=lazy(()=>import('./pages/Management'))
-const MetaDelivery=lazy(()=>import('./pages/MetaDelivery'))
-const DeveloperAnalytics=lazy(()=>import('./pages/DeveloperAnalytics'))
+const loadDashboard=()=>import('./pages/Dashboard')
+const loadDramaLibrary=()=>import('./pages/DramaLibrary')
+const loadDramaDetail=()=>import('./pages/DramaDetail')
+const loadContentFactory=()=>import('./pages/ContentFactory')
+const loadPublishingCenter=()=>import('./pages/PublishingCenter')
+const loadManagement=()=>import('./pages/Management')
+const loadMetaDelivery=()=>import('./pages/MetaDelivery')
+const loadDeveloperAnalytics=()=>import('./pages/DeveloperAnalytics')
+
+const DashboardPage=lazy(loadDashboard)
+const DramaLibrary=lazy(loadDramaLibrary)
+const DramaDetail=lazy(loadDramaDetail)
+const ContentFactory=lazy(loadContentFactory)
+const PublishingCenter=lazy(loadPublishingCenter)
+const Management=lazy(loadManagement)
+const MetaDelivery=lazy(loadMetaDelivery)
+const DeveloperAnalytics=lazy(loadDeveloperAnalytics)
+const workspacePageLoaders=[loadDashboard,loadDramaLibrary,loadDramaDetail,loadContentFactory,loadPublishingCenter,loadManagement,loadMetaDelivery]
 
 const nav=[
  {key:'home',icon:<DashboardOutlined/>,label:'首页'},
@@ -30,6 +40,16 @@ export default function App(){
  const navigate=useNavigate();const location=useLocation();const[collapsed,setCollapsed]=useState(()=>window.innerWidth<880);const[user,setUser]=useState<AuthUser|null|undefined>(undefined)
  useEffect(()=>{api.authMe().then(result=>setUser(result.user)).catch(()=>setUser(null));const expired=()=>setUser(null);window.addEventListener('jushu:unauthorized',expired);return()=>window.removeEventListener('jushu:unauthorized',expired)},[])
  useEffect(()=>{if(user)void flushTelemetry()},[user])
+ useEffect(()=>{
+  if(!user)return
+  const preload=()=>{void Promise.allSettled([
+   ...workspacePageLoaders.map(load=>load()),
+   ...(user.is_developer?[loadDeveloperAnalytics()]:[]),
+   api.list(),api.clips(),api.accounts(),api.posts(),api.publishJobs(),api.integrationConfig(),
+  ])}
+  if(typeof window.requestIdleCallback==='function'){const id=window.requestIdleCallback(preload,{timeout:2500});return()=>window.cancelIdleCallback(id)}
+  const id=window.setTimeout(preload,1200);return()=>window.clearTimeout(id)
+ },[user])
  useEffect(()=>{window.scrollTo({top:0,left:0,behavior:'instant'})},[location.pathname])
  const active=useMemo(()=>{const first=location.pathname.split('/')[1];return first||'home'},[location.pathname])
  const jump=(key:string)=>navigate(key==='home'?'/':`/${key}`)

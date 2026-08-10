@@ -17,7 +17,9 @@ YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 TIKTOK_API = "https://open.tiktokapis.com"
 META_GRAPH = "https://graph.facebook.com"
 ACCOUNT_INSIGHT_CACHE_TTL = 300
+ACCOUNT_MEDIA_CACHE_TTL = 300
 _account_insight_cache: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+_account_media_cache: dict[tuple[int, int], tuple[float, list[dict[str, Any]]]] = {}
 
 
 def _cache_insight(key: tuple[int, str], result: dict[str, Any]) -> dict[str, Any]:
@@ -360,7 +362,19 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
     })
 
 
-def list_platform_media(account: Account, limit: int = 25) -> list[dict[str, Any]]:
+def list_platform_media(account: Account, limit: int = 25, force_refresh: bool = False) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 50))
+    cache_key = (int(account.id or 0), limit)
+    cached = _account_media_cache.get(cache_key)
+    if cache_key[0] and not force_refresh and cached and monotonic() - cached[0] < ACCOUNT_MEDIA_CACHE_TTL:
+        return cached[1]
+    rows = _list_platform_media_uncached(account, limit)
+    if cache_key[0]:
+        _account_media_cache[cache_key] = (monotonic(), rows)
+    return rows
+
+
+def _list_platform_media_uncached(account: Account, limit: int = 25) -> list[dict[str, Any]]:
     limit = max(1, min(limit, 50))
     if account.platform == "youtube":
         token = youtube_access_token(account)

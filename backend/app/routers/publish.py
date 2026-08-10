@@ -173,24 +173,25 @@ def creator_info(account_id: int, session: Session = Depends(get_session)):
 
 
 @router.get("/accounts/{account_id}/media")
-def account_media(account_id: int, limit: int = 25, session: Session = Depends(get_session)):
+def account_media(account_id: int, limit: int = 25, session: Session = Depends(get_session), refresh: bool = False):
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "账号不存在")
     try:
-        return list_platform_media(account, limit)
+        return list_platform_media(account, limit, True) if refresh else list_platform_media(account, limit)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/accounts/{account_id}/calendar")
-def account_calendar(account_id: int, limit: int = 50, session: Session = Depends(get_session)):
+def account_calendar(account_id: int, limit: int = 50, session: Session = Depends(get_session), refresh: bool = False):
     """Return platform releases and local scheduled jobs on one publication timeline."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "账号不存在")
     try:
-        rows = [dict(item) for item in list_platform_media(account, limit)]
+        platform_rows = list_platform_media(account, limit, True) if refresh else list_platform_media(account, limit)
+        rows = [dict(item) for item in platform_rows]
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 

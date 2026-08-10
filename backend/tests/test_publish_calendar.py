@@ -66,6 +66,23 @@ def test_youtube_calendar_prefers_publish_at_and_hides_private_upload_time(monke
     assert indexed["public"]["calendar_at"] == "2026-08-06T10:00:00Z"
 
 
+def test_platform_media_uses_short_cache_and_supports_force_refresh(monkeypatch):
+    social_integrations._account_media_cache.clear()
+    calls = []
+
+    def fake_list(account, limit):
+        calls.append((account.id, limit))
+        return [{"id": str(len(calls))}]
+
+    monkeypatch.setattr(social_integrations, "_list_platform_media_uncached", fake_list)
+    account = Account(id=991, platform="youtube", name="Channel")
+
+    assert social_integrations.list_platform_media(account, 10) == [{"id": "1"}]
+    assert social_integrations.list_platform_media(account, 10) == [{"id": "1"}]
+    assert social_integrations.list_platform_media(account, 10, True) == [{"id": "2"}]
+    assert calls == [(991, 10), (991, 10)]
+
+
 def test_calendar_includes_local_job_at_its_scheduled_time(monkeypatch, tmp_path: Path):
     engine = create_engine(f"sqlite:///{tmp_path / 'calendar.db'}")
     SQLModel.metadata.create_all(engine)

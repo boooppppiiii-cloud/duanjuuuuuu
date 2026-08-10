@@ -81,8 +81,8 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
   const [appForm]=Form.useForm()
   const [msg,ctx]=message.useMessage()
 
-  const load=async()=>{
-    const [matrix,accountList,config]=await Promise.all([api.accountMatrix(),api.accounts(),api.integrationConfig()])
+  const load=async(force=false)=>{
+    const [matrix,accountList,config]=await Promise.all([api.accountMatrix(force),api.accounts(force),api.integrationConfig(force)])
     setRows(matrix);setAccounts(accountList);setStrategies(getLocalStrategies(user.id));setBindings(getLocalBindings(user.id));setIntegration(config)
   }
   useEffect(()=>{
@@ -94,7 +94,7 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
       else msg.success(`${params.get('platform')||'平台'} 授权完成，已连接 ${params.get('accounts')||'1'} 个账号`)
       window.history.replaceState({},'',window.location.pathname)
     }
-    const receive=(event:MessageEvent)=>{if(event.origin===window.location.origin&&event.data?.type==='lingshu-oauth-complete'){msg.success('平台授权完成，正在刷新账号');load().catch(e=>msg.error(e.message))}}
+    const receive=(event:MessageEvent)=>{if(event.origin===window.location.origin&&event.data?.type==='lingshu-oauth-complete'){msg.success('平台授权完成，正在刷新账号');load(true).catch(e=>msg.error(e.message))}}
     window.addEventListener('message',receive)
     return()=>window.removeEventListener('message',receive)
   },[])
@@ -206,7 +206,7 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
     <Modal open={Boolean(removing)} title={`移除 ${removing?.name||'账号'}？`} okText="确认移除" cancelText="取消" okButtonProps={{danger:true}} confirmLoading={removeWorking} closable={!removeWorking} maskClosable={!removeWorking} onOk={confirmRemove} onCancel={()=>{if(!removeWorking)setRemoving(null)}}>
       <Typography.Paragraph>账号会从应用中移除，应用内保存的全部授权配置会被清除；历史发布与数据仍保留。</Typography.Paragraph>
     </Modal>
-    {embedded?<div className="module-toolbar"><b>账号连接与平台授权</b><Space><Button icon={<DownloadOutlined/>} href="/api/workspace/weekly.csv">导出周表</Button><Button icon={<ReloadOutlined/>} onClick={()=>load()}>刷新状态</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>openAccount()}>配置账号</Button></Space></div>:<div className="page-heading page-heading-rich"><Typography.Title level={2}>账号与平台连接</Typography.Title><Space><Button icon={<DownloadOutlined/>} href="/api/workspace/weekly.csv">导出周表</Button><Button icon={<ReloadOutlined/>} onClick={()=>load()}>刷新状态</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>openAccount()}>手动配置账号</Button></Space></div>}
+    {embedded?<div className="module-toolbar"><b>账号连接与平台授权</b><Space><Button icon={<DownloadOutlined/>} href="/api/workspace/weekly.csv">导出周表</Button><Button icon={<ReloadOutlined/>} onClick={()=>load(true)}>刷新状态</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>openAccount()}>配置账号</Button></Space></div>:<div className="page-heading page-heading-rich"><Typography.Title level={2}>账号与平台连接</Typography.Title><Space><Button icon={<DownloadOutlined/>} href="/api/workspace/weekly.csv">导出周表</Button><Button icon={<ReloadOutlined/>} onClick={()=>load(true)}>刷新状态</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>openAccount()}>手动配置账号</Button></Space></div>}
 
 
     <div className="summary-strip account-summary"><Statistic title="账号总数" value={rows.length}/><Statistic title="已连接" value={totals.connected}/><Statistic title="近 7 天真实播放" value={fmt(totals.views)}/><Statistic title="连接异常" value={totals.errors}/></div>

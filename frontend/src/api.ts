@@ -67,13 +67,40 @@ async function responseError(response: Response, fallback='请求失败') {
   return fallback
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { credentials:'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
-  if (!response.ok) {
-    if(response.status===401&&!url.startsWith('/api/auth/'))window.dispatchEvent(new CustomEvent('jushu:unauthorized'))
-    throw new Error(await responseError(response))
+type RequestOptions = RequestInit & { cacheTtlMs?:number; forceRefresh?:boolean; cacheKey?:string }
+type CachedResponse = { expiresAt:number; value:unknown }
+
+const responseCache = new Map<string,CachedResponse>()
+const pendingRequests = new Map<string,Promise<unknown>>()
+
+function clearResponseCache(){
+  responseCache.clear()
+}
+
+async function request<T>(url: string, options?: RequestOptions): Promise<T> {
+  const {cacheTtlMs=0,forceRefresh=false,cacheKey=url,...init}=options||{}
+  const method=(init.method||'GET').toUpperCase()
+  const cacheable=method==='GET'&&cacheTtlMs>0
+  if(cacheable&&!forceRefresh){
+    const cached=responseCache.get(cacheKey)
+    if(cached&&cached.expiresAt>Date.now())return cached.value as T
+    if(cached)responseCache.delete(cacheKey)
+    const pending=pendingRequests.get(cacheKey)
+    if(pending)return pending as Promise<T>
   }
-  return response.json()
+  const task=(async()=>{
+    const response = await fetch(url, { credentials:'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
+    if (!response.ok) {
+      if(response.status===401&&!url.startsWith('/api/auth/'))window.dispatchEvent(new CustomEvent('jushu:unauthorized'))
+      throw new Error(await responseError(response))
+    }
+    const value=await response.json() as T
+    if(cacheable)responseCache.set(cacheKey,{expiresAt:Date.now()+cacheTtlMs,value})
+    else if(method!=='GET')clearResponseCache()
+    return value
+  })()
+  if(cacheable&&!forceRefresh)pendingRequests.set(cacheKey,task)
+  try{return await task}finally{if(pendingRequests.get(cacheKey)===task)pendingRequests.delete(cacheKey)}
 }
 
 export const api = {
@@ -83,30 +110,30 @@ export const api = {
   logout: () => request<{logged_out:boolean}>('/api/auth/logout',{method:'POST'}),
   adminAnalytics: (days=30) => request<AdminAnalytics>(`/api/admin/analytics?days=${days}`),
   sendTelemetry: (events:{client_event_id:string;feature:string;success:boolean;duration_ms:number;details:Record<string,unknown>}[]) => request<{accepted:number}>('/api/telemetry/events',{method:'POST',body:JSON.stringify({events})}),
-  list: () => request<Drama[]>('/api/dramas'),
+  list: (refresh=false) => request<Drama[]>('/api/dramas',{cacheTtlMs:60_000,forceRefresh:refresh}),
   createDramaTask: (body:{title:string;theater:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),
   get: (id: string) => request<Drama>(`/api/dramas/${id}`),
   update: (id: number, body: object) => request<Drama>(`/api/dramas/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   highlights: (id: number, highlights: Highlight[]) => request<Drama>(`/api/dramas/${id}/highlights`, { method: 'PUT', body: JSON.stringify({ highlights }) }),
-  clips: (dramaId?: number) => request<Clip[]>(`/api/clips${dramaId ? `?drama_id=${dramaId}` : ''}`),
+  clips: (dramaId?: number,refresh=false) => request<Clip[]>(`/api/clips${dramaId ? `?drama_id=${dramaId}` : ''}`,{cacheTtlMs:30_000,forceRefresh:refresh}),
   createClips: (dramaId: number, templateName = 'suspense_hook') => request<Clip[]>('/api/clips/batch', { method: 'POST', body: JSON.stringify({ drama_id: dramaId, template_name: templateName }) }),
   reviewClip: (clipId: number, status: 'approved' | 'blocked', note = '') => request<Clip>(`/api/moderation/clips/${clipId}/review`, { method: 'PUT', body: JSON.stringify({ status, note }) }),
   moderateText: (title: string, caption: string) => request<ModerationResult>('/api/moderation/text', { method: 'POST', body: JSON.stringify({ title, caption }) }),
   moderationConfig: () => request<{ cover_reminder: string }>('/api/moderation/config'),
   generateTitles: (clipId: number, accountType: string, targetLanguage: string, formula: number | 'auto', accountId?: number, hotTags:string[] = [], strategy?:AccountStrategy, includeTheaterTag=true) => request<{ candidates: TitleCandidate[]; degraded: boolean; provider: string; context_used: string[] }>('/api/creative/titles', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, target_language: targetLanguage, formula, account_id: accountId, strategy, hot_tags:hotTags, include_theater_tag:includeTheaterTag }) }),
   createPost: (clipId: number, accountType: string, candidate: TitleCandidate) => request<Post>('/api/creative/posts', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, candidate }) }),
-  posts: () => request<Post[]>('/api/creative/posts'),
-  accounts: () => request<Account[]>('/api/publish/accounts'),
+  posts: (refresh=false) => request<Post[]>('/api/creative/posts',{cacheTtlMs:30_000,forceRefresh:refresh}),
+  accounts: (refresh=false) => request<Account[]>('/api/publish/accounts',{cacheTtlMs:30_000,forceRefresh:refresh}),
   createAccount: (body: object) => request<Account>('/api/publish/accounts', { method: 'POST', body: JSON.stringify(body) }),
   configureAccount: (body:object,accountId?:number) => request<Account>(`/api/publish/accounts/configure${accountId?`?account_id=${accountId}`:''}`,{method:'POST',body:JSON.stringify(body)}),
   checkAccount: (id:number) => request<Account>(`/api/publish/accounts/${id}/check`,{method:'POST'}),
   removeAccount: (id:number) => request<{removed:boolean;account_id:number;history_preserved:boolean}>(`/api/publish/accounts/${id}`,{method:'DELETE'}),
-  accountMedia: (id:number,limit=50) => request<PlatformMedia[]>(`/api/publish/accounts/${id}/media?limit=${limit}`),
-  accountCalendar: (id:number,limit=50) => request<PlatformMedia[]>(`/api/publish/accounts/${id}/calendar?limit=${limit}`),
-  accountInsights: (id:number,days:string|number='all',refresh=false) => request<AccountInsights>(`/api/publish/accounts/${id}/insights?days=${days}&refresh=${refresh}`),
+  accountMedia: (id:number,limit=50,refresh=false) => {const key=`/api/publish/accounts/${id}/media?limit=${limit}`;return request<PlatformMedia[]>(`${key}${refresh?'&refresh=true':''}`,{cacheTtlMs:300_000,forceRefresh:refresh,cacheKey:key})},
+  accountCalendar: (id:number,limit=50,refresh=false) => {const key=`/api/publish/accounts/${id}/calendar?limit=${limit}`;return request<PlatformMedia[]>(`${key}${refresh?'&refresh=true':''}`,{cacheTtlMs:300_000,forceRefresh:refresh,cacheKey:key})},
+  accountInsights: (id:number,days:string|number='all',refresh=false) => {const key=`/api/publish/accounts/${id}/insights?days=${days}`;return request<AccountInsights>(`${key}${refresh?'&refresh=true':''}`,{cacheTtlMs:300_000,forceRefresh:refresh,cacheKey:key})},
   creatorInfo: (id:number) => request<TikTokCreatorInfo>(`/api/publish/accounts/${id}/creator-info`),
-  integrationConfig: () => request<IntegrationConfig>('/api/integrations/config'),
+  integrationConfig: (refresh=false) => request<IntegrationConfig>('/api/integrations/config',{cacheTtlMs:60_000,forceRefresh:refresh}),
   saveIntegrationConfig: (platform:'youtube'|'meta'|'tiktok',body:object) => request(`/api/integrations/config/${platform}`,{method:'PUT',body:JSON.stringify(body)}),
   startOAuth: (platform:'youtube'|'meta'|'tiktok') => request<{authorization_url:string;expires_in:number}>(`/api/integrations/oauth/${platform}/start`,{method:'POST'}),
   strategies: () => request<AccountStrategy[]>('/api/publish/strategies'),
@@ -138,7 +165,7 @@ export const api = {
   createHotNote: (body:object) => request<HotNote>('/api/hot-notes',{method:'POST',body:JSON.stringify(body)}),
   updateHotNote: (id:number,body:object) => request<HotNote>(`/api/hot-notes/${id}`,{method:'PUT',body:JSON.stringify(body)}),
   deleteHotNote: (id:number) => request<{deleted:number}>(`/api/hot-notes/${id}`,{method:'DELETE'}),
-  publishJobs: () => request<PublishJob[]>('/api/publish/jobs'),
+  publishJobs: (refresh=false) => request<PublishJob[]>('/api/publish/jobs',{cacheTtlMs:15_000,forceRefresh:refresh}),
   createPublishJob: (postId: number, accountId: number, scheduledAt: string, aiDisclosure: boolean) => request<PublishJob>('/api/publish/jobs', { method: 'POST', body: JSON.stringify({ post_id: postId, account_id: accountId, scheduled_at: scheduledAt, ai_disclosure: aiDisclosure }) }),
   runPublishJob: (id: number) => request<PublishJob>(`/api/publish/jobs/${id}/run`, { method: 'POST' }),
   metrics: () => request<Metric[]>('/api/metrics'),
@@ -153,11 +180,11 @@ export const api = {
   factoryJobs: (dramaId:number) => request<FactoryJob[]>(`/api/factory/${dramaId}/jobs`),
   factoryAssets: (dramaId:number) => request<GeneratedAsset[]>(`/api/factory/${dramaId}/assets`),
   uploadCloudAsset: (assetId:number) => request<CloudAsset>(`/api/factory/assets/${assetId}/cloud`,{method:'POST'}),
-  cloudAssets: () => request<CloudAsset[]>('/api/factory/cloud-assets'),
+  cloudAssets: (refresh=false) => request<CloudAsset[]>('/api/factory/cloud-assets',{cacheTtlMs:60_000,forceRefresh:refresh}),
   factoryHooks: (dramaId?:number,activeOnly=false) => request<HookAsset[]>(`/api/factory/hooks${dramaId?`?drama_id=${dramaId}&active_only=${activeOnly}`:`?active_only=${activeOnly}`}`),
   syncFactoryHooks: (dramaId:number) => request<HookAsset[]>(`/api/factory/${dramaId}/hooks/sync`,{method:'POST'}),
   setFactoryHookActive: (hookId:number,active:boolean) => request<HookAsset>(`/api/factory/hooks/${hookId}?active=${active}`,{method:'PATCH'}),
-  accountMatrix: () => request<AccountMatrixRow[]>('/api/workspace/account-matrix'),
+  accountMatrix: (refresh=false) => request<AccountMatrixRow[]>('/api/workspace/account-matrix',{cacheTtlMs:30_000,forceRefresh:refresh}),
   selectMetaOutputDirectory: () => request<{token:string;name:string}>('/api/meta-sfs/select-local-directory',{method:'POST'}),
   metaPreflight: (body:MetaSFSInput) => request<MetaPreflight>('/api/meta-sfs/preflight',{method:'POST',body:JSON.stringify(body)}),
   buildMetaPackage: (body:MetaSFSInput) => request<MetaPackage>('/api/meta-sfs/build',{method:'POST',body:JSON.stringify(body)}),
@@ -169,7 +196,7 @@ export const api = {
   copyMetaPackageLocal: (id:number,token:string) => request<{path:string;folder_name:string}>(`/api/meta-sfs/packages/${id}/copy-local?token=${encodeURIComponent(token)}`,{method:'POST'}),
   uploadMetaPackage: (id:number) => request<MetaPackage>(`/api/meta-sfs/packages/${id}/upload-drive`,{method:'POST'}),
   engagementSummary: () => request<EngagementSummary>('/api/engagement/summary'),
-  socialComments: (filters='') => request<SocialComment[]>(`/api/engagement/comments${filters}`),
+  socialComments: (filters='',refresh=false) => request<SocialComment[]>(`/api/engagement/comments${filters}`,{cacheTtlMs:30_000,forceRefresh:refresh}),
   importComments: (items:object[]) => request<{created:number;updated:number}>('/api/engagement/comments/import',{method:'POST',body:JSON.stringify({items})}),
   analyzeComments: (commentIds:number[],useAi=false) => request<{analyzed:number;source:string;items:SocialComment[]}>('/api/engagement/comments/analyze',{method:'POST',body:JSON.stringify({comment_ids:commentIds,use_ai:useAi})}),
   setCommentStatus: (id:number,status:string) => request<SocialComment>(`/api/engagement/comments/${id}`,{method:'PATCH',body:JSON.stringify({status})}),
