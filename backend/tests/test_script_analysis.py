@@ -133,8 +133,8 @@ def test_read_analysis_keeps_only_top_ten_high_energy_candidates(tmp_path: Path)
         "status": "completed",
         "high_energy_count": 12,
         "episodes": [{
-            "episode": "Episode1.mp4", "segments": [], "sensitive": [],
-            "high_energy": [{"start": score, "end": score + 1, "energy_score": score} for score in range(1, 13)],
+            "episode": "Episode1.mp4", "duration": 300, "segments": [], "sensitive": [],
+            "high_energy": [{"start": score * 20, "end": score * 20 + 15, "energy_score": score} for score in range(1, 13)],
         }],
     })
 
@@ -145,6 +145,21 @@ def test_read_analysis_keeps_only_top_ten_high_energy_candidates(tmp_path: Path)
     assert len(scores) == 10
     assert min(scores) == 3
     assert result["high_energy_count"] == 10
+
+
+def test_read_analysis_expands_legacy_short_high_energy_candidate(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed", "high_energy_count": 1,
+        "episodes": [{
+            "episode": "Episode6.mp4", "duration": 120, "segments": [], "sensitive": [],
+            "high_energy": [{"start": 0, "end": 3, "energy_score": 95, "frame_files": []}],
+        }],
+    })
+
+    result = script_analysis.read_analysis(tmp_path)
+
+    assert result["episodes"][0]["high_energy"][0]["start"] == 0
+    assert result["episodes"][0]["high_energy"][0]["end"] == 15
 
 
 def test_evidence_frames_are_repaired_to_candidate_start_and_end(tmp_path: Path):

@@ -23,6 +23,8 @@ from .hook_recommender import loudness_peaks, media_duration
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
 ANALYSIS_VERSION = 4
 MAX_HIGH_ENERGY_CANDIDATES = 10
+MIN_HIGH_ENERGY_SECONDS = 15.0
+MAX_HIGH_ENERGY_SECONDS = 30.0
 RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
 SEXUAL_CATEGORIES = {"软色情", "性暗示", "色情", "性行为", "性暴力"}
 SEXUAL_SCENE_PADDING_BEFORE = 5.0
@@ -152,6 +154,31 @@ def _analysis_windows(duration: float, seconds: int, overlap: int) -> list[tuple
             break
         start += step
     return windows
+
+
+def _fit_high_energy_range(start: float, end: float, lower: float, upper: float) -> tuple[float, float]:
+    lower, upper = float(lower), max(float(lower), float(upper))
+    available = upper - lower
+    if available <= 0:
+        return round(lower, 2), round(upper, 2)
+    start = max(lower, min(float(start), upper))
+    end = max(start, min(float(end), upper))
+    current = end - start
+    target = min(available, max(MIN_HIGH_ENERGY_SECONDS, min(MAX_HIGH_ENERGY_SECONDS, current)))
+    center = (start + end) / 2 if current > 0 else start
+    fitted_start, fitted_end = center - target / 2, center + target / 2
+    if fitted_start < lower:
+        fitted_end += lower - fitted_start
+        fitted_start = lower
+    if fitted_end > upper:
+        fitted_start -= fitted_end - upper
+        fitted_end = upper
+    return round(max(lower, fitted_start), 2), round(min(upper, fitted_end), 2)
+
+
+def normalize_high_energy_range(start: float, end: float, duration: float) -> tuple[float, float]:
+    """Keep the detected moment centered while enforcing a 15–30s usable hook."""
+    return _fit_high_energy_range(start, end, 0.0, duration)
 
 
 def _candidate_categories(row: dict[str, Any]) -> set[str]:
@@ -306,6 +333,32 @@ def _dedupe_high_energy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(selected, key=lambda item: float(item.get("start", 0)))
 
 
+def _normalize_high_energy_candidates(payload: dict[str, Any]) -> bool:
+    changed = False
+    episodes = [item for item in payload.get("episodes", []) or [] if isinstance(item, dict)]
+    for episode in episodes:
+        duration = float(episode.get("duration", 0) or 0)
+        rows = [item for item in episode.get("high_energy", []) or [] if isinstance(item, dict)]
+        if duration > 0:
+            for row in rows:
+                start, end = normalize_high_energy_range(
+                    float(row.get("start", 0)), float(row.get("end", 0)), duration,
+                )
+                if row.get("start") != start or row.get("end") != end:
+                    row["start"], row["end"] = start, end
+                    row["text"] = _text_for_range(episode.get("segments", []) or [], start, end)
+                    changed = True
+        deduped = _dedupe_high_energy(rows)
+        if deduped != rows:
+            episode["high_energy"] = deduped
+            changed = True
+    count = sum(len(episode.get("high_energy", []) or []) for episode in episodes)
+    if payload.get("high_energy_count") != count:
+        payload["high_energy_count"] = count
+        changed = True
+    return changed
+
+
 def _read_manual_sensitive(folder: Path) -> list[dict[str, Any]]:
     path = manual_sensitive_file(folder)
     if not path.is_file():
@@ -376,6 +429,7 @@ def read_analysis(folder: Path) -> dict[str, Any] | None:
     repaired = any((
         _normalize_analysis_reasons(payload),
         _normalize_sensitive_padding(payload),
+        _normalize_high_energy_candidates(payload),
         _normalize_evidence_frames(folder, payload),
         _limit_high_energy(payload),
         _merge_manual_sensitive(folder, payload),
@@ -508,7 +562,7 @@ def _model_candidates(
         bounds = _candidate_range(raw, window_start, window_end)
         if not bounds:
             continue
-        start, end = bounds
+        start, end = _fit_high_energy_range(bounds[0], bounds[1], window_start, window_end)
         reasons = _reason_list(raw.get("reasons"))
         try:
             score = min(100.0, max(0.0, float(raw.get("score", 0))))
@@ -760,6 +814,7 @@ def analyze_drama(
         "updated_at": utc_timestamp(), "resume_count": resume_count,
         "analysis_version": ANALYSIS_VERSION,
     }
+    _normalize_high_energy_candidates(result)
     _limit_high_energy(result)
     _merge_manual_sensitive(folder, result)
     return write_analysis(folder, result)

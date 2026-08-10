@@ -17,6 +17,7 @@ from ..config import get_settings
 from ..models import Clip, Drama, FactoryJob, GeneratedAsset, HookAsset
 from .clipper import MediaCommandError, run_command
 from .drama_library import episode_files, read_highlights
+from .script_analysis import normalize_high_energy_range
 
 
 @dataclass(frozen=True)
@@ -41,10 +42,9 @@ def natural_key(value: str) -> list[object]:
     return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", value)]
 
 
-def hook_clip_range(start: float, media_duration: float, requested_duration: float) -> tuple[float, float]:
-    clip_duration = min(media_duration, max(15.0, min(30.0, requested_duration)))
-    clip_start = max(0.0, min(start, media_duration - clip_duration))
-    return clip_start, min(media_duration, clip_start + clip_duration)
+def hook_clip_range(start: float, end: float, media_duration: float) -> tuple[float, float]:
+    """Use the candidate's own duration; only repair legacy ranges outside 15–30s."""
+    return normalize_high_energy_range(start, end, media_duration)
 
 
 def probe_media(ffprobe: str, path: Path) -> dict:
@@ -453,8 +453,8 @@ class FactoryPipeline:
                                 break
                             hook_start, hook_end = hook_clip_range(
                                 hook.start,
+                                hook.end,
                                 probe_media(settings.ffprobe_binary, hook_source)["duration"],
-                                job.hook_duration_seconds,
                             )
                             if hook.id not in encoded_hooks:
                                 hook_file = hooks_dir / f"H{hook.id:04d}.mp4"

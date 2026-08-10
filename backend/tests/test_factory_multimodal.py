@@ -37,6 +37,7 @@ def test_prompt_requires_contextual_soft_sexual_review():
     assert "ASR 台词与人物位置" in prompt
     assert "不得只截取最露骨的几秒" in prompt
     assert "动画、特效、奇幻生物和非真人画面使用同一标准" in prompt
+    assert "完整 15-30 秒范围" in prompt
 
 
 def test_analysis_falls_back_to_qwen_when_gemini_fails(monkeypatch):

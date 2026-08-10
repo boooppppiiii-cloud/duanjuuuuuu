@@ -20,11 +20,11 @@ def test_natural_order_and_balanced_four_minutes():
 
 
 def test_hook_clip_range_is_between_fifteen_and_thirty_seconds():
-    assert hook_clip_range(30, 120, 15) == (30, 45)
-    assert hook_clip_range(30, 120, 30) == (30, 60)
-    assert hook_clip_range(116, 120, 15) == (105, 120)
-    assert hook_clip_range(5, 12, 15) == (0, 12)
-    assert hook_clip_range(30, 120, 3) == (30, 45)
+    assert hook_clip_range(30, 45, 120) == (30, 45)
+    assert hook_clip_range(30, 60, 120) == (30, 60)
+    assert hook_clip_range(116, 119, 120) == (105, 120)
+    assert hook_clip_range(5, 8, 12) == (0, 12)
+    assert hook_clip_range(30, 70, 120) == (35, 65)
 
 
 def test_factory_request_accepts_only_fifteen_to_thirty_second_hooks():
