@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -166,13 +167,27 @@ def _merge_text_values(left: Any, right: Any) -> list[str]:
     return list(dict.fromkeys([*_reason_list(left), *_reason_list(right)]))
 
 
+def _manual_ranges(row: dict[str, Any]) -> list[dict[str, float]]:
+    values = row.get("manual_ranges")
+    ranges = [
+        {"start": round(float(item.get("start", 0)), 2), "end": round(float(item.get("end", 0)), 2)}
+        for item in values or [] if isinstance(item, dict) and float(item.get("end", 0)) > float(item.get("start", 0))
+    ]
+    if not ranges and row.get("source") == "manual":
+        ranges = [{"start": round(float(row.get("start", 0)), 2), "end": round(float(row.get("end", 0)), 2)}]
+    return ranges
+
+
 def _merge_sensitive_candidates(
-    rows: list[dict[str, Any]], duration: float, segments: list[dict[str, Any]],
+    rows: list[dict[str, Any]], duration: float, segments: list[dict[str, Any]], *, expand_sexual: bool = True,
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     for original in rows:
-        row = dict(original)
-        if _is_sexual_candidate(row):
+        row = deepcopy(original)
+        manual_ranges = _manual_ranges(row)
+        if manual_ranges:
+            row["manual_ranges"] = manual_ranges
+        if expand_sexual and _is_sexual_candidate(row):
             detected_start, detected_end = float(row.get("start", 0)), float(row.get("end", 0))
             row["detected_start"] = round(detected_start, 2)
             row["detected_end"] = round(detected_end, 2)
@@ -203,9 +218,15 @@ def _merge_sensitive_candidates(
         previous["detected_end"] = max(float(previous.get("detected_end", previous["end"])), float(row.get("detected_end", row["end"])))
         previous["confidence"] = max(float(previous.get("confidence", 0)), float(row.get("confidence", 0)))
         previous["overall_risk_score"] = max(int(previous.get("overall_risk_score", 0)), int(row.get("overall_risk_score", 0)))
-        previous["review_status"] = "approved" if "approved" in {previous.get("review_status"), row.get("review_status")} else "pending"
+        review_states = {str(previous.get("review_status") or "pending"), str(row.get("review_status") or "pending")}
+        previous["review_status"] = "approved" if "approved" in review_states else "pending" if "pending" in review_states else "rejected"
         previous["evidence"] = _merge_text_values(previous.get("evidence"), row.get("evidence"))
-        previous["frame_files"] = list(dict.fromkeys([*(previous.get("frame_files") or []), *(row.get("frame_files") or [])]))
+        frames = list(dict.fromkeys([*(previous.get("frame_files") or []), *(row.get("frame_files") or [])]))
+        previous["frame_files"] = frames if len(frames) <= 2 else [frames[0], frames[-1]]
+        combined_manual = [*_manual_ranges(previous), *_manual_ranges(row)]
+        if combined_manual:
+            previous["manual_ranges"] = list({(item["start"], item["end"]): item for item in combined_manual}.values())
+            previous["source"] = "manual"
         previous_scores = previous.setdefault("risk_scores", {})
         for key, value in (row.get("risk_scores") or {}).items():
             previous_scores[key] = max(int(previous_scores.get(key, 0)), int(value or 0))
@@ -217,6 +238,25 @@ def _merge_sensitive_candidates(
         row["end"] = round(float(row.get("end", 0)), 2)
         row["text"] = _text_for_range(segments, row["start"], row["end"])
     return merged
+
+
+def _consolidate_existing_sensitive(payload: dict[str, Any]) -> bool:
+    """Merge overlapping stored ranges without padding them a second time."""
+    changed = False
+    episodes = [item for item in payload.get("episodes", []) or [] if isinstance(item, dict)]
+    for episode in episodes:
+        rows = [item for item in episode.get("sensitive", []) or [] if isinstance(item, dict)]
+        consolidated = _merge_sensitive_candidates(
+            rows, float(episode.get("duration", 0)), episode.get("segments", []) or [], expand_sexual=False,
+        )
+        if consolidated != rows:
+            episode["sensitive"] = consolidated
+            changed = True
+    count = sum(len(episode.get("sensitive", []) or []) for episode in episodes)
+    if payload.get("sensitive_count") != count:
+        payload["sensitive_count"] = count
+        changed = True
+    return changed
 
 
 def _normalize_sensitive_padding(payload: dict[str, Any]) -> bool:
@@ -281,7 +321,10 @@ def _merge_manual_sensitive(folder: Path, payload: dict[str, Any]) -> bool:
         episode_index, episode = match
         start, end = float(manual.get("start", 0)), float(manual.get("end", 0))
         rows = episode.setdefault("sensitive", [])
-        existing = next((row for row in rows if row.get("source") == "manual" and abs(float(row.get("start", 0)) - start) < .11 and abs(float(row.get("end", 0)) - end) < .11), None)
+        existing = next((
+            row for row in rows
+            if any(abs(item["start"] - start) < .11 and abs(item["end"] - end) < .11 for item in _manual_ranges(row))
+        ), None)
         note = str(manual.get("note") or "人工确认色情内容，必须剪除")
         row = {
             "start": start, "end": end, "text": _text_for_range(episode.get("segments", []), start, end),
@@ -291,13 +334,29 @@ def _merge_manual_sensitive(folder: Path, payload: dict[str, Any]) -> bool:
             "risk_scores": {key: 100 for key in RISK_SCORE_KEYS},
             "review_status": "approved", "evidence": [note],
             "frame_files": _stored_edge_frames(folder, episode_index, start, end), "source": "manual",
+            "manual_ranges": [{"start": round(start, 2), "end": round(end, 2)}],
         }
-        if existing != row:
-            if existing is None:
-                rows.append(row)
-            else:
-                existing.clear(); existing.update(row)
+        if existing is None:
+            rows.append(row)
             changed = True
+        else:
+            before = deepcopy(existing)
+            existing["source"] = "manual"
+            existing["review_status"] = "approved"
+            existing["confidence"] = max(1.0, float(existing.get("confidence", 0)))
+            existing["overall_risk_score"] = max(100, int(existing.get("overall_risk_score", 0)))
+            existing["manual_ranges"] = list({
+                (item["start"], item["end"]): item
+                for item in [*_manual_ranges(existing), {"start": round(start, 2), "end": round(end, 2)}]
+            }.values())
+            existing["evidence"] = _merge_text_values(existing.get("evidence"), [note])
+            existing_scores = existing.setdefault("risk_scores", {})
+            for key in RISK_SCORE_KEYS:
+                existing_scores[key] = max(100, int(existing_scores.get(key, 0)))
+            existing_sensitive = existing.setdefault("sensitive", {})
+            category = str(manual.get("category") or "色情")
+            existing_sensitive[category] = _merge_text_values(existing_sensitive.get(category), [note])
+            changed = changed or existing != before
     count = sum(len(episode.get("sensitive", []) or []) for episode in episodes)
     if payload.get("sensitive_count") != count:
         payload["sensitive_count"] = count
@@ -316,6 +375,7 @@ def read_analysis(folder: Path) -> dict[str, Any] | None:
         _normalize_evidence_frames(folder, payload),
         _limit_high_energy(payload),
         _merge_manual_sensitive(folder, payload),
+        _consolidate_existing_sensitive(payload),
     ))
     if repaired and payload.get("status") == "completed":
         write_analysis(folder, payload)
@@ -353,6 +413,7 @@ def add_manual_sensitive(folder: Path, episode_name: str, start: float, end: flo
     path = manual_sensitive_file(folder)
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     _merge_manual_sensitive(folder, analysis)
+    _consolidate_existing_sensitive(analysis)
     return write_analysis(folder, analysis)
 
 
@@ -723,6 +784,8 @@ def update_review(
     if new_end is not None:
         target["end"] = round(max(float(target["start"]) + .2, new_end), 2)
     target["review_status"] = decision
+    if kind == "sensitive":
+        _consolidate_existing_sensitive(data)
     return write_analysis(folder, data)
 
 

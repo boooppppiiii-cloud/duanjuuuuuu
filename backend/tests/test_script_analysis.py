@@ -186,6 +186,34 @@ def test_manual_sensitive_range_is_persistent_and_always_removed(tmp_path: Path)
     assert script_analysis.manual_sensitive_file(tmp_path).is_file()
 
 
+def test_manual_and_ai_sensitive_ranges_are_shown_as_one_range(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed", "sensitive_count": 1,
+        "episodes": [{
+            "episode": "Episode5.mp4", "duration": 180, "segments": [], "high_energy": [],
+            "sensitive": [{
+                "start": 55, "end": 100, "source": "gemini",
+                "sensitive": {"软色情": ["AI 检测区间"]}, "overall_risk_score": 85,
+                "risk_scores": {"action": 85}, "review_status": "approved",
+                "evidence": ["AI 检测区间"], "frame_files": [],
+            }],
+        }],
+    })
+
+    result = script_analysis.add_manual_sensitive(
+        tmp_path, "Episode5.mp4", 60, 115, "色情", "人工确认区间",
+    )
+    reread = script_analysis.read_analysis(tmp_path)
+
+    assert result["sensitive_count"] == 1
+    assert len(reread["episodes"][0]["sensitive"]) == 1
+    risk = reread["episodes"][0]["sensitive"][0]
+    assert (risk["start"], risk["end"]) == (55.0, 115.0)
+    assert risk["source"] == "manual"
+    assert risk["manual_ranges"] == [{"start": 60.0, "end": 115.0}]
+    assert set(risk["sensitive"]) == {"软色情", "色情"}
+
+
 def test_analysis_windows_overlap_scene_boundaries():
     windows = script_analysis._analysis_windows(180, 60, 15)
 
@@ -217,6 +245,40 @@ def test_sexual_candidates_are_conservatively_expanded_and_merged():
     assert set(merged[0]["sensitive"]) == {"性暗示", "软色情"}
     assert merged[0]["frame_files"] == ["first.jpg", "last.jpg"]
     assert merged[0]["boundary_padding_seconds"] == {"before": 5.0, "after": 15.0}
+
+
+def test_read_analysis_consolidates_stored_overlapping_sensitive_ranges(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed", "analysis_version": script_analysis.ANALYSIS_VERSION,
+        "sensitive_count": 2,
+        "episodes": [{
+            "episode": "Episode1.mp4", "duration": 180, "segments": [], "high_energy": [],
+            "sensitive": [{
+                "start": 10, "end": 35, "detected_start": 15, "detected_end": 20,
+                "boundary_padding_seconds": {"before": 5.0, "after": 15.0},
+                "source": "gemini", "sensitive": {"性暗示": ["身体接触"]},
+                "overall_risk_score": 72, "risk_scores": {"action": 72},
+                "review_status": "approved", "evidence": ["身体接触"], "frame_files": ["a.jpg", "b.jpg"],
+            }, {
+                "start": 17, "end": 43, "detected_start": 22, "detected_end": 28,
+                "boundary_padding_seconds": {"before": 5.0, "after": 15.0},
+                "source": "gemini", "sensitive": {"软色情": ["连续暧昧动作"]},
+                "overall_risk_score": 91, "risk_scores": {"scene_context": 91},
+                "review_status": "pending", "evidence": ["连续暧昧动作"], "frame_files": ["c.jpg", "d.jpg"],
+            }],
+        }],
+    })
+
+    result = script_analysis.read_analysis(tmp_path)
+
+    assert result["sensitive_count"] == 1
+    assert len(result["episodes"][0]["sensitive"]) == 1
+    risk = result["episodes"][0]["sensitive"][0]
+    assert (risk["start"], risk["end"]) == (10.0, 43.0)
+    assert risk["review_status"] == "approved"
+    assert risk["overall_risk_score"] == 91
+    assert set(risk["sensitive"]) == {"性暗示", "软色情"}
+    assert risk["frame_files"] == ["a.jpg", "d.jpg"]
 
 
 def test_read_analysis_migrates_early_v4_sensitive_padding(tmp_path: Path):
