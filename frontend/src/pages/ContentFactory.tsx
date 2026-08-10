@@ -68,6 +68,7 @@ export default function ContentFactory(){
           <aside className="factory-episode-list" aria-label="剧集列表">{analysis.episodes.map((ep,index)=><button type="button" key={ep.episode} className={ep.episode===activeEpisode?.episode?'is-active':''} onClick={()=>{setReviewEpisode(ep.episode);setSensitiveIndex(0);setVideoTime(0)}}><span>{String(index+1).padStart(2,'0')}</span><div><b>{ep.episode}</b><small>{clock(ep.duration)} · {ep.sensitive.length} 个敏感标记</small></div>{ep.sensitive.some(row=>row.review_status==='pending')&&<i/>}</button>)}</aside>
           {activeEpisode&&<section className="factory-video-review">
             <div className="factory-video-stage"><video key={activeEpisode.episode} ref={videoRef} controls playsInline preload="metadata" src={factoryVideoUrl(drama.id,activeEpisode.episode)} onTimeUpdate={event=>setVideoTime(event.currentTarget.currentTime)} onLoadedMetadata={event=>{if(editRange[0]>0)event.currentTarget.currentTime=editRange[0]}}/></div>
+            <div className="factory-video-review-panel">
             <div className="factory-timeline-heading"><b>敏感片段时间轴</b><span>{clock(videoTime)} / {clock(activeEpisode.duration)}</span></div>
             <div className="factory-sensitive-track" onClick={event=>{const bounds=event.currentTarget.getBoundingClientRect();seekVideo((event.clientX-bounds.left)/bounds.width*activeEpisode.duration)}}>
               {activeSensitive.map((row,index)=>{const duration=Math.max(.2,activeEpisode.duration);const left=Math.max(0,Math.min(100,row.start/duration*100));const width=Math.max(.7,Math.min(100-left,(row.end-row.start)/duration*100));return <button type="button" key={`${row.start}-${row.end}-${index}`} title={`${clock(row.start)}–${clock(row.end)}`} aria-label={`敏感片段 ${clock(row.start)} 到 ${clock(row.end)}`} className={`${index===sensitiveIndex?'is-selected':''} ${row.review_status==='rejected'?'is-kept':''}`} style={{left:`${left}%`,width:`${width}%`}} onClick={event=>{event.stopPropagation();chooseSensitive(index)}}/>})}
@@ -82,10 +83,11 @@ export default function ContentFactory(){
               <div className="factory-sensitive-actions"><Button size="small" danger disabled={row.review_status==='approved'} onClick={()=>reviewCandidate(activeEpisode.episode,'sensitive',row,'approved')}>标记移除</Button><Button size="small" disabled={row.review_status==='rejected'} onClick={()=>reviewCandidate(activeEpisode.episode,'sensitive',row,'rejected')}>保留</Button></div>
             </article>)}</div>}
             <Collapse className="factory-script-collapse" items={[{key:'script',label:`展开本集脚本详情（${activeEpisode.segments.length} 段）`,children:<Table size="small" rowKey={row=>`${activeEpisode.episode}-${row.start}`} dataSource={activeEpisode.segments} columns={segmentColumns} pagination={false} scroll={{x:760}}/>}]}/>
+            </div>
           </section>}
         </div>
       </Card></div>
-      <Card title={`全部敏感内容 · ${sensitive.length}`}>
+      <div className="factory-review-grid factory-candidate-grid"><Card title={`全部敏感内容 · ${sensitive.length}`}>
         {sensitive.length?<div className="factory-sensitive-list factory-sensitive-overview">{sensitive.map((row,index)=><article key={`${row.episode}-${row.start}-${row.end}-${index}`}>
           <button type="button" className="factory-sensitive-summary" onClick={()=>openSensitive(row.episode,row)}>
             <span><b>{row.episode} · {clock(row.start)}–{clock(row.end)}</b><Tag color={(row.overall_risk_score??0)>=60?'red':'gold'}>风险 {row.overall_risk_score??Math.round((row.confidence??0)*100)}</Tag><Tag color={sensitiveReviewLabel[row.review_status??'pending'].color}>{sensitiveReviewLabel[row.review_status??'pending'].text}</Tag></span>
@@ -95,7 +97,12 @@ export default function ContentFactory(){
           <div className="factory-sensitive-actions"><Button size="small" danger disabled={row.review_status==='approved'} onClick={()=>reviewCandidate(row.episode,'sensitive',row,'approved')}>标记移除</Button><Button size="small" disabled={row.review_status==='rejected'} onClick={()=>reviewCandidate(row.episode,'sensitive',row,'rejected')}>保留</Button></div>
         </article>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未识别到敏感内容"/>}
       </Card>
-      <Card title={<><FireOutlined/> 高能候选</>}><Table size="small" rowKey={row=>`${row.episode}-${row.start}`} dataSource={highEnergy} pagination={{pageSize:6}} columns={[{title:'剧集',dataIndex:'episode',width:100},{title:'时间',render:(_,row)=>`${clock(row.start)}–${clock(row.end)}`,width:115},{title:'AI 依据',render:(_,row)=><Space direction="vertical" size={2}><span>{row.energy_reasons.join('；')||row.text}</span><Space size={4}><Tag color="orange">评分 {row.energy_score.toFixed(0)}</Tag><Tag color={reviewLabel[row.review_status??'pending'].color}>{reviewLabel[row.review_status??'pending'].text}</Tag></Space></Space>},{title:'首尾帧',width:125,render:(_,row)=><Image.PreviewGroup>{edgeFrames(row.frame_files).map(file=><Image key={file} width={48} height={34} src={api.factoryFrameUrl(drama.id,file)} style={{objectFit:'cover',borderRadius:6}}/>)}</Image.PreviewGroup>},{title:'操作',width:130,render:(_,row)=><Space size={4}><Button size="small" type="primary" disabled={row.review_status==='approved'} onClick={()=>adopt(row.episode,row)}>采用</Button><Button size="small" disabled={row.review_status==='rejected'} onClick={()=>reviewCandidate(row.episode,'high_energy',row,'rejected')}>排除</Button></Space>}]} scroll={{x:830}}/></Card>
+      <Card title={<><FireOutlined/> 高能候选 · {highEnergy.length}</>}>
+        {highEnergy.length?<div className="factory-high-energy-list">{highEnergy.map((row,index)=><article key={`${row.episode}-${row.start}-${row.end}-${index}`}>
+          <div className="factory-high-energy-main"><span><b>{row.episode} · {clock(row.start)}–{clock(row.end)}</b><Tag color="orange">评分 {row.energy_score.toFixed(0)}</Tag><Tag color={reviewLabel[row.review_status??'pending'].color}>{reviewLabel[row.review_status??'pending'].text}</Tag></span><small>{row.energy_reasons.join('；')||row.text||'未提供高能依据'}</small></div>
+          <div className="factory-high-energy-side"><div className="factory-candidate-frames"><Image.PreviewGroup>{edgeFrames(row.frame_files).map(file=><Image key={file} width={44} height={34} src={api.factoryFrameUrl(drama.id,file)} style={{objectFit:'cover',borderRadius:6}}/>)}</Image.PreviewGroup></div><div><Button size="small" type="primary" disabled={row.review_status==='approved'} onClick={()=>adopt(row.episode,row)}>采用</Button><Button size="small" disabled={row.review_status==='rejected'} onClick={()=>reviewCandidate(row.episode,'high_energy',row,'rejected')}>排除</Button></div></div>
+        </article>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未识别到高能候选"/>}
+      </Card></div>
     </>}</div>}
 
     {tab==='process'&&<div className="factory-inner">
