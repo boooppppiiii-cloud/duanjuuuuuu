@@ -33,11 +33,57 @@ def analysis_file(folder: Path) -> Path:
     return folder / "factory_analysis.json"
 
 
+def _reason_list(value: Any) -> list[str]:
+    """Accept provider strings and repair historical arrays split into characters."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple)):
+        rows = [str(item).strip() for item in value if item is not None and str(item).strip()]
+        if len(rows) >= 4 and all(len(item) <= 1 for item in rows):
+            text = "".join(rows).strip()
+            return [text] if text else []
+        return rows
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _normalize_analysis_reasons(payload: dict[str, Any]) -> bool:
+    changed = False
+    for episode in payload.get("episodes", []) or []:
+        if not isinstance(episode, dict):
+            continue
+        for collection in ("segments", "high_energy", "sensitive"):
+            for row in episode.get(collection, []) or []:
+                if not isinstance(row, dict):
+                    continue
+                for field in ("energy_reasons", "evidence"):
+                    if field in row:
+                        normalized = _reason_list(row.get(field))
+                        if normalized != row.get(field):
+                            row[field] = normalized
+                            changed = True
+                sensitive = row.get("sensitive")
+                if isinstance(sensitive, dict):
+                    for category, reasons in list(sensitive.items()):
+                        normalized = _reason_list(reasons)
+                        if normalized != reasons:
+                            sensitive[category] = normalized
+                            changed = True
+    return changed
+
+
 def read_analysis(folder: Path) -> dict[str, Any] | None:
     target = analysis_file(folder)
     if not target.is_file():
         return None
-    return json.loads(target.read_text(encoding="utf-8"))
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    repaired = _normalize_analysis_reasons(payload)
+    if repaired and payload.get("status") == "completed":
+        write_analysis(folder, payload)
+    return payload
 
 
 def write_analysis(folder: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -139,7 +185,7 @@ def _model_candidates(
         if not bounds:
             continue
         start, end = bounds
-        reasons = [str(value) for value in (raw.get("reasons") or []) if value]
+        reasons = _reason_list(raw.get("reasons"))
         try:
             score = min(100.0, max(0.0, float(raw.get("score", 0))))
         except (TypeError, ValueError):
@@ -156,7 +202,7 @@ def _model_candidates(
             continue
         start, end = bounds
         category = str(raw.get("category") or "其他")
-        reasons = [str(value) for value in (raw.get("reasons") or []) if value]
+        reasons = _reason_list(raw.get("reasons"))
         try:
             confidence = min(1.0, max(0.0, float(raw.get("confidence", 0))))
         except (TypeError, ValueError):

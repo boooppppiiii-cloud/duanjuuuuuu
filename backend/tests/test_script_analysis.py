@@ -94,3 +94,35 @@ def test_episode_files_use_natural_number_order(tmp_path: Path):
         (episodes / name).write_bytes(b"video")
 
     assert [item.name for item in episode_files(tmp_path)] == ["Episode1.mp4", "Episode2.mp4", "Episode10.mp4"]
+
+
+def test_read_analysis_repairs_character_split_reasons(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed",
+        "episodes": [{
+            "episode": "Episode2.mp4",
+            "segments": [],
+            "high_energy": [{
+                "energy_reasons": list("红衣女子冷酷宣称牺牲百年换取预言"),
+                "evidence": list("红衣女子冷酷宣称牺牲百年换取预言"),
+                "sensitive": {},
+            }],
+            "sensitive": [{
+                "energy_reasons": [],
+                "evidence": list("人物反复身体撞击"),
+                "sensitive": {"性暗示": list("人物反复身体撞击")},
+            }],
+        }],
+    })
+
+    result = script_analysis.read_analysis(tmp_path)
+
+    assert result is not None
+    high = result["episodes"][0]["high_energy"][0]
+    risk = result["episodes"][0]["sensitive"][0]
+    assert high["energy_reasons"] == ["红衣女子冷酷宣称牺牲百年换取预言"]
+    assert high["evidence"] == ["红衣女子冷酷宣称牺牲百年换取预言"]
+    assert risk["evidence"] == ["人物反复身体撞击"]
+    assert risk["sensitive"]["性暗示"] == ["人物反复身体撞击"]
+    persisted = script_analysis.analysis_file(tmp_path).read_text(encoding="utf-8")
+    assert '"红衣女子冷酷宣称牺牲百年换取预言"' in persisted

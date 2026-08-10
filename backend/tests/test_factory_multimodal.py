@@ -63,12 +63,12 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
     def fake_ai(*_):
         return {
             "summary": "身份揭晓后发生肢体冲突",
-            "high_energy": [{"start": 1, "end": 4, "score": 92, "reasons": ["身份反转"], "frame_indices": [1]}],
+            "high_energy": [{"start": 1, "end": 4, "score": 92, "reasons": "身份反转", "frame_indices": [1]}],
             "sensitive": [{
                 "start": 5, "end": 7, "category": "性暗示", "confidence": .7,
                 "overall_risk_score": 86,
                 "risk_scores": {"body_focus": 55, "action": 92, "dialogue_context": 60, "expression_audio": 72, "scene_context": 88},
-                "reasons": ["连续画面出现裙底接触与身体撞击"], "frame_indices": [1],
+                "reasons": "连续画面出现裙底接触与身体撞击", "frame_indices": [1],
             }, {
                 "start": 1, "end": 2, "category": "其他", "confidence": .15,
                 "overall_risk_score": 15,
@@ -87,11 +87,13 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
     assert result["sampled_frame_count"] == 1
     assert result["api_call_count"] == 1
     assert result["episodes"][0]["high_energy"][0]["review_status"] == "pending"
+    assert result["episodes"][0]["high_energy"][0]["energy_reasons"] == ["身份反转"]
     risk = result["episodes"][0]["sensitive"][0]
     assert len(result["episodes"][0]["sensitive"]) == 1
     assert risk["review_status"] == "approved"
     assert risk["overall_risk_score"] == 86
     assert risk["risk_scores"]["action"] == 92
+    assert risk["sensitive"]["性暗示"] == ["连续画面出现裙底接触与身体撞击"]
     assert risk["frame_files"] == [frame.name]
 
     updated = script_analysis.update_review(tmp_path, "01.mp4", "sensitive", 5, 7, "rejected")
