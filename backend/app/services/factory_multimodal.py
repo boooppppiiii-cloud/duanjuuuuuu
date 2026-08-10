@@ -40,7 +40,10 @@ def choose_frame_times(start: float, end: float, peaks: list[tuple[float, float]
         return []
     ranked_peaks = [second for second, _ in sorted(peaks, key=lambda row: row[1], reverse=True) if start <= second < end]
     burst_reserve = min(maximum // 3 * 3, len(ranked_peaks[:2]) * 3)
-    uniform_count = min(maximum - burst_reserve, max(1, math.ceil(duration / 4)))
+    # Quiet sexualized actions are easy to miss when sampling is driven by audio peaks.
+    # Keep chronological coverage close to one frame every two seconds and use the
+    # remaining budget for short motion bursts around loudness peaks.
+    uniform_count = min(maximum - burst_reserve, max(1, math.ceil(duration / 2)))
     uniform = [start + duration * (index + 0.5) / uniform_count for index in range(uniform_count)]
     peak_bursts = [nearby for second in ranked_peaks for nearby in (second - .8, second, second + .8)]
     candidates = [*peak_bursts, *uniform]
@@ -109,6 +112,9 @@ def _prompt(episode: str, window_start: float, window_end: float, transcript: li
    - scene_context：床、浴室、裙底、封闭空间、强迫控制关系，以及尾巴/触手/棍状物伸入裙底或接触胯部等性暗示道具互动。
    特别规则：尾巴、触手或其他物体伸入裙底，人物反复身体撞击/骨盆运动，伴随色情化面部表情时，即使没有裸露也必须报为“性暗示”或“软色情”，action 与 scene_context 应为高分。
    色情内容采用高召回策略：胸臀胯/裙底聚焦、床上或换衣、贴身衣物、挑逗姿态、压床、衣物拉扯、敏感部位接触、骨盆运动、呻吟喘息等只要存在合理怀疑，即使画面不清晰或置信度较低也必须输出；色情、软色情、性暗示、性行为、性暴力的总风险达到 10 就输出，宁可交给人工排除，不得漏报。其他类别总风险达到 30 输出；60-100 为高风险。
+   必须按“完整风险场景”标注时间：从最早出现暧昧铺垫、身体聚焦、强迫控制或可疑道具接触开始，直到人物完全停止相关动作或镜头切离为止。不得只截取最露骨的几秒。若风险场景在本窗口开始前已经发生，start 必须等于窗口起点；若窗口结束时仍未停止，end 必须等于窗口终点，系统会与相邻重叠窗口合并。
+   连续帧中即使单帧看不出裸露，也要比较人物/尾巴/触手/衣物的位置变化来判断插入、撞击、抚摸、拉扯等动作。动画、特效、奇幻生物和非真人画面使用同一标准。
+   每个存在合理怀疑的时间段都要逐一输出，不得用 summary 代替 sensitive 候选，也不得因为已经输出一个候选而省略同一窗口内的其他风险段。
    普通争吵、普通拥抱、普通接吻、仅对白提及暴力且画面无对应行为时不要判成高风险；但只要同时出现身体聚焦、性姿态或暧昧动作，仍按色情高召回规则输出。
 2. high_energy：识别适合放在片头作为黄金 3 秒钩子的反转、身份揭晓、强冲突、强情绪、悬念或动作瞬间。每个候选应给出可直接裁剪的 2-8 秒范围，最多 5 个，避免纯对白铺垫。
 3. sensitive 的 start/end 要覆盖完整风险动作；frame_indices 提供最能证明风险的 1-4 帧。时间必须位于本窗口内；frame_indices 只能使用上面列出的 F 编号。

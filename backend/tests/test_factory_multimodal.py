@@ -24,8 +24,8 @@ def test_frame_sampling_combines_coverage_and_loudness_peaks():
 def test_default_sampling_is_dense_enough_for_short_actions():
     values = choose_frame_times(0, 120, [], maximum=36)
 
-    assert len(values) == 30
-    assert max(right - left for left, right in zip(values, values[1:])) <= 4.1
+    assert len(values) == 36
+    assert max(right - left for left, right in zip(values, values[1:])) <= 3.5
 
 
 def test_prompt_requires_contextual_soft_sexual_review():
@@ -35,6 +35,8 @@ def test_prompt_requires_contextual_soft_sexual_review():
     assert "body_focus" in prompt
     assert "相邻 F 帧理解动作变化" in prompt
     assert "ASR 台词与人物位置" in prompt
+    assert "不得只截取最露骨的几秒" in prompt
+    assert "动画、特效、奇幻生物和非真人画面使用同一标准" in prompt
 
 
 def test_analysis_falls_back_to_qwen_when_gemini_fails(monkeypatch):
@@ -94,13 +96,15 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
     assert result["episodes"][0]["high_energy"][0]["review_status"] == "pending"
     assert result["episodes"][0]["high_energy"][0]["energy_reasons"] == ["身份反转"]
     risk = result["episodes"][0]["sensitive"][0]
-    assert len(result["episodes"][0]["sensitive"]) == 2
+    assert len(result["episodes"][0]["sensitive"]) == 1
     assert risk["review_status"] == "approved"
     assert risk["overall_risk_score"] == 86
     assert risk["risk_scores"]["action"] == 92
     assert risk["sensitive"]["性暗示"] == ["连续画面出现裙底接触与身体撞击"]
+    assert risk["sensitive"]["软色情"] == ["低置信色情风险也交给人工复核"]
     assert risk["frame_files"] == [frame.name]
-    assert result["episodes"][0]["sensitive"][1]["overall_risk_score"] == 15
 
-    updated = script_analysis.update_review(tmp_path, "01.mp4", "sensitive", 5, 7, "rejected")
+    updated = script_analysis.update_review(
+        tmp_path, "01.mp4", "sensitive", risk["start"], risk["end"], "rejected",
+    )
     assert updated["episodes"][0]["sensitive"][0]["review_status"] == "rejected"

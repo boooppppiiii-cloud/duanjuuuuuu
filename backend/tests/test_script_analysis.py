@@ -184,3 +184,35 @@ def test_manual_sensitive_range_is_persistent_and_always_removed(tmp_path: Path)
     assert risk["overall_risk_score"] == 100
     assert risk["source"] == "manual"
     assert script_analysis.manual_sensitive_file(tmp_path).is_file()
+
+
+def test_analysis_windows_overlap_scene_boundaries():
+    windows = script_analysis._analysis_windows(180, 60, 15)
+
+    assert windows == [(0.0, 60.0), (45.0, 105.0), (90.0, 150.0), (135.0, 180.0)]
+    assert any(start <= 85 and end >= 105 for start, end in windows)
+    assert any(start <= 105 and end >= 129 for start, end in windows)
+
+
+def test_sexual_candidates_are_conservatively_expanded_and_merged():
+    rows = [{
+        "start": 64, "end": 78, "sensitive": {"性暗示": ["可疑身体接触"]},
+        "confidence": .35, "overall_risk_score": 35,
+        "risk_scores": {"action": 35}, "review_status": "pending",
+        "evidence": ["可疑身体接触"], "frame_files": ["first.jpg"],
+    }, {
+        "start": 88, "end": 108, "sensitive": {"软色情": ["连续撞击动作"]},
+        "confidence": .82, "overall_risk_score": 82,
+        "risk_scores": {"action": 90}, "review_status": "approved",
+        "evidence": ["连续撞击动作"], "frame_files": ["last.jpg"],
+    }]
+
+    merged = script_analysis._merge_sensitive_candidates(rows, 180, [])
+
+    assert len(merged) == 1
+    assert merged[0]["start"] == 60
+    assert merged[0]["end"] == 114
+    assert merged[0]["review_status"] == "approved"
+    assert merged[0]["overall_risk_score"] == 82
+    assert set(merged[0]["sensitive"]) == {"性暗示", "软色情"}
+    assert merged[0]["frame_files"] == ["first.jpg", "last.jpg"]

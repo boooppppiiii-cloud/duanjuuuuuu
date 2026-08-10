@@ -29,8 +29,9 @@ class Settings(BaseSettings):
     gemini_text_model: str = "gemini-2.5-flash"
     gemini_image_model: str = "gemini-3.1-flash-image"
     factory_analysis_model: str = "gemini-3.5-flash-lite"
-    factory_analysis_window_seconds: int = 120
-    factory_analysis_frames_per_window: int = 36
+    factory_analysis_window_seconds: int = 60
+    factory_analysis_window_overlap_seconds: int = 15
+    factory_analysis_frames_per_window: int = 30
     factory_analysis_request_timeout_seconds: int = 120
     factory_analysis_api_retries: int = 2
     factory_whisper_beam_size: int = 1

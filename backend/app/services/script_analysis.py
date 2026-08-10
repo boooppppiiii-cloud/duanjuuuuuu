@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import shutil
 import threading
 from datetime import datetime, timezone
@@ -21,10 +20,13 @@ from .hook_recommender import loudness_peaks, media_duration
 
 
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 MAX_HIGH_ENERGY_CANDIDATES = 10
 RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
 SEXUAL_CATEGORIES = {"软色情", "性暗示", "色情", "性行为", "性暴力"}
+SEXUAL_SCENE_PADDING_BEFORE = 4.0
+SEXUAL_SCENE_PADDING_AFTER = 6.0
+SEXUAL_SCENE_MERGE_GAP = 15.0
 SENSITIVE_TERMS = {
     "暴力": ["杀", "打死", "砍", "枪", "血", "尸体", "绑架", "虐待", "暴力"],
     "色情": ["裸", "床戏", "性侵", "强奸", "色情", "胸部", "脱衣", "性行为"],
@@ -132,6 +134,91 @@ def _limit_high_energy(payload: dict[str, Any], maximum: int = MAX_HIGH_ENERGY_C
         payload["high_energy_count"] = count
         changed = True
     return changed
+
+
+def _analysis_windows(duration: float, seconds: int, overlap: int) -> list[tuple[float, float]]:
+    if duration <= 0:
+        return [(0.0, 0.0)]
+    seconds = max(30, seconds)
+    overlap = max(0, min(seconds // 2, overlap))
+    step = max(1, seconds - overlap)
+    windows: list[tuple[float, float]] = []
+    start = 0.0
+    while start < duration:
+        end = min(duration, start + seconds)
+        windows.append((round(start, 2), round(end, 2)))
+        if end >= duration:
+            break
+        start += step
+    return windows
+
+
+def _candidate_categories(row: dict[str, Any]) -> set[str]:
+    value = row.get("sensitive")
+    return {str(key) for key in value} if isinstance(value, dict) else set()
+
+
+def _is_sexual_candidate(row: dict[str, Any]) -> bool:
+    return bool(_candidate_categories(row) & SEXUAL_CATEGORIES)
+
+
+def _merge_text_values(left: Any, right: Any) -> list[str]:
+    return list(dict.fromkeys([*_reason_list(left), *_reason_list(right)]))
+
+
+def _merge_sensitive_candidates(
+    rows: list[dict[str, Any]], duration: float, segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for original in rows:
+        row = dict(original)
+        if _is_sexual_candidate(row):
+            row["start"] = round(max(0.0, float(row.get("start", 0)) - SEXUAL_SCENE_PADDING_BEFORE), 2)
+            row["end"] = round(min(duration, float(row.get("end", 0)) + SEXUAL_SCENE_PADDING_AFTER), 2)
+            # High-recall mode removes suspected sexual content unless a reviewer explicitly keeps it.
+            row["review_status"] = "approved"
+        prepared.append(row)
+    prepared.sort(key=lambda row: (float(row.get("start", 0)), float(row.get("end", 0))))
+    merged: list[dict[str, Any]] = []
+    for row in prepared:
+        if not merged:
+            merged.append(row)
+            continue
+        previous = merged[-1]
+        same_sexual_scene = _is_sexual_candidate(previous) and _is_sexual_candidate(row)
+        same_category = bool(_candidate_categories(previous) & _candidate_categories(row))
+        gap = float(row.get("start", 0)) - float(previous.get("end", 0))
+        if not ((same_sexual_scene and gap <= SEXUAL_SCENE_MERGE_GAP) or (same_category and gap <= 0)):
+            merged.append(row)
+            continue
+        previous["start"] = min(float(previous.get("start", 0)), float(row.get("start", 0)))
+        previous["end"] = max(float(previous.get("end", 0)), float(row.get("end", 0)))
+        previous["confidence"] = max(float(previous.get("confidence", 0)), float(row.get("confidence", 0)))
+        previous["overall_risk_score"] = max(int(previous.get("overall_risk_score", 0)), int(row.get("overall_risk_score", 0)))
+        previous["review_status"] = "approved" if "approved" in {previous.get("review_status"), row.get("review_status")} else "pending"
+        previous["evidence"] = _merge_text_values(previous.get("evidence"), row.get("evidence"))
+        previous["frame_files"] = list(dict.fromkeys([*(previous.get("frame_files") or []), *(row.get("frame_files") or [])]))
+        previous_scores = previous.setdefault("risk_scores", {})
+        for key, value in (row.get("risk_scores") or {}).items():
+            previous_scores[key] = max(int(previous_scores.get(key, 0)), int(value or 0))
+        previous_sensitive = previous.setdefault("sensitive", {})
+        for category, reasons in (row.get("sensitive") or {}).items():
+            previous_sensitive[category] = _merge_text_values(previous_sensitive.get(category), reasons)
+    for row in merged:
+        row["start"] = round(float(row.get("start", 0)), 2)
+        row["end"] = round(float(row.get("end", 0)), 2)
+        row["text"] = _text_for_range(segments, row["start"], row["end"])
+    return merged
+
+
+def _dedupe_high_energy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda item: float(item.get("energy_score", 0)), reverse=True):
+        start, end = float(row.get("start", 0)), float(row.get("end", 0))
+        if any(start <= float(existing.get("end", 0)) and end >= float(existing.get("start", 0)) for existing in selected):
+            continue
+        selected.append(row)
+    return sorted(selected, key=lambda item: float(item.get("start", 0)))
 
 
 def _read_manual_sensitive(folder: Path) -> list[dict[str, Any]]:
@@ -361,7 +448,7 @@ def _model_candidates(
             "confidence": round(confidence, 2),
             "overall_risk_score": overall_risk_score,
             "risk_scores": risk_scores,
-            "review_status": "approved" if overall_risk_score >= 60 or confidence >= 0.75 else "pending",
+            "review_status": "approved" if category in SEXUAL_CATEGORIES or overall_risk_score >= 60 or confidence >= 0.75 else "pending",
             "evidence": reasons, "frame_files": _candidate_frames(frames, start, end), "source": source,
         })
     return high_energy, sensitive
@@ -454,7 +541,8 @@ def analyze_drama(
     total_duration = sum(float(item.get("duration", 0)) for item in episode_results)
     sampled_frame_count = int((previous or {}).get("sampled_frame_count", 0)) if resume else 0
     api_call_count = int((previous or {}).get("api_call_count", 0)) if resume else 0
-    window_seconds = max(120, int(getattr(settings, "factory_analysis_window_seconds", 600)))
+    window_seconds = max(30, int(getattr(settings, "factory_analysis_window_seconds", 60)))
+    window_overlap = max(0, int(getattr(settings, "factory_analysis_window_overlap_seconds", 15)))
     max_frames = max(8, min(48, int(getattr(settings, "factory_analysis_frames_per_window", 36))))
     beam_size = max(1, min(5, int(getattr(settings, "factory_whisper_beam_size", 1))))
     video_order = {video.name: index for index, video in enumerate(videos)}
@@ -503,10 +591,9 @@ def analyze_drama(
         episode_sensitive: list[dict[str, Any]] = []
         summaries: list[str] = []
         episode_sampled_frames = episode_api_calls = 0
-        window_count = max(1, math.ceil(duration / window_seconds))
-        for window_index in range(window_count):
-            window_start = window_index * window_seconds
-            window_end = min(duration, (window_index + 1) * window_seconds)
+        windows = _analysis_windows(duration, window_seconds, window_overlap)
+        window_count = len(windows)
+        for window_index, (window_start, window_end) in enumerate(windows):
             window_segments = [row for row in segments if row["end"] >= window_start and row["start"] <= window_end]
             checkpoint(
                 episode_base + episode_share * (.42 + .5 * window_index / window_count),
@@ -537,6 +624,9 @@ def analyze_drama(
             episode_sensitive.extend(sensitive)
             if data.get("summary"):
                 summaries.append(str(data["summary"]))
+
+        episode_high = _dedupe_high_energy(episode_high)
+        episode_sensitive = _merge_sensitive_candidates(episode_sensitive, duration, segments)
 
         episode_results.append({
             "episode": video.name, "duration": round(duration, 2), "segment_count": len(segments),
