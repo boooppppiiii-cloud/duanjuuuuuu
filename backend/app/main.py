@@ -23,12 +23,17 @@ from .routers.engagement import router as engagement_router
 from .routers.workspace import router as workspace_router
 from .routers.integrations import router as integrations_router
 from .routers.factory import router as factory_router
+from .routers.auth import router as auth_router
+from .routers.admin import router as admin_router
 from .scheduler import scheduler
 from .logging_config import configure_logging
 from .services.factory_processing import resume_factory_jobs
 from .services.script_analysis import resume_factory_analyses
 from .services.offline_translation import start_translation_worker
 from .services.storage_paths import reconcile_database_media_paths
+from .services.auth import bind_current_user, initialize_auth, reset_current_user, resolve_user
+from .services.usage import feature_for, record_usage
+import time
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -37,6 +42,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_db_and_tables()
+    initialize_auth()
     with Session(engine) as session:
         repaired = reconcile_database_media_paths(session, get_settings().media_root)
         if repaired:
@@ -61,6 +67,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(dramas_router)
 app.include_router(clips_router)
 app.include_router(moderation_router)
@@ -75,6 +83,43 @@ app.include_router(engagement_router)
 app.include_router(workspace_router)
 app.include_router(integrations_router)
 app.include_router(factory_router)
+
+
+@app.middleware("http")
+async def authentication_and_metering(request: Request, call_next):
+    path = request.url.path
+    public = (
+        request.method == "OPTIONS"
+        or path in {"/api/health", "/api/auth/login", "/api/auth/register", "/docs", "/openapi.json", "/favicon.ico"}
+        or path.startswith("/api/publish/media/")
+    )
+    user = None
+    login = None
+    if not public:
+        raw_token = request.cookies.get(get_settings().auth_cookie_name, "")
+        with Session(engine) as session:
+            resolved = resolve_user(session, raw_token)
+            if resolved:
+                user, login = resolved
+        if path.startswith("/api/") and not user:
+            return JSONResponse(status_code=401, content={"detail": "登录已过期，请重新登录"})
+    request.state.user = user
+    request.state.login_session = login
+    context_token = bind_current_user(user.id if user else None)
+    started = time.perf_counter()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        if user and path.startswith("/api/") and path not in {"/api/auth/me", "/api/auth/logout"}:
+            record_usage(
+                feature_for(request.method, path), user_id=user.id, event_kind="api_request",
+                endpoint=path, api_calls=1, success=bool(response and response.status_code < 400), duration_ms=duration_ms,
+                details={"method": request.method, "status_code": response.status_code if response else 500},
+            )
+        reset_current_user(context_token)
 
 
 @app.exception_handler(Exception)

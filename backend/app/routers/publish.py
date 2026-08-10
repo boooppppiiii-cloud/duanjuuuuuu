@@ -8,15 +8,21 @@ from sqlmodel import Session, select
 
 from ..database import get_session
 from ..config import get_settings
-from ..models import Account, AccountStrategy, Clip, Drama, Post, PublishJob
+from ..models import Account, AccountStrategy, AppUser, Clip, Drama, Post, PublishJob
 from ..schemas import AccountConfigureRequest, AccountCreateRequest, AccountStrategyPayload, BatchPublishRequest, PublishJobCreateRequest, PublishJobUpdateRequest, RecurringPublishRequest, StrategySummaryRequest
 from ..services.credentials import sanitized_credentials, store_secret_fields
 from ..services.publisher import execute_publish_job, refresh_publish_status
 from ..services.public_media import verify_public_video_signature
 from ..services.social_integrations import account_insights, check_account, list_platform_media, tiktok_creator_info
 from ..services.llm import _gemini, _qwen, strip_fences
+from ..services.auth import get_current_user
 
 router = APIRouter(prefix="/api/publish", tags=["发布调度"])
+
+
+def _request_user_id(user: AppUser | object, legacy_owner: int | None = None) -> int | None:
+    """FastAPI injects AppUser; direct service-level tests keep their legacy owner."""
+    return user.id if isinstance(user, AppUser) else legacy_owner
 
 BUILTIN_STRATEGIES = [
     dict(name="男频爽剧号", positioning="男频", persona_keywords=["逆袭", "热血", "果断"], tone_examples="短句、强冲突、强调逆袭结果", daily_posts=3, posting_times=["12:00", "18:00", "21:00"], tag_pool=["#逆袭", "#爽剧", "#热血短剧"], default_clip_template="suspense_hook", title_formula_preference=2, builtin=True),
@@ -114,7 +120,8 @@ def update_account_strategy(account_id: int, strategy_id: int | None = None, ses
 
 @router.get("/accounts")
 def accounts(session: Session = Depends(get_session)):
-    return [account_view(item) for item in session.exec(select(Account).order_by(Account.id)).all()]
+    statement = select(Account).where(Account.removed_at.is_(None)).order_by(Account.id)
+    return [account_view(item) for item in session.exec(statement).all()]
 
 
 @router.post("/accounts/{account_id}/check")
@@ -139,16 +146,17 @@ def check_account_connection(account_id: int, session: Session = Depends(get_ses
     return account_view(account)
 
 
+@router.delete("/accounts/{account_id}")
 @router.post("/accounts/{account_id}/disconnect")
 def disconnect_account(account_id: int, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
-    if not account:
+    if not account or account.removed_at is not None:
         raise HTTPException(404, "账号不存在")
-    account.credentials_json = {key: value for key, value in account.credentials_json.items() if not key.endswith(("_encrypted", "_env"))}
-    account.status = "not_connected"; account.last_error = "已断开应用内保存的授权"
-    account.capabilities = []; account.connected_at = None
+    account.credentials_json = {}
+    account.status = "removed"; account.last_error = ""
+    account.capabilities = []; account.connected_at = None; account.removed_at = datetime.now()
     session.add(account); session.commit(); session.refresh(account)
-    return account_view(account)
+    return {"removed": True, "account_id": account.id, "history_preserved": True}
 
 
 @router.get("/accounts/{account_id}/creator-info")
@@ -283,7 +291,7 @@ def update_strategy(strategy_id: int, payload: AccountStrategyPayload, session: 
 @router.post("/strategies/summarize")
 def summarize_strategy(payload: StrategySummaryRequest):
     settings = get_settings()
-    provider = _gemini if settings.gemini_api_key else _qwen if settings.qwen_api_key else None
+    provider = (lambda prompt: _gemini(prompt, feature="运营策略提炼")) if settings.gemini_api_key else (lambda prompt: _qwen(prompt, feature="运营策略提炼")) if settings.qwen_api_key else None
     if not provider:
         raise HTTPException(503, "未配置 GEMINI_API_KEY 或 QWEN_API_KEY，不能执行智能策略提炼")
     prompt = f'''你是海外短剧账号策略分析师。根据历史文案提炼账号定位，只输出严格 JSON：
@@ -301,33 +309,35 @@ def summarize_strategy(payload: StrategySummaryRequest):
 
 
 @router.post("/accounts/{account_id}/plan-seven-days", response_model=list[PublishJob])
-def plan_seven_days(account_id: int, post_ids: list[int], start_at: datetime | None = None, session: Session = Depends(get_session)):
+def plan_seven_days(account_id: int, post_ids: list[int], start_at: datetime | None = None, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     account = session.get(Account, account_id)
     strategy = session.get(AccountStrategy, account.strategy_id) if account and account.strategy_id else None
     if not account or not strategy or not post_ids:
         raise HTTPException(422, "账号需要绑定策略，且至少选择一个成品")
     start = start_at or datetime.now()
-    return recurring(RecurringPublishRequest(post_ids=post_ids, account_id=account_id, start_at=start, times=strategy.posting_times[:strategy.daily_posts]), session)
+    return recurring(RecurringPublishRequest(post_ids=post_ids, account_id=account_id, start_at=start, times=strategy.posting_times[:strategy.daily_posts]), session, user)
 
 
 @router.post("/jobs", response_model=PublishJob)
-def create_job(payload: PublishJobCreateRequest, session: Session = Depends(get_session)):
+def create_job(payload: PublishJobCreateRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = related_drama(session, payload.post_id)
     account = session.get(Account, payload.account_id)
-    if not drama or not account:
+    post = session.get(Post, payload.post_id)
+    owner_id = _request_user_id(user, post.owner_user_id if post else None)
+    if not drama or not account or not post or post.owner_user_id != owner_id:
         raise HTTPException(404, "成品或账号不存在")
     if account.status != "connected":
         raise HTTPException(422, f"账号“{account.name}”尚未通过真实连接检测")
     if drama.is_ai_generated and payload.ai_disclosure is False:
         raise HTTPException(422, "AI 剧必须开启 AI 内容标注，不能关闭")
-    job = PublishJob(**payload.model_dump())
+    job = PublishJob(**payload.model_dump(), owner_user_id=owner_id)
     if drama.is_ai_generated: job.ai_disclosure = True
     session.add(job); session.commit(); session.refresh(job)
     return job
 
 
 @router.post("/jobs/batch", response_model=list[PublishJob])
-def create_batch(payload: BatchPublishRequest, session: Session = Depends(get_session)):
+def create_batch(payload: BatchPublishRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     accounts = [session.get(Account, account_id) for account_id in payload.account_ids]
     if any(account is None for account in accounts): raise HTTPException(404, "部分发布账号不存在")
     disconnected = [account.name for account in accounts if account.status != "connected"]
@@ -336,9 +346,11 @@ def create_batch(payload: BatchPublishRequest, session: Session = Depends(get_se
     created: list[PublishJob] = []
     for post_id in payload.post_ids:
         drama = related_drama(session, post_id)
-        if not drama: raise HTTPException(404, f"成品不存在：{post_id}")
+        post = session.get(Post, post_id)
+        owner_id = _request_user_id(user, post.owner_user_id if post else None)
+        if not drama or not post or post.owner_user_id != owner_id: raise HTTPException(404, f"成品不存在：{post_id}")
         for account in accounts:
-            job = PublishJob(post_id=post_id, account_id=account.id, scheduled_at=payload.scheduled_at, ai_disclosure=drama.is_ai_generated or payload.ai_disclosure, publish_options=payload.publish_options)
+            job = PublishJob(post_id=post_id, account_id=account.id, scheduled_at=payload.scheduled_at, ai_disclosure=drama.is_ai_generated or payload.ai_disclosure, publish_options=payload.publish_options, owner_user_id=owner_id)
             session.add(job); created.append(job)
     session.commit()
     for job in created: session.refresh(job)
@@ -349,9 +361,9 @@ def create_batch(payload: BatchPublishRequest, session: Session = Depends(get_se
 
 
 @router.put("/jobs/{job_id}", response_model=PublishJob)
-def update_job(job_id: int, payload: PublishJobUpdateRequest, session: Session = Depends(get_session)):
+def update_job(job_id: int, payload: PublishJobUpdateRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     job = session.get(PublishJob, job_id)
-    if not job: raise HTTPException(404, "任务不存在")
+    if not job or job.owner_user_id != _request_user_id(user, job.owner_user_id): raise HTTPException(404, "任务不存在")
     drama = related_drama(session, job.post_id)
     if drama and drama.is_ai_generated and payload.ai_disclosure is False:
         raise HTTPException(422, "AI 剧必须开启 AI 内容标注，不能关闭")
@@ -362,22 +374,22 @@ def update_job(job_id: int, payload: PublishJobUpdateRequest, session: Session =
 
 
 @router.get("/jobs", response_model=list[PublishJob])
-def jobs(session: Session = Depends(get_session)):
-    return session.exec(select(PublishJob).order_by(PublishJob.scheduled_at.desc())).all()
+def jobs(session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    return session.exec(select(PublishJob).where(PublishJob.owner_user_id == user.id).order_by(PublishJob.scheduled_at.desc())).all()
 
 
 @router.post("/jobs/{job_id}/run", response_model=PublishJob)
-def run_job(job_id: int, session: Session = Depends(get_session)):
+def run_job(job_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     job = session.get(PublishJob, job_id)
-    if not job: raise HTTPException(404, "任务不存在")
+    if not job or job.owner_user_id != _request_user_id(user, job.owner_user_id): raise HTTPException(404, "任务不存在")
     try: return execute_publish_job(session, job)
     except Exception as exc: raise HTTPException(500, str(exc)) from exc
 
 
 @router.post("/jobs/{job_id}/refresh", response_model=PublishJob)
-def refresh_job(job_id: int, session: Session = Depends(get_session)):
+def refresh_job(job_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     job = session.get(PublishJob, job_id)
-    if not job:
+    if not job or job.owner_user_id != _request_user_id(user, job.owner_user_id):
         raise HTTPException(404, "任务不存在")
     if job.status not in {"submitted", "published"}:
         raise HTTPException(422, "只有已提交的平台任务可以查询状态")
@@ -385,7 +397,7 @@ def refresh_job(job_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/recurring", response_model=list[PublishJob])
-def recurring(payload: RecurringPublishRequest, session: Session = Depends(get_session)):
+def recurring(payload: RecurringPublishRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     if not payload.post_ids or not payload.times: raise HTTPException(422, "成品和发布时间不能为空")
     account = session.get(Account, payload.account_id)
     if not account:
@@ -400,8 +412,10 @@ def recurring(payload: RecurringPublishRequest, session: Session = Depends(get_s
             scheduled = (payload.start_at + timedelta(days=day)).replace(hour=hour, minute=minute, second=0, microsecond=0)
             post_id = payload.post_ids[(day * len(payload.times) + index) % len(payload.post_ids)]
             drama = related_drama(session, post_id)
-            if not drama: raise HTTPException(404, f"成品不存在：{post_id}")
-            job = PublishJob(post_id=post_id, account_id=payload.account_id, scheduled_at=scheduled, ai_disclosure=drama.is_ai_generated)
+            post = session.get(Post, post_id)
+            owner_id = _request_user_id(user, post.owner_user_id if post else None)
+            if not drama or not post or post.owner_user_id != owner_id: raise HTTPException(404, f"成品不存在：{post_id}")
+            job = PublishJob(post_id=post_id, account_id=payload.account_id, scheduled_at=scheduled, ai_disclosure=drama.is_ai_generated, owner_user_id=owner_id)
             session.add(job); created.append(job)
     session.commit()
     for job in created: session.refresh(job)

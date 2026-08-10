@@ -37,7 +37,7 @@ export default function DramaDetail(){
  const[msg,context]=message.useMessage()
 
  const applyDrama=(data:Drama)=>{setDrama(data);form.setFieldsValue({
-  title:data.title,description:data.description,total_episode_count:data.total_episode_count,promotion_episode_count:data.promotion_episode_count,
+  title:data.title,theater:data.theater,description:data.description,total_episode_count:data.total_episode_count,promotion_episode_count:data.promotion_episode_count,
   language:data.language,genres:data.genres,actor_names:data.actor_names,source_note:data.source_note,
   is_ai_generated:data.is_ai_generated,is_dubbed_content:data.is_dubbed_content,
  })}
@@ -73,6 +73,7 @@ export default function DramaDetail(){
   <div className="page-heading page-heading-rich"><Space><Button icon={<ArrowLeftOutlined/>} onClick={()=>navigate('/dramas')}>返回</Button><Typography.Title level={2}>{drama.title}</Typography.Title></Space><Button type="primary" icon={<ExperimentOutlined/>} onClick={()=>navigate(`/factory?drama=${drama.id}`)}>进入内容工厂</Button></div>
   <Card title="剧目资料"><Form className="drama-detail-form" form={form} layout="vertical" onFinish={saveInfo}>
    <Form.Item name="title" label="短剧名称" rules={[{required:true,message:'请输入短剧名称'}]}><Input/></Form.Item>
+   <Form.Item name="theater" label="剧场" extra="AI 撰写标题文案时默认加入对应标签；发布页可临时关闭。" rules={[{required:true,message:'请输入剧场'}]}><Input placeholder="例如：FlickReels（生成 #FlickReels）"/></Form.Item>
    <Form.Item name="description" label="剧情简介" rules={[{required:true,message:'请输入剧情简介'}]}><Input.TextArea rows={5}/></Form.Item>
    <div className="form-grid"><Form.Item name="total_episode_count" label="总集数" rules={[{required:true}]}><InputNumber min={1} max={999} className="full-width"/></Form.Item><Form.Item name="promotion_episode_count" label="推广集数"><InputNumber min={1} max={999} className="full-width"/></Form.Item></div>
    <div className="form-grid"><Form.Item name="language" label="语种" rules={[{required:true}]}><Select showSearch optionFilterProp="label" options={languageOptions}/></Form.Item><Form.Item name="genres" label="题材分类" rules={[{required:true,message:'至少选择一种题材'}]}><Select mode="multiple" options={genres.map(value=>({value,label:value}))}/></Form.Item></div>

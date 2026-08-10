@@ -27,13 +27,13 @@ class UploadStore:
         self.root = media_root / "uploads"
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def init(self, payload: UploadInitRequest) -> tuple[str, list[int]]:
+    def init(self, payload: UploadInitRequest, owner_user_id: int | None = None) -> tuple[str, list[int]]:
         title = validate_title(payload.drama_title)
         filename = Path(payload.filename).name
         if payload.total_size > self.max_file_size:
             limit_gb = self.max_file_size / (1024 ** 3)
             raise ValueError(f"单个文件不得超过 {limit_gb:g}GB")
-        upload_id = hashlib.sha256(f"{title}|{payload.destination}|{filename}|{payload.total_size}".encode()).hexdigest()[:24]
+        upload_id = hashlib.sha256(f"{owner_user_id}|{title}|{payload.destination}|{filename}|{payload.total_size}".encode()).hexdigest()[:24]
         folder = self.root / upload_id
         existing_bytes = sum(path.stat().st_size for path in folder.glob("*.chunk")) if folder.is_dir() else 0
         remaining_bytes = max(payload.total_size - existing_bytes, 0)
@@ -44,7 +44,7 @@ class UploadStore:
             raise ValueError(f"磁盘空间不足：本次至少需要 {required_gb:.1f}GB，当前剩余 {free_gb:.1f}GB")
         folder.mkdir(parents=True, exist_ok=True)
         manifest = folder / "manifest.json"
-        expected = {**payload.model_dump(), "drama_title": title, "filename": filename}
+        expected = {**payload.model_dump(), "drama_title": title, "filename": filename, "owner_user_id": owner_user_id}
         if manifest.exists():
             current = json.loads(manifest.read_text(encoding="utf-8"))
             if current != expected: raise ValueError("同一上传标识的文件参数不一致")
@@ -61,16 +61,18 @@ class UploadStore:
         if not folder.is_dir(): raise FileNotFoundError("上传任务不存在")
         return folder
 
-    def write_chunk(self, upload_id: str, index: int, data: bytes) -> int:
+    def write_chunk(self, upload_id: str, index: int, data: bytes, owner_user_id: int | None = None) -> int:
         folder = self.safe_folder(upload_id); manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("owner_user_id") != owner_user_id: raise FileNotFoundError("上传任务不存在")
         if index < 0 or index >= manifest["total_chunks"]: raise ValueError("分片序号越界")
         if len(data) > CHUNK_SIZE: raise ValueError("单分片不得超过 8MB")
         temp = folder / f"{index}.tmp"; final = folder / f"{index}.chunk"
         temp.write_bytes(data); temp.replace(final)
         return index
 
-    def complete(self, upload_id: str) -> tuple[Path, dict]:
+    def complete(self, upload_id: str, owner_user_id: int | None = None) -> tuple[Path, dict]:
         folder = self.safe_folder(upload_id); manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("owner_user_id") != owner_user_id: raise FileNotFoundError("上传任务不存在")
         received = self.received(upload_id)
         expected = list(range(manifest["total_chunks"]))
         if received != expected: raise ValueError(f"分片不完整，缺少：{sorted(set(expected) - set(received))}")

@@ -8,7 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.models import ImageQuota
 from app.services.cover import render_cover
 from app.services.imagegen import QuotaExceededError, consume_quota
-from app.services.llm import generate_candidates, parse_candidates, strip_fences
+from app.services.llm import apply_theater_tag, build_prompt, generate_candidates, parse_candidates, strip_fences
 
 
 def test_json_fence_cleanup_and_strict_three_candidates():
@@ -32,6 +32,27 @@ def test_ai_caption_and_account_suffix_are_forced(monkeypatch, tmp_path: Path):
     assert all("#AIGC" in item.caption for item in result.candidates)
 
 
+def test_theater_tag_can_be_forced_or_removed():
+    raw = '{"candidates":[' + ','.join(
+        f'{{"formula":2,"title":"{("A dramatic secret " * 10).strip()}","caption":"Watch now #FlickReels","hashtags":["#Drama","#FlickReels"]}}' for _ in range(3)
+    ) + ']}'
+    result = parse_candidates(raw)
+    included = apply_theater_tag(result, "Flick Reels", True)
+    assert all(item.title.endswith("#FlickReels") and len(item.title) < 100 for item in included.candidates)
+    assert all("#FlickReels" in item.hashtags for item in included.candidates)
+
+    excluded = apply_theater_tag(result, "FlickReels", False)
+    assert all("#flickreels" not in item.title.casefold() and "#flickreels" not in item.caption.casefold() for item in excluded.candidates)
+    assert all("#FlickReels" not in item.hashtags for item in excluded.candidates)
+
+
+def test_prompt_uses_saved_history_and_drama_synopsis():
+    prompt = build_prompt(title="The Name We Buried", synopsis="A mother returns with a sick child.", theater_tag="#FlickReels", include_theater_tag=True, genres=["Romance"], actors=[], subtitles="", account_type="creator", target_language="English", formula="auto", reference_content="I faked death seven years ago")
+    assert "A mother returns with a sick child." in prompt
+    assert "I faked death seven years ago" in prompt
+    assert "#FlickReels" in prompt
+
+
 def test_basemap_quota_refuses_at_limit(tmp_path: Path):
     engine = create_engine(f"sqlite:///{tmp_path / 'quota.db'}")
     SQLModel.metadata.create_all(engine)
@@ -51,4 +72,3 @@ def test_pillow_outputs_both_cover_ratios(tmp_path: Path):
     render_cover(source, out916, "Revenge Queen Returns", "creator", (1080, 1920), style, root)
     assert Image.open(out169).size == (1920, 1080)
     assert Image.open(out916).size == (1080, 1920)
-

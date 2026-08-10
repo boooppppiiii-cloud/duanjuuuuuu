@@ -100,7 +100,7 @@ def analyze_comments(payload: CommentAnalyzeRequest, session: Session = Depends(
 
 @router.post("/sync")
 def sync_connected_accounts(payload: CommentSyncRequest, session: Session = Depends(get_session)):
-    statement = select(Account).where(Account.status == "connected")
+    statement = select(Account).where(Account.status == "connected", Account.removed_at.is_(None))
     accounts = session.exec(statement.order_by(Account.id)).all()
     if payload.account_ids:
         accounts = [item for item in accounts if item.id in payload.account_ids]
@@ -176,7 +176,7 @@ def sync_youtube(payload: YouTubeSyncRequest, session: Session = Depends(get_ses
         raise HTTPException(422, "尚未配置 YOUTUBE_API_KEY；可先使用评论文件导入，不影响其他功能")
     from googleapiclient.discovery import build
     youtube = build("youtube", "v3", developerKey=settings.youtube_api_key, cache_discovery=False)
-    accounts = session.exec(select(Account).where(Account.platform == "youtube")).all()
+    accounts = session.exec(select(Account).where(Account.platform == "youtube", Account.removed_at.is_(None))).all()
     if payload.account_ids: accounts = [item for item in accounts if item.id in payload.account_ids]
     channels: list[tuple[int | None, str]] = []
     for account in accounts:

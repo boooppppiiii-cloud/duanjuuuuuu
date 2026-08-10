@@ -3,7 +3,7 @@ import {
   CheckCircleFilled,
   CloudSyncOutlined,
   CopyOutlined,
-  DisconnectOutlined,
+  DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
   ExclamationCircleFilled,
@@ -43,6 +43,8 @@ import {
   type IntegrationConfig,
 } from '../api'
 import { PlatformBadge, PlatformLogo, PlatformOption } from '../components/PlatformBrand'
+import { useAuth } from '../auth'
+import { bindLocalStrategy,getLocalBindings,getLocalStrategies } from '../localStrategies'
 
 type Platform = 'youtube' | 'tiktok' | 'instagram' | 'facebook'
 type OAuthPlatform = 'youtube' | 'meta' | 'tiktok'
@@ -59,15 +61,19 @@ function connectionTag(status:string){
 }
 
 export default function Matrix({embedded=false}:{embedded?:boolean}){
+  const{user}=useAuth()
   const [rows,setRows]=useState<AccountMatrixRow[]>([])
   const [accounts,setAccounts]=useState<Account[]>([])
   const [strategies,setStrategies]=useState<AccountStrategy[]>([])
+  const [bindings,setBindings]=useState<Record<string,number>>({})
   const [integration,setIntegration]=useState<IntegrationConfig|null>(null)
   const [section,setSection]=useState<'accounts'|'apps'>('accounts')
   const [accountOpen,setAccountOpen]=useState(false)
   const [appOpen,setAppOpen]=useState<OAuthPlatform|null>(null)
   const [editing,setEditing]=useState<Account|null>(null)
   const [working,setWorking]=useState<number|null>(null)
+  const [removing,setRemoving]=useState<Account|null>(null)
+  const [removeWorking,setRemoveWorking]=useState(false)
   const [mediaAccount,setMediaAccount]=useState<Account|null>(null)
   const [media,setMedia]=useState<MediaRow[]>([])
   const [mediaLoading,setMediaLoading]=useState(false)
@@ -76,8 +82,8 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
   const [msg,ctx]=message.useMessage()
 
   const load=async()=>{
-    const [matrix,accountList,strategyList,config]=await Promise.all([api.accountMatrix(),api.accounts(),api.strategies(),api.integrationConfig()])
-    setRows(matrix);setAccounts(accountList);setStrategies(strategyList);setIntegration(config)
+    const [matrix,accountList,config]=await Promise.all([api.accountMatrix(),api.accounts(),api.integrationConfig()])
+    setRows(matrix);setAccounts(accountList);setStrategies(getLocalStrategies(user.id));setBindings(getLocalBindings(user.id));setIntegration(config)
   }
   useEffect(()=>{
     load().catch(e=>msg.error(e.message))
@@ -106,7 +112,7 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
     if(account){
       const c=account.credential_status
       accountForm.setFieldsValue({
-        platform:account.platform,name:account.name,account_type:account.account_type,strategy_id:account.strategy_id,
+        platform:account.platform,name:account.name,account_type:account.account_type,strategy_id:bindings[String(account.id)],
         channel_id:c.channel_id,page_id:c.page_id,ig_user_id:c.ig_user_id,graph_version:c.graph_version,
         access_token_env:c.access_token_env,refresh_token_env:c.refresh_token_env,client_id_env:c.client_id_env,client_secret_env:c.client_secret_env,
         default_privacy:c.default_privacy||'private',app_link:c.app_link||'',
@@ -125,7 +131,8 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
     publicConfig.app_link=v.app_link||''
     const secrets:Record<string,string>={access_token:v.access_token||'',refresh_token:v.refresh_token||'',client_id:v.client_id||'',client_secret:v.client_secret||''}
     const secretEnvs:Record<string,string>={access_token:v.access_token_env||'',refresh_token:v.refresh_token_env||'',client_id:v.client_id_env||'',client_secret:v.client_secret_env||''}
-    await api.configureAccount({platform,name:v.name,account_type:v.account_type,strategy_id:v.strategy_id,public_config:publicConfig,secrets,secret_envs:secretEnvs},editing?.id)
+    const saved=await api.configureAccount({platform,name:v.name,account_type:v.account_type,public_config:publicConfig,secrets,secret_envs:secretEnvs},editing?.id)
+    if(v.strategy_id)bindLocalStrategy(user.id,saved.id,v.strategy_id)
     const hasStoredToken=Boolean(editing?.credential_status.access_token_set||editing?.credential_status.access_token_env)
     const oauthPlatform:OAuthPlatform|null=platform==='youtube'||platform==='tiktok'?platform:null
     const needsOAuth=Boolean(oauthPlatform)&&!v.access_token&&!v.access_token_env&&!hasStoredToken
@@ -146,8 +153,12 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
     finally{setWorking(null)}
   }
 
-  const disconnect=async(account:Account)=>{
-    Modal.confirm({title:`断开 ${account.name}？`,content:'应用内加密保存的令牌会被清除，历史发布与数据仍保留。',okText:'确认断开',okButtonProps:{danger:true},onOk:async()=>{await api.disconnectAccount(account.id);msg.success('账号已断开');await load()}})
+  const confirmRemove=async()=>{
+    if(!removing)return
+    setRemoveWorking(true)
+    try{await api.removeAccount(removing.id);msg.success('账号已从应用移除');setRemoving(null);await load()}
+    catch(e:any){msg.error(e.message)}
+    finally{setRemoveWorking(false)}
   }
 
   const showMedia=async(account:Account)=>{
@@ -187,11 +198,14 @@ export default function Matrix({embedded=false}:{embedded?:boolean}){
     {title:'状态说明',dataIndex:'last_error',ellipsis:true,render:(x:string)=>x?<Typography.Text type="danger">{x}</Typography.Text>:<Typography.Text type="secondary">正常</Typography.Text>},
     {title:'操作',fixed:'right' as const,width:245,render:(_:unknown,r:AccountMatrixRow)=>{
       const account=accounts.find(x=>x.id===r.id);if(!account)return null
-      return <Space wrap><Button size="small" icon={<CloudSyncOutlined/>} loading={working===r.id} onClick={()=>check(account)}>检测</Button><Button size="small" icon={<EyeOutlined/>} disabled={r.status!=='connected'} onClick={()=>showMedia(account)}>动态</Button><Button size="small" icon={<EditOutlined/>} onClick={()=>openAccount(account)}>配置</Button><Button size="small" danger icon={<DisconnectOutlined/>} disabled={r.status==='not_connected'} onClick={()=>disconnect(account)}>断开</Button></Space>
+      return <Space wrap><Button size="small" icon={<CloudSyncOutlined/>} loading={working===r.id} onClick={()=>check(account)}>检测</Button><Button size="small" icon={<EyeOutlined/>} disabled={r.status!=='connected'} onClick={()=>showMedia(account)}>动态</Button><Button size="small" icon={<EditOutlined/>} onClick={()=>openAccount(account)}>配置</Button><Button size="small" danger icon={<DeleteOutlined/>} onClick={()=>setRemoving(account)}>移除</Button></Space>
     }},
   ]
 
   return <div className="workspace-page account-center">{ctx}
+    <Modal open={Boolean(removing)} title={`移除 ${removing?.name||'账号'}？`} okText="确认移除" cancelText="取消" okButtonProps={{danger:true}} confirmLoading={removeWorking} closable={!removeWorking} maskClosable={!removeWorking} onOk={confirmRemove} onCancel={()=>{if(!removeWorking)setRemoving(null)}}>
+      <Typography.Paragraph>账号会从应用中移除，应用内保存的全部授权配置会被清除；历史发布与数据仍保留。</Typography.Paragraph>
+    </Modal>
     {embedded?<div className="module-toolbar"><b>账号连接与平台授权</b><Space><Button icon={<DownloadOutlined/>} href="/api/workspace/weekly.csv">导出周表</Button><Button icon={<ReloadOutlined/>} onClick={()=>load()}>刷新状态</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>openAccount()}>配置账号</Button></Space></div>:<div className="page-heading page-heading-rich"><Typography.Title level={2}>账号与平台连接</Typography.Title><Space><Button icon={<DownloadOutlined/>} href="/api/workspace/weekly.csv">导出周表</Button><Button icon={<ReloadOutlined/>} onClick={()=>load()}>刷新状态</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>openAccount()}>手动配置账号</Button></Space></div>}
 
 

@@ -406,7 +406,7 @@ class FactoryPipeline:
                         clip = Clip(
                             drama_id=drama.id, template_name="clean_full", source_eps=[path.name for path in sources],
                             duration=body_duration, file_path=str(body_target.resolve()), status="approved", progress=100,
-                            current_step="completed", factory_job_id=job.id, asset_kind="clean_full",
+                            current_step="completed", factory_job_id=job.id, asset_kind="clean_full", owner_user_id=job.owner_user_id,
                         )
                         session.add(clip)
                         session.commit()
@@ -414,7 +414,7 @@ class FactoryPipeline:
                         session.add(GeneratedAsset(
                             factory_job_id=job.id, drama_id=drama.id, kind="clean_full", sequence=1,
                             file_path=str(body_target.resolve()), filename=body_filename, duration=body_duration,
-                            size_bytes=body_target.stat().st_size, clip_id=clip.id,
+                            size_bytes=body_target.stat().st_size, clip_id=clip.id, owner_user_id=job.owner_user_id,
                         ))
                         session.commit()
                         job.clean_count = 1
@@ -479,7 +479,7 @@ class FactoryPipeline:
                             drama_id=drama.id, template_name="hook_full", source_eps=[hook.episode for hook in valid_hooks],
                             source_start=first_start, source_end=first_end,
                             duration=duration, file_path=str(target.resolve()), status="approved", progress=100,
-                            current_step="completed", hook_asset_id=first.id, factory_job_id=job.id, asset_kind="hook_full",
+                            current_step="completed", hook_asset_id=first.id, factory_job_id=job.id, asset_kind="hook_full", owner_user_id=job.owner_user_id,
                         )
                         session.add(clip)
                         session.commit()
@@ -488,6 +488,7 @@ class FactoryPipeline:
                             factory_job_id=job.id, drama_id=drama.id, kind="hook_full", sequence=index,
                             file_path=str(target.resolve()), filename=filename, duration=duration,
                             size_bytes=target.stat().st_size, hook_asset_id=first.id, hook_asset_ids=hook_ids, clip_id=clip.id,
+                            owner_user_id=job.owner_user_id,
                         ))
                         for hook in valid_hooks:
                             hook.use_count += 1
@@ -523,6 +524,7 @@ class FactoryPipeline:
                             session.add(GeneratedAsset(
                                 factory_job_id=job.id, drama_id=drama.id, kind="meta_episode", sequence=sequence,
                                 file_path=str(target.resolve()), filename=filename, duration=actual, size_bytes=target.stat().st_size,
+                                owner_user_id=job.owner_user_id,
                             ))
                     session.commit()
                     job.meta_count = len(meta_files)

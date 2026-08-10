@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from ..config import Settings
+from .usage import record_model_usage
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ def _gemini(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple
         contents=contents,
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
+    record_model_usage("gemini", model, response, feature="内容识别")
     return json.loads(_strip_fences(response.text)), model
 
 
@@ -164,7 +166,9 @@ def _qwen(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple[d
         timeout=max(15, int(getattr(settings, "factory_analysis_request_timeout_seconds", 120))),
     )
     response.raise_for_status()
-    text = response.json()["choices"][0]["message"]["content"]
+    payload = response.json()
+    record_model_usage("qwen", settings.qwen_vision_model, payload, feature="内容识别")
+    text = payload["choices"][0]["message"]["content"]
     return json.loads(_strip_fences(text)), settings.qwen_vision_model
 
 

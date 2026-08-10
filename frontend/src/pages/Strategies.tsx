@@ -1,21 +1,36 @@
-import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Form, Input, InputNumber, message, Select, Space, Table, Tag, Typography } from 'antd'
-import { api, Account, AccountStrategy } from '../api'
-import { PlatformLogo } from '../components/PlatformBrand'
+import { useEffect,useState } from 'react'
+import { Alert,Button,Card,Form,Input,message,Space,Table,Tag,Typography } from 'antd'
+import type { AccountStrategy } from '../api'
+import { useAuth } from '../auth'
+import { getLocalStrategies,saveLocalStrategy } from '../localStrategies'
 
-type FormValues = { name:string; positioning:string; persona:string; tone_examples:string; daily_posts:number; posting_times:string; tags:string; default_clip_template:string; title_formula_preference:number }
-const toPayload = (v:FormValues) => ({ name:v.name, positioning:v.positioning, persona_keywords:v.persona.split(/[，,\s]+/).filter(Boolean), tone_examples:v.tone_examples, daily_posts:v.daily_posts, posting_times:v.posting_times.split(/[，,\s]+/).filter(Boolean), tag_pool:v.tags.split(/[，,\s]+/).filter(Boolean), default_clip_template:v.default_clip_template, title_formula_preference:v.title_formula_preference, confirmed:true })
+type FormValues={name:string;history_text:string}
 
-export default function Strategies({embedded=false}:{embedded?:boolean}) {
-  const [items,setItems]=useState<AccountStrategy[]>([]); const [accounts,setAccounts]=useState<Account[]>([]); const [editing,setEditing]=useState<AccountStrategy>(); const [history,setHistory]=useState(''); const [summaryName,setSummaryName]=useState('老号专属策略'); const [summary,setSummary]=useState<Record<string,unknown>>(); const [msg,holder]=message.useMessage(); const [form]=Form.useForm<FormValues>()
-  const load=async()=>{const [s,a]=await Promise.all([api.strategies(),api.accounts()]);setItems(s);setAccounts(a)}
-  useEffect(()=>{load().catch(e=>msg.error(e.message))},[])
-  const edit=(s:AccountStrategy)=>{setEditing(s);form.setFieldsValue({name:s.name,positioning:s.positioning,persona:s.persona_keywords.join('，'),tone_examples:s.tone_examples,daily_posts:s.daily_posts,posting_times:s.posting_times.join('，'),tags:s.tag_pool.join(' '),default_clip_template:s.default_clip_template,title_formula_preference:s.title_formula_preference})}
-  const save=async(v:FormValues)=>{try{if(editing)await api.updateStrategy(editing.id,toPayload(v));else await api.createStrategy(toPayload(v));msg.success('策略已保存');setEditing(undefined);form.resetFields();await load()}catch(e){msg.error((e as Error).message)}}
-  const summarize=async()=>{try{const result=await api.summarizeStrategy(summaryName,history);setSummary(result.strategy);form.setFieldsValue({name:String(result.strategy.name),positioning:String(result.strategy.positioning),persona:(result.strategy.persona_keywords as string[]).join('，'),tone_examples:String(result.strategy.tone_examples),daily_posts:Number(result.strategy.daily_posts),posting_times:(result.strategy.posting_times as string[]).join('，'),tags:(result.strategy.tag_pool as string[]).join(' '),default_clip_template:String(result.strategy.default_clip_template),title_formula_preference:Number(result.strategy.title_formula_preference)});msg.success('模型已生成待确认策略，请检查后保存')}catch(e){msg.error((e as Error).message)}}
-  const columns=[{title:'策略',dataIndex:'name',render:(x:string,r:AccountStrategy)=><>{x} {r.builtin&&<Tag color="blue">内置</Tag>}</>},{title:'定位',dataIndex:'positioning'},{title:'频率',render:(_:unknown,r:AccountStrategy)=>`${r.daily_posts} 条/天 · ${r.posting_times.join('、')}`},{title:'标签池',render:(_:unknown,r:AccountStrategy)=>r.tag_pool.map(x=><Tag key={x}>{x}</Tag>)},{title:'',render:(_:unknown,r:AccountStrategy)=><Button onClick={()=>edit(r)}>编辑</Button>}]
-  return <div className={embedded?'management-inner':'workspace-page'}>{holder}{!embedded&&<Typography.Title level={2}>账号策略模板</Typography.Title>}
-    <Card title="策略列表"><Table rowKey="id" dataSource={items} columns={columns} pagination={false}/></Card>
-    <div className="creative-grid"><Card title={editing?`编辑：${editing.name}`:'新建策略'}><Form form={form} layout="vertical" onFinish={save} initialValues={{positioning:'女频',daily_posts:2,posting_times:'12:00，20:00',default_clip_template:'suspense_hook',title_formula_preference:2}}><Form.Item name="name" label="策略名称" rules={[{required:true}]}><Input/></Form.Item><Form.Item name="positioning" label="账号定位"><Select options={['男频','女频','官方'].map(x=>({value:x,label:x}))}/></Form.Item><Form.Item name="persona" label="人设关键词"><Input placeholder="反转，情感，共鸣"/></Form.Item><Form.Item name="tone_examples" label="文案口吻示例"><Input.TextArea rows={3}/></Form.Item><Space wrap><Form.Item name="daily_posts" label="每天几条"><InputNumber min={1} max={10}/></Form.Item><Form.Item name="posting_times" label="发布时间"><Input placeholder="12:00，20:00"/></Form.Item><Form.Item name="title_formula_preference" label="标题公式"><InputNumber min={1} max={4}/></Form.Item></Space><Form.Item name="tags" label="常用标签池"><Input/></Form.Item><Form.Item name="default_clip_template" label="默认剪辑模板"><Input/></Form.Item><Space><Button type="primary" htmlType="submit">人工确认并保存</Button>{editing&&<Button onClick={()=>{setEditing(undefined);form.resetFields()}}>取消</Button>}</Space></Form></Card>
-      <Card title="老号历史风格总结"><Input value={summaryName} onChange={e=>setSummaryName(e.target.value)} aria-label="专属策略名称"/><Input.TextArea rows={12} value={history} onChange={e=>setHistory(e.target.value)} placeholder="每行粘贴一条最近的标题或文案（建议 10–20 条）"/><Button type="primary" disabled={history.trim().length<10} onClick={summarize}>总结到左侧表单</Button>{summary&&<Alert type="warning" message="已生成待确认配置，尚未保存"/>}<Typography.Title level={5}>账号绑定</Typography.Title>{accounts.map(a=><Space key={a.id} className="strategy-account-row"><PlatformLogo platform={a.platform}/><span>{a.name}</span><Select aria-label={`${a.name}策略`} value={a.strategy_id??undefined} style={{width:220}} options={items.map(s=>({value:s.id,label:s.name}))} onChange={id=>api.bindStrategy(a.id,id).then(load)}/></Space>)}</Card></div></div>
+export default function Strategies({embedded=false}:{embedded?:boolean}){
+ const{user}=useAuth();const[items,setItems]=useState<AccountStrategy[]>([]);const[editing,setEditing]=useState<AccountStrategy>();const[msg,holder]=message.useMessage();const[form]=Form.useForm<FormValues>()
+ const load=()=>setItems(getLocalStrategies(user.id))
+ useEffect(load,[user.id])
+ const edit=(item:AccountStrategy)=>{setEditing(item);form.setFieldsValue({name:item.name,history_text:item.history_text})}
+ const cancel=()=>{setEditing(undefined);form.resetFields()}
+ const save=(values:FormValues)=>{try{saveLocalStrategy(user.id,{name:values.name.trim(),history_text:values.history_text.trim(),confirmed:true},editing?.id);msg.success('过往文案已保存，可在一键发布时选择');cancel();load()}catch(e){msg.error((e as Error).message)}}
+ const columns=[
+  {title:'参考名称',dataIndex:'name',width:220,render:(value:string,row:AccountStrategy)=><Space>{value}{row.builtin&&<Tag>旧版</Tag>}</Space>},
+  {title:'过往标题与文案',dataIndex:'history_text',ellipsis:true,render:(value:string)=><Typography.Text type={value?'secondary':'warning'}>{value||'旧策略没有保存过往文案，请编辑补充'}</Typography.Text>},
+  {title:'内容量',width:100,render:(_:unknown,row:AccountStrategy)=>`${row.history_text.length} 字`},
+  {title:'操作',width:90,render:(_:unknown,row:AccountStrategy)=><Button onClick={()=>edit(row)}>编辑</Button>},
+ ]
+ return <div className={embedded?'management-inner':'workspace-page'}>{holder}
+  {!embedded&&<Typography.Title level={2}>账号运营策略</Typography.Title>}
+  <Alert showIcon type="info" message="这里只保存你账号过往发布的标题和文案。AI 撰写时会模仿这些样本，并结合当前短剧的剧名、剧情简介重新创作。"/>
+  <div className="creative-grid">
+   <Card title={editing?`编辑：${editing.name}`:'录入过往发布内容'}>
+    <Form form={form} layout="vertical" onFinish={save}>
+     <Form.Item name="name" label="参考名称" rules={[{required:true,message:'请输入参考名称'}]}><Input placeholder="例如：FlickReels 英文 YouTube 账号"/></Form.Item>
+     <Form.Item name="history_text" label="过往发布的标题与文案" extra="可以一次粘贴多条标题、视频简介和标签，保留原有换行即可。" rules={[{required:true,message:'请粘贴过往标题或文案'},{min:10,message:'样本太短，请至少输入 10 个字符'}]}><Input.TextArea rows={16} placeholder={'示例：\n【HOT】I Faked Death 7 Years Ago... #FlickReels\n\n🎬 Title: 【The Name We Buried】\n剧情简介与历史标签……'}/></Form.Item>
+     <Space><Button type="primary" htmlType="submit">保存</Button>{editing&&<Button onClick={cancel}>取消</Button>}</Space>
+    </Form>
+   </Card>
+   <Card title={`已保存的文案参考（${items.length}）`}><Table rowKey="id" dataSource={items} columns={columns} pagination={false}/></Card>
+  </div>
+ </div>
 }

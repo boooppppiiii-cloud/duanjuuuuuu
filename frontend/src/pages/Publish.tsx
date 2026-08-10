@@ -11,6 +11,8 @@ import { useEffect,useMemo,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Account,type AccountStrategy,type Clip,type Drama,type IntegrationConfig,type Post,type PublishJob,type TitleCandidate } from '../api'
 import { PlatformBadge,PlatformOption } from '../components/PlatformBrand'
+import { useAuth } from '../auth'
+import { getLocalBindings,getLocalStrategies } from '../localStrategies'
 
 type CoverKind='vertical'|'square'|'horizontal'
 type ContentDraft={clipId:number;title:string;caption:string;hashtags:string[];links:string;formula:number;hitWords:string[]}
@@ -20,16 +22,19 @@ const statusMeta:Record<string,{label:string;color:string}>={
  published:{label:'已发布',color:'success'},failed:{label:'失败',color:'error'},blocked:{label:'已阻止',color:'warning'},
 }
 const filename=(path:string)=>path.split(/[\\/]/).pop()||path
+const theaterTag=(theater='')=>`#${theater.trim().replace(/^#+/,'').replace(/\s+/g,'')}`
 const preferredCover=(drama?:Drama):CoverKind|undefined=>drama?.cover_horizontal_path?'horizontal':drama?.cover_vertical_path?'vertical':drama?.cover_square_path?'square':undefined
 const blankDraft=(clipId:number):ContentDraft=>({clipId,title:'',caption:'',hashtags:[],links:'',formula:1,hitWords:[]})
 
 export default function Publish({embedded=false}:{embedded?:boolean}){
- const[params]=useSearchParams();const navigate=useNavigate()
+ const[params]=useSearchParams();const navigate=useNavigate();const{user}=useAuth()
  const[dramas,setDramas]=useState<Drama[]>([]);const[clips,setClips]=useState<Clip[]>([]);const[accounts,setAccounts]=useState<Account[]>([])
  const[strategies,setStrategies]=useState<AccountStrategy[]>([]);const[posts,setPosts]=useState<Post[]>([]);const[jobs,setJobs]=useState<PublishJob[]>([])
+ const[bindings,setBindings]=useState<Record<string,number>>({})
  const[integration,setIntegration]=useState<IntegrationConfig>();const[view,setView]=useState<'workflow'|'records'>('workflow')
  const[dramaId,setDramaId]=useState<number>();const[selectedClips,setSelectedClips]=useState<number[]>([]);const[selectedAccounts,setSelectedAccounts]=useState<number[]>([])
  const[strategyId,setStrategyId]=useState<number>();const[language,setLanguage]=useState('English')
+ const[includeTheaterTag,setIncludeTheaterTag]=useState(true)
  const[drafts,setDrafts]=useState<ContentDraft[]>([]);const[provider,setProvider]=useState('');const[coverKind,setCoverKind]=useState<CoverKind>()
  const[mode,setMode]=useState<'now'|'schedule'>('now');const[generating,setGenerating]=useState(false);const[working,setWorking]=useState(false)
  const[uploadOpen,setUploadOpen]=useState(false);const[uploadFiles,setUploadFiles]=useState<UploadFile[]>([]);const[uploadProgress,setUploadProgress]=useState<Record<string,number>>({})
@@ -37,8 +42,8 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const[tiktokPrivacy,setTikTokPrivacy]=useState<string[]>([]);const[form]=Form.useForm();const[msg,ctx]=message.useMessage()
 
  const load=async()=>{
-  const[d,c,a,s,p,j,i]=await Promise.all([api.list(),api.clips(),api.accounts(),api.strategies(),api.posts(),api.publishJobs(),api.integrationConfig()])
-  setDramas(d);setClips(c);setAccounts(a);setStrategies(s);setPosts(p);setJobs(j);setIntegration(i)
+  const[d,c,a,p,j,i]=await Promise.all([api.list(),api.clips(),api.accounts(),api.posts(),api.publishJobs(),api.integrationConfig()])
+  setDramas(d);setClips(c);setAccounts(a);setStrategies(getLocalStrategies(user.id));setBindings(getLocalBindings(user.id));setPosts(p);setJobs(j);setIntegration(i)
   if(!dramaId){const requested=Number(params.get('drama'));const picked=d.find(x=>x.id===requested)||d[0];if(picked){setDramaId(picked.id);setCoverKind(preferredCover(picked));form.setFieldValue('ai_disclosure',picked.is_ai_generated)}}
  }
  useEffect(()=>{load().catch(e=>msg.error(e.message))},[])
@@ -51,7 +56,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const selectedDrafts=selectedClips.map(id=>drafts.find(x=>x.clipId===id)).filter(Boolean) as ContentDraft[]
  const selectedStrategy=strategies.find(x=>x.id===strategyId)
  const contentReady=selectedDrafts.length===selectedClips.length&&selectedDrafts.every(x=>x.title.trim()&&x.caption.trim())
- const currentStep=!selectedClips.length?0:!selectedAccounts.length||!strategyId?1:!contentReady?2:3
+ const currentStep=!selectedClips.length?0:!selectedAccounts.length?1:!contentReady?2:3
  const coverChoices=useMemo(()=>drama?[
   {kind:'vertical' as const,title:'竖版',ratio:'3:4',path:drama.cover_vertical_path},
   {kind:'square' as const,title:'方形',ratio:'1:1',path:drama.cover_square_path},
@@ -59,13 +64,13 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  ].filter(x=>Boolean(x.path)):[],[drama])
  const overallUploadPercent=useMemo(()=>uploadFiles.length?Math.round(uploadFiles.reduce((sum,file)=>sum+(uploadProgress[file.uid]||0),0)/uploadFiles.length):0,[uploadFiles,uploadProgress])
 
- const changeDrama=(id:number)=>{const next=dramas.find(x=>x.id===id);setDramaId(id);setSelectedClips([]);setDrafts([]);setProvider('');setCoverKind(preferredCover(next));form.setFieldValue('ai_disclosure',Boolean(next?.is_ai_generated))}
+ const changeDrama=(id:number)=>{const next=dramas.find(x=>x.id===id);setDramaId(id);setSelectedClips([]);setDrafts([]);setProvider('');setIncludeTheaterTag(true);setCoverKind(preferredCover(next));form.setFieldValue('ai_disclosure',Boolean(next?.is_ai_generated))}
  const changeClips=(ids:number[])=>{
   setSelectedClips(ids)
   setDrafts(rows=>ids.map(id=>rows.find(x=>x.clipId===id)||blankDraft(id)))
  }
  const changeAccounts=async(ids:number[])=>{
-  setSelectedAccounts(ids);const first=accounts.find(x=>x.id===ids[0]);setStrategyId(first?.strategy_id||undefined)
+  setSelectedAccounts(ids);const first=accounts.find(x=>x.id===ids[0]);setStrategyId(first?bindings[String(first.id)]:undefined)
   const tiktok=accounts.filter(x=>ids.includes(x.id)&&x.platform==='tiktok');if(!tiktok.length){setTikTokPrivacy([]);return}
   try{const info=await Promise.all(tiktok.map(x=>api.creatorInfo(x.id)));const available=info.map(x=>x.privacy_level_options).reduce((a,b)=>a.filter(x=>b.includes(x)));setTikTokPrivacy(available);if(available.length===1)form.setFieldValue('tiktok_privacy',available[0])}catch(e){setTikTokPrivacy([]);msg.error((e as Error).message)}
  }
@@ -80,11 +85,12 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   }catch(e){msg.error((e as Error).message)}finally{setUploading(false);setUploadProgress({})}
  }
  const generate=async()=>{
-  const account=selectedAccountRows[0];if(!account||!selectedClips.length||!strategyId){msg.error('请先选择视频、账号和发布策略');return}
+  const account=selectedAccountRows[0];if(!account||!selectedClips.length){msg.error('请先选择视频和发布账号');return}
+  if(!drama?.theater){msg.error('当前剧目还没有填写剧场，请先到剧目资料中补充');return}
   setGenerating(true)
   try{
-   const results=await Promise.all(selectedClips.map(id=>api.generateTitles(id,account.account_type,language,'auto',account.id,[],strategyId)))
-   setDrafts(results.map((result,index)=>{const candidate=result.candidates.find(x=>!x.hit_words.length)||result.candidates[0];return{clipId:selectedClips[index],title:candidate.title,caption:candidate.caption,hashtags:candidate.hashtags,links:'',formula:candidate.formula,hitWords:candidate.hit_words}}))
+   const results=await Promise.all(selectedClips.map(id=>api.generateTitles(id,account.account_type,language,'auto',account.id,[],selectedStrategy,includeTheaterTag)))
+   setDrafts(rows=>selectedClips.map((clipId,index)=>{const previous=rows.find(row=>row.clipId===clipId)||blankDraft(clipId);const candidate=results[index].candidates.find(x=>!x.hit_words.length)||results[index].candidates[0];return{...previous,title:candidate.title,caption:candidate.caption,hashtags:candidate.hashtags,formula:candidate.formula,hitWords:candidate.hit_words}}))
    setProvider(Array.from(new Set(results.map(x=>x.provider))).join(' / '));msg.success(`已生成 ${results.length} 组可编辑内容`)
   }catch(e){msg.error((e as Error).message)}finally{setGenerating(false)}
  }
@@ -92,7 +98,6 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
 
  const submit=async(values:any)=>{
   if(!drama||!selectedClips.length||!selectedAccounts.length){msg.error('请先完成视频与账号选择');return}
-  if(!strategyId){msg.error('请选择发布策略');return}
   if(!coverKind){msg.error('请先在剧库上传并选择封面');return}
   if(selectedDrafts.length!==selectedClips.length){msg.error('请先生成全部标题和文案');return}
   if(selectedDrafts.some(x=>!x.title.trim()||!x.caption.trim())){msg.error('标题和文案不能为空');return}
@@ -123,7 +128,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   <div className="page-heading page-heading-rich publish-page-heading"><Typography.Title level={2}>一键发布</Typography.Title><Space wrap><Select className="publish-drama-select" showSearch optionFilterProp="label" value={dramaId} onChange={changeDrama} placeholder="选择剧目" options={dramas.map(x=>({value:x.id,label:x.title}))}/><Button icon={<FolderOpenOutlined/>} disabled={!drama} onClick={()=>setUploadOpen(true)}>本地上传</Button></Space></div>
   <Segmented block className="overview-pager publishing-pager" value={view} onChange={v=>setView(v as typeof view)} options={[{label:'创建发布',value:'workflow',icon:<RocketOutlined/>},{label:'任务记录',value:'records',icon:<ClockCircleOutlined/>}]}/>
   {view==='workflow'?<>
-   <Card className="publish-steps"><Steps current={currentStep} responsive={false} items={[{title:'选择视频'},{title:'账号与策略'},{title:'编辑内容'},{title:'确认发布'}]}/></Card>
+   <Card className="publish-steps"><Steps current={currentStep} responsive={false} items={[{title:'选择视频'},{title:'账号与 AI 参考'},{title:'编辑内容'},{title:'确认发布'}]}/></Card>
    <Form form={form} layout="vertical" onFinish={submit} initialValues={{ai_disclosure:false,youtube_privacy:'private',facebook_published:true}}>
     <Card className="publish-flow-card" title={<span><b>01</b> 选择发布视频与封面</span>}>
      <Form.Item label="可发布视频"><Select mode="multiple" value={selectedClips} onChange={changeClips} optionFilterProp="label" placeholder="选择内容工厂成品或使用右上角本地上传" options={readyClips.map(x=>({value:x.id,label:`${filename(x.file_path)}${x.template_name==='local_upload'?' · 本地上传':''}`}))}/></Form.Item>
@@ -135,14 +140,20 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
      {!!selectedAccounts.length&&<Space wrap className="publish-cover-platforms">{platforms.has('youtube')&&<Tag color="green">YouTube 使用所选封面</Tag>}{platforms.has('tiktok')&&<Tag>TikTok 使用视频帧封面</Tag>}</Space>}
     </Card>
 
-    <Card className="publish-flow-card" title={<span><b>02</b> 账号与发布策略</span>}>
-     <div className="publish-rule-grid"><Form.Item name="account_ids" label="发布账号" rules={[{required:true,message:'请选择账号'}]}><Select mode="multiple" optionFilterProp="label" onChange={changeAccounts} options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/></Form.Item><Form.Item label="发布策略（含标题公式）" required><Select allowClear value={strategyId} onChange={setStrategyId} placeholder="选择发布策略" options={strategies.filter(x=>x.confirmed).map(x=>({value:x.id,label:`${x.name} · 公式 ${x.title_formula_preference}`}))}/></Form.Item><Form.Item label="目标语言"><Input value={language} onChange={e=>setLanguage(e.target.value)}/></Form.Item></div>
-     {selectedStrategy&&<div className="publish-strategy-summary"><div><span>账号定位</span><b>{selectedStrategy.positioning||'—'}</b></div><div><span>标题公式</span><b>公式 {selectedStrategy.title_formula_preference}</b></div><div><span>内容语气</span><b>{selectedStrategy.tone_examples||'—'}</b></div><Space wrap>{selectedStrategy.persona_keywords.map(x=><Tag key={x}>{x}</Tag>)}{selectedStrategy.tag_pool.slice(0,5).map(x=><Tag color="green" key={x}>{x}</Tag>)}</Space></div>}
-     <Space wrap><Button icon={<EditOutlined/>} disabled={!selectedClips.length} onClick={()=>{setDrafts(rows=>selectedClips.map(id=>rows.find(x=>x.clipId===id)||blankDraft(id)));setProvider('');msg.success('已建立人工填写表单')}}>人工填写</Button><Button type="primary" icon={<ThunderboltOutlined/>} loading={generating} disabled={!selectedClips.length||!selectedAccounts.length||!strategyId} onClick={generate}>按发布策略生成标题和文案</Button>{provider&&<Tag color="green">{provider}</Tag>}</Space>
+    <Card className="publish-flow-card" title={<span><b>02</b> 账号与 AI 撰写</span>}>
+     <div className="publish-rule-grid"><Form.Item name="account_ids" label="发布账号" rules={[{required:true,message:'请选择账号'}]}><Select mode="multiple" optionFilterProp="label" onChange={changeAccounts} options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/></Form.Item><Form.Item label="过往文案参考（可选）"><Select allowClear value={strategyId} onChange={setStrategyId} placeholder="不选则仅根据剧目信息撰写" options={strategies.filter(x=>x.confirmed).map(x=>({value:x.id,label:x.name}))}/></Form.Item><Form.Item label="目标语言"><Input value={language} onChange={e=>setLanguage(e.target.value)}/></Form.Item></div>
+     {selectedStrategy&&
+      <Alert type="info" showIcon message={`AI 将参考“${selectedStrategy.name}”`} description={<Typography.Paragraph ellipsis={{rows:3,expandable:true,symbol:'展开样本'}}>{selectedStrategy.history_text}</Typography.Paragraph>}/>
+     }
+     {drama?.theater
+      ?<div className="publish-strategy-summary"><div><span>剧场</span><b>{drama.theater}</b></div><div><span>AI 剧场标签</span><Space><Switch checked={includeTheaterTag} onChange={setIncludeTheaterTag}/><Tag color={includeTheaterTag?'green':'default'}>{theaterTag(drama.theater)}</Tag></Space></div></div>
+      :<Alert type="warning" showIcon message="当前剧目缺少必填的剧场信息" action={<Button size="small" onClick={()=>navigate(`/dramas/${drama?.id}`)}>去补充</Button>}/>
+     }
+     <Space wrap><Button type="primary" icon={<ThunderboltOutlined/>} loading={generating} disabled={!selectedClips.length||!selectedAccounts.length||!drama?.theater} onClick={generate}>AI 一键撰写</Button><Typography.Text type="secondary">不使用 AI 也可以直接在下方填写和修改</Typography.Text>{provider&&<Tag color="green">{provider}</Tag>}</Space>
     </Card>
 
-    <Card className="publish-flow-card" title={<span><b>03</b> 人工编辑发布内容</span>}>
-     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-grid"><Form.Item label="标题" required><Input value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="直接填写发布标题"/></Form.Item><Form.Item label="标签"><Input value={draft.hashtags.join(' ')} onChange={e=>editDraft(draft.clipId,{hashtags:e.target.value.split(/[\s,]+/).filter(Boolean)})} placeholder="多个标签用空格分隔"/></Form.Item></div><Form.Item label="文案" required><Input.TextArea autoSize={{minRows:3,maxRows:8}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value})} placeholder="直接填写发布文案"/></Form.Item><Form.Item label="引流链接 / 行动号召"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.links} onChange={e=>editDraft(draft.clipId,{links:e.target.value})} placeholder="可加入落地页链接、{app_link} 或引导评论区话术"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先选择视频，即可直接填写发布内容"/>}
+    <Card className="publish-flow-card" title={<span><b>03</b> 发布内容（可直接修改）</span>}>
+     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-grid"><Form.Item label="标题" required><Input showCount maxLength={100} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="在这里直接输入或修改发布标题"/></Form.Item><Form.Item label="标签"><Input value={draft.hashtags.join(' ')} onChange={e=>editDraft(draft.clipId,{hashtags:e.target.value.split(/[\s,]+/).filter(Boolean)})} placeholder="多个标签用空格分隔"/></Form.Item></div><Form.Item label="文案" required><Input.TextArea autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value})} placeholder="在这里直接输入或修改视频简介、行动号召和说明"/></Form.Item><Form.Item label="引流链接 / 补充内容"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.links} onChange={e=>editDraft(draft.clipId,{links:e.target.value})} placeholder="可选：落地页链接、{app_link} 或引导评论区话术"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先选择视频，发布内容编辑框会立即显示"/>}
     </Card>
 
     <Card className="publish-flow-card" title={<span><b>04</b> 发布设置与确认</span>}>

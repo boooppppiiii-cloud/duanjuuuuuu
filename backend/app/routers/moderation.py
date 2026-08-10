@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..models import Clip, Drama, VisualReview
+from ..models import AppUser, Clip, Drama, VisualReview
 from ..config import get_settings
 from ..services.llm import assess_visual
 from ..schemas import ClipReviewRequest, ClipView, TextModerationRequest, TextModerationResult
 from ..services.moderation import check_text
+from ..services.auth import get_current_user
 
 router = APIRouter(prefix="/api/moderation", tags=["合规检测"])
 DATA_ROOT = Path(__file__).parents[2] / "data"
@@ -37,9 +38,9 @@ def moderation_config():
 
 
 @router.put("/clips/{clip_id}/review", response_model=ClipView)
-def review_clip(clip_id: int, payload: ClipReviewRequest, session: Session = Depends(get_session)):
+def review_clip(clip_id: int, payload: ClipReviewRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     clip = session.get(Clip, clip_id)
-    if not clip:
+    if not clip or clip.owner_user_id != user.id:
         raise HTTPException(404, "切片不存在")
     if clip.current_step not in {"completed", "failed"}:
         raise HTTPException(409, "切片仍在处理中，不能复核")
@@ -62,15 +63,15 @@ def review_clip(clip_id: int, payload: ClipReviewRequest, session: Session = Dep
 
 
 @router.get("/visual", response_model=list[VisualReview])
-def visual_reviews(session:Session=Depends(get_session)):
-    return session.exec(select(VisualReview).order_by(VisualReview.id.desc())).all()
+def visual_reviews(session:Session=Depends(get_session), user: AppUser = Depends(get_current_user)):
+    return session.exec(select(VisualReview).join(Clip, Clip.id == VisualReview.clip_id).where(Clip.owner_user_id == user.id).order_by(VisualReview.id.desc())).all()
 
 
 @router.post("/visual/{clip_id}", response_model=VisualReview)
-def scan_visual(clip_id:int,image_path:str="",session:Session=Depends(get_session)):
+def scan_visual(clip_id:int,image_path:str="",session:Session=Depends(get_session), user: AppUser = Depends(get_current_user)):
     from datetime import timedelta
     clip=session.get(Clip,clip_id)
-    if not clip:raise HTTPException(404,"切片不存在")
+    if not clip or clip.owner_user_id != user.id:raise HTTPException(404,"切片不存在")
     root=get_settings().media_root.resolve();path=Path(image_path or clip.preview_image).resolve()
     if root not in path.parents or not path.is_file():raise HTTPException(422,"抽帧图片不存在或不在 media 目录")
     since=datetime.now()-timedelta(days=1);used=len(session.exec(select(VisualReview).where(VisualReview.created_at>=since,VisualReview.provider=="gemini")).all())
@@ -82,10 +83,11 @@ def scan_visual(clip_id:int,image_path:str="",session:Session=Depends(get_sessio
 
 
 @router.put("/visual/{review_id}", response_model=VisualReview)
-def decide_visual(review_id:int,status:str,session:Session=Depends(get_session)):
+def decide_visual(review_id:int,status:str,session:Session=Depends(get_session), user: AppUser = Depends(get_current_user)):
     if status not in {"approved","blocked"}:raise HTTPException(422,"复核状态不合法")
     item=session.get(VisualReview,review_id)
-    if not item:raise HTTPException(404,"视觉复核项不存在")
+    clip=session.get(Clip,item.clip_id) if item else None
+    if not item or not clip or clip.owner_user_id != user.id:raise HTTPException(404,"视觉复核项不存在")
     item.status=status;session.add(item);session.commit();session.refresh(item);return item
 
 

@@ -15,7 +15,8 @@ router = APIRouter(prefix="/api/workspace", tags=["运营工作台"])
 def account_matrix_rows(session: Session) -> list[dict]:
     cutoff = date.today() - timedelta(days=6)
     result = []
-    for account in session.exec(select(Account).order_by(Account.platform, Account.name)).all():
+    statement = select(Account).where(Account.removed_at.is_(None)).order_by(Account.platform, Account.name)
+    for account in session.exec(statement).all():
         jobs = session.exec(select(PublishJob).where(PublishJob.account_id == account.id)).all()
         job_ids = [job.id for job in jobs]
         snapshots = session.exec(select(MetricSnapshot).where(MetricSnapshot.publish_job_id.in_(job_ids))).all() if job_ids else []
@@ -64,7 +65,7 @@ def account_matrix(session: Session = Depends(get_session)):
 
 @router.get("/summary")
 def summary(session: Session = Depends(get_session)):
-    accounts = session.exec(select(Account)).all(); dramas = session.exec(select(Drama)).all(); clips = session.exec(select(Clip)).all(); posts = session.exec(select(Post)).all(); jobs = session.exec(select(PublishJob)).all()
+    accounts = session.exec(select(Account).where(Account.removed_at.is_(None))).all(); dramas = session.exec(select(Drama)).all(); clips = session.exec(select(Clip)).all(); posts = session.exec(select(Post)).all(); jobs = session.exec(select(PublishJob)).all()
     comments = session.exec(select(SocialComment)).all(); visual = session.exec(select(VisualReview)).all(); metrics = session.exec(select(MetricSnapshot).where(MetricSnapshot.date >= date.today() - timedelta(days=6))).all()
     return {
         "kpis": {"accounts": len(accounts), "connected_accounts": sum(item.status == "connected" for item in accounts), "dramas": len(dramas), "ready_posts": sum(item.status == "ready" for item in posts), "scheduled_jobs": sum(item.status == "queued" for item in jobs), "views_7d": sum(item.views for item in metrics), "comments_7d": sum(item.comments for item in metrics)},

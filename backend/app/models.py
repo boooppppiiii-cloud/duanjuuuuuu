@@ -5,6 +5,53 @@ from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel
 
 
+class AppUser(SQLModel, table=True):
+    """Application user. Shared business data deliberately does not reference this table."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True, unique=True)
+    password_hash: str
+    is_developer: bool = False
+    is_active: bool = True
+    email_verified: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    last_login_at: Optional[datetime] = None
+
+
+class UserSession(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="appuser.id", index=True)
+    token_hash: str = Field(index=True, unique=True)
+    expires_at: datetime = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_seen_at: datetime = Field(default_factory=datetime.utcnow)
+    revoked_at: Optional[datetime] = None
+    user_agent: str = ""
+    ip_address: str = ""
+
+
+class UsageEvent(SQLModel, table=True):
+    """Immutable, server-observed usage ledger used by the developer dashboard."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="appuser.id", index=True)
+    event_kind: str = Field(index=True)
+    feature: str = Field(index=True)
+    endpoint: str = ""
+    provider: str = ""
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    api_calls: int = 0
+    success: bool = True
+    cache_hit: bool = False
+    duration_ms: int = 0
+    client_event_id: Optional[str] = Field(default=None, index=True, unique=True)
+    details_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class Account(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     platform: str
@@ -21,6 +68,7 @@ class Account(SQLModel, table=True):
     follower_count: int = 0
     last_checked_at: Optional[datetime] = None
     connected_at: Optional[datetime] = None
+    removed_at: Optional[datetime] = None
     last_error: str = ""
     capabilities: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
@@ -36,6 +84,7 @@ class PlatformApp(SQLModel, table=True):
 class AccountStrategy(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True)
+    history_text: str = ""
     positioning: str = "女频"
     persona_keywords: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     tone_examples: str = ""
@@ -51,6 +100,7 @@ class AccountStrategy(SQLModel, table=True):
 class Drama(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str = Field(index=True, unique=True)
+    theater: str = ""
     description: str = ""
     genres: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     is_ai_generated: bool = False
@@ -99,6 +149,7 @@ class Clip(SQLModel, table=True):
     hook_asset_id: Optional[int] = Field(default=None, foreign_key="hookasset.id", index=True)
     factory_job_id: Optional[int] = Field(default=None, foreign_key="factoryjob.id", index=True)
     asset_kind: str = "legacy"
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
 
 
 class FactoryJob(SQLModel, table=True):
@@ -128,6 +179,7 @@ class FactoryJob(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
 
 
 class GeneratedAsset(SQLModel, table=True):
@@ -143,6 +195,24 @@ class GeneratedAsset(SQLModel, table=True):
     hook_asset_id: Optional[int] = Field(default=None, foreign_key="hookasset.id", index=True)
     hook_asset_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
     clip_id: Optional[int] = Field(default=None, foreign_key="clip.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
+
+
+class CloudAsset(SQLModel, table=True):
+    """An explicitly shared copy of a generated asset."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    source_asset_id: Optional[int] = Field(default=None, foreign_key="generatedasset.id", index=True)
+    uploader_user_id: int = Field(foreign_key="appuser.id", index=True)
+    kind: str = Field(index=True)
+    filename: str
+    storage_backend: str = "local"
+    storage_key: str = Field(unique=True)
+    size_bytes: int = 0
+    duration: float = 0
+    download_count: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
@@ -174,6 +244,7 @@ class Post(SQLModel, table=True):
     title_formula: int = 1
     status: str = "draft"
     cover_fallback: bool = False
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
 
 
 class PublishJob(SQLModel, table=True):
@@ -193,6 +264,7 @@ class PublishJob(SQLModel, table=True):
     status_checked_at: Optional[datetime] = None
     submitted_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
 
 
 class MetricSnapshot(SQLModel, table=True):
@@ -285,6 +357,7 @@ class MetaDeliveryPackage(SQLModel, table=True):
     last_error: str = ""
     uploaded_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
 
 
 class SocialComment(SQLModel, table=True):

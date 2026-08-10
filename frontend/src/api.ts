@@ -1,6 +1,6 @@
 export type Highlight = { episode: string; start: number; end: number; note: string }
 export type Drama = {
-  id: number; title: string; description:string; genres: string[]; actor_names: string[]; source_note: string
+  id: number; title: string; theater:string; description:string; genres: string[]; actor_names: string[]; source_note: string
   is_ai_generated: boolean;is_dubbed_content:boolean; episode_count: number; episodes: string[]; stills: string[]; highlights: Highlight[]; file_dir:string
   language:string;promotion_episode_count:number;total_episode_count:number;generated_files:GeneratedFile[]
   cover_vertical_path:string;cover_square_path:string;cover_horizontal_path:string
@@ -19,7 +19,10 @@ export type ModerationResult = { hit_words: string[]; safe: boolean; highlighted
 export type TitleCandidate = { formula: number; title: string; caption: string; hashtags: string[]; hit_words: string[] }
 export type Post = { id: number; clip_id: number; title: string; caption: string; hashtags: string[]; cover_path_169: string; cover_path_916: string; cover_fallback: boolean }
 export type Account = { id: number; platform: string; name: string; account_type: string; is_new: boolean; status: string; strategy_id: number | null; platform_user_id:string;avatar_url:string;profile_url:string;follower_count:number;last_checked_at:string|null;connected_at:string|null;last_error:string;capabilities:string[];configured:boolean;credential_status:Record<string,string|boolean|number> }
-export type AccountStrategy = { id: number; name: string; positioning: string; persona_keywords: string[]; tone_examples: string; daily_posts: number; posting_times: string[]; tag_pool: string[]; default_clip_template: string; title_formula_preference: number; builtin: boolean; confirmed: boolean }
+export type AccountStrategy = {
+  id:number;name:string;history_text:string;builtin:boolean;confirmed:boolean
+  positioning?:string;persona_keywords?:string[];tone_examples?:string;daily_posts?:number;posting_times?:string[];tag_pool?:string[];default_clip_template?:string;title_formula_preference?:number
+}
 export type ContentExample = { id:number; content:string; genres:string[]; language:string; platform:string; enabled:boolean }
 export type TagLibraryItem = { id:number; tag:string; genres:string[]; language:string; platform:string; enabled:boolean }
 export type HookSuggestion = { id:number; drama_id:number; episode:string; start:number; end:number; score:number; reasons:string[]; status:string }
@@ -49,6 +52,9 @@ export type GeneratedAsset = { id:number;factory_job_id:number;drama_id:number;k
 export type HookAsset = { id:number;drama_id:number;drama_title:string;episode:string;start:number;end:number;note:string;source:string;energy_score:number;active:boolean;use_count:number;published_count:number;views:number;likes:number;comments:number;heat_score:number;last_used_at:string|null;preview_ready:boolean }
 export type IntegrationConfig = {vault_ready:boolean;public_media_ready:boolean;callbacks:Record<'youtube'|'meta'|'tiktok',string>;apps:Record<'youtube'|'meta'|'tiktok',{client_id:string;client_secret_set:boolean;updated_at:string|null}>}
 export type TikTokCreatorInfo = {privacy_level_options:string[];comment_disabled:boolean;duet_disabled:boolean;stitch_disabled:boolean;max_video_post_duration_sec:number}
+export type AuthUser = {id:number;email:string;is_developer:boolean;email_verified:boolean;created_at:string;last_login_at:string|null}
+export type CloudAsset = {id:number;drama_id:number;drama_title:string;uploader_email:string;kind:string;filename:string;size_bytes:number;duration:number;download_count:number;storage_backend:string;created_at:string}
+export type AdminAnalytics = {range_days:number;totals:{users:number;active_users:number;api_calls:number;model_calls:number;tokens:number;cloud_assets:number;cloud_bytes:number};users:{user_id:number;email:string;api_calls:number;model_calls:number;input_tokens:number;output_tokens:number;total_tokens:number;feature_actions:number;failures:number}[];features:{feature:string;uses:number;successes:number;failures:number;cache_hits:number;model_calls:number;tokens:number;active_users:number;usage_rate:number;success_rate:number|null;hit_rate:number|null}[];daily:{date:string;api_calls:number;model_calls:number;tokens:number;success:number;failure:number}[];definitions:Record<string,string>}
 
 async function responseError(response: Response, fallback='请求失败') {
   try {
@@ -62,14 +68,23 @@ async function responseError(response: Response, fallback='请求失败') {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...init })
-  if (!response.ok) throw new Error(await responseError(response))
+  const response = await fetch(url, { credentials:'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
+  if (!response.ok) {
+    if(response.status===401&&!url.startsWith('/api/auth/'))window.dispatchEvent(new CustomEvent('jushu:unauthorized'))
+    throw new Error(await responseError(response))
+  }
   return response.json()
 }
 
 export const api = {
+  authMe: () => request<{user:AuthUser;email_delivery_configured:boolean}>('/api/auth/me'),
+  login: (email:string,password:string) => request<{user:AuthUser}>('/api/auth/login',{method:'POST',body:JSON.stringify({email,password})}),
+  register: (email:string,password:string) => request<{user:AuthUser}>('/api/auth/register',{method:'POST',body:JSON.stringify({email,password})}),
+  logout: () => request<{logged_out:boolean}>('/api/auth/logout',{method:'POST'}),
+  adminAnalytics: (days=30) => request<AdminAnalytics>(`/api/admin/analytics?days=${days}`),
+  sendTelemetry: (events:{client_event_id:string;feature:string;success:boolean;duration_ms:number;details:Record<string,unknown>}[]) => request<{accepted:number}>('/api/telemetry/events',{method:'POST',body:JSON.stringify({events})}),
   list: () => request<Drama[]>('/api/dramas'),
-  createDramaTask: (body:{title:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
+  createDramaTask: (body:{title:string;theater:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),
   get: (id: string) => request<Drama>(`/api/dramas/${id}`),
   update: (id: number, body: object) => request<Drama>(`/api/dramas/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -79,14 +94,14 @@ export const api = {
   reviewClip: (clipId: number, status: 'approved' | 'blocked', note = '') => request<Clip>(`/api/moderation/clips/${clipId}/review`, { method: 'PUT', body: JSON.stringify({ status, note }) }),
   moderateText: (title: string, caption: string) => request<ModerationResult>('/api/moderation/text', { method: 'POST', body: JSON.stringify({ title, caption }) }),
   moderationConfig: () => request<{ cover_reminder: string }>('/api/moderation/config'),
-  generateTitles: (clipId: number, accountType: string, targetLanguage: string, formula: number | 'auto', accountId?: number, hotTags:string[] = [], strategyId?:number) => request<{ candidates: TitleCandidate[]; degraded: boolean; provider: string; context_used: string[] }>('/api/creative/titles', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, target_language: targetLanguage, formula, account_id: accountId, strategy_id:strategyId, hot_tags:hotTags }) }),
+  generateTitles: (clipId: number, accountType: string, targetLanguage: string, formula: number | 'auto', accountId?: number, hotTags:string[] = [], strategy?:AccountStrategy, includeTheaterTag=true) => request<{ candidates: TitleCandidate[]; degraded: boolean; provider: string; context_used: string[] }>('/api/creative/titles', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, target_language: targetLanguage, formula, account_id: accountId, strategy, hot_tags:hotTags, include_theater_tag:includeTheaterTag }) }),
   createPost: (clipId: number, accountType: string, candidate: TitleCandidate) => request<Post>('/api/creative/posts', { method: 'POST', body: JSON.stringify({ clip_id: clipId, account_type: accountType, candidate }) }),
   posts: () => request<Post[]>('/api/creative/posts'),
   accounts: () => request<Account[]>('/api/publish/accounts'),
   createAccount: (body: object) => request<Account>('/api/publish/accounts', { method: 'POST', body: JSON.stringify(body) }),
   configureAccount: (body:object,accountId?:number) => request<Account>(`/api/publish/accounts/configure${accountId?`?account_id=${accountId}`:''}`,{method:'POST',body:JSON.stringify(body)}),
   checkAccount: (id:number) => request<Account>(`/api/publish/accounts/${id}/check`,{method:'POST'}),
-  disconnectAccount: (id:number) => request<Account>(`/api/publish/accounts/${id}/disconnect`,{method:'POST'}),
+  removeAccount: (id:number) => request<{removed:boolean;account_id:number;history_preserved:boolean}>(`/api/publish/accounts/${id}`,{method:'DELETE'}),
   accountMedia: (id:number,limit=50) => request<PlatformMedia[]>(`/api/publish/accounts/${id}/media?limit=${limit}`),
   accountCalendar: (id:number,limit=50) => request<PlatformMedia[]>(`/api/publish/accounts/${id}/calendar?limit=${limit}`),
   accountInsights: (id:number,days:string|number='all',refresh=false) => request<AccountInsights>(`/api/publish/accounts/${id}/insights?days=${days}&refresh=${refresh}`),
@@ -137,6 +152,8 @@ export const api = {
   startFactoryProcessing: (dramaId:number,body:{max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:'balanced'|'small';output_modes:FactoryOutputMode[];hooks_per_variant:number;hook_ids:number[]}) => request<FactoryJob>(`/api/factory/${dramaId}/process`,{method:'POST',body:JSON.stringify(body)}),
   factoryJobs: (dramaId:number) => request<FactoryJob[]>(`/api/factory/${dramaId}/jobs`),
   factoryAssets: (dramaId:number) => request<GeneratedAsset[]>(`/api/factory/${dramaId}/assets`),
+  uploadCloudAsset: (assetId:number) => request<CloudAsset>(`/api/factory/assets/${assetId}/cloud`,{method:'POST'}),
+  cloudAssets: () => request<CloudAsset[]>('/api/factory/cloud-assets'),
   factoryHooks: (dramaId?:number,activeOnly=false) => request<HookAsset[]>(`/api/factory/hooks${dramaId?`?drama_id=${dramaId}&active_only=${activeOnly}`:`?active_only=${activeOnly}`}`),
   syncFactoryHooks: (dramaId:number) => request<HookAsset[]>(`/api/factory/${dramaId}/hooks/sync`,{method:'POST'}),
   setFactoryHookActive: (hookId:number,active:boolean) => request<HookAsset>(`/api/factory/hooks/${hookId}?active=${active}`,{method:'PATCH'}),
@@ -161,7 +178,7 @@ export const api = {
   syncYouTube: (accountIds:number[]=[],maxVideos=10) => request<{created:number;updated:number;videos_processed:number}>('/api/engagement/sync-youtube',{method:'POST',body:JSON.stringify({account_ids:accountIds,max_videos:maxVideos})}),
   batchPublish: (postIds:number[],accountIds:number[],scheduledAt:string,runNow=false,aiDisclosure=false,publishOptions:Record<string,unknown>={}) => request<PublishJob[]>('/api/publish/jobs/batch',{method:'POST',body:JSON.stringify({post_ids:postIds,account_ids:accountIds,scheduled_at:scheduledAt,run_now:runNow,ai_disclosure:aiDisclosure,publish_options:publishOptions})}),
   refreshPublishJob: (id:number) => request<PublishJob>(`/api/publish/jobs/${id}/refresh`,{method:'POST'}),
-  registerDrama: (title: string, absolutePath: string, sourceNote: string) => request<Drama>('/api/dramas/register', { method: 'POST', body: JSON.stringify({ title, absolute_path: absolutePath, source_note: sourceNote }) }),
+  registerDrama: (title: string, theater:string, absolutePath: string, sourceNote: string) => request<Drama>('/api/dramas/register', { method: 'POST', body: JSON.stringify({ title, theater, absolute_path: absolutePath, source_note: sourceNote }) }),
   uploadVideo: async (dramaTitle: string, sourceNote: string, file: File, onProgress: (value: number) => void, destination:'episodes'|'stills'|'publish'|'cover_vertical'|'cover_square'|'cover_horizontal'='episodes') => {
     if(!file.size)throw new Error('不能上传空文件')
     const chunkSize = 8 * 1024 * 1024; const totalChunks = Math.ceil(file.size / chunkSize); const concurrency = 4

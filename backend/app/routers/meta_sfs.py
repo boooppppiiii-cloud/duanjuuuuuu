@@ -16,10 +16,12 @@ from sqlmodel import Session, select
 
 from ..database import get_session
 from ..config import get_settings
-from ..models import Drama, MetaDeliveryPackage
+from ..models import AppUser, Drama, FactoryJob, GeneratedAsset, MetaDeliveryPackage
 from ..schemas import MetaSFSRequest
 from ..services.meta_sfs import build_package, preflight
 from ..services.drive_delivery import upload_meta_package
+from ..services.auth import get_current_user
+from ..services.drama_library import episode_files
 
 router = APIRouter(prefix="/api/meta-sfs", tags=["Meta SFS 官方投递"])
 _local_destinations: dict[str, tuple[Path, float]] = {}
@@ -30,6 +32,29 @@ def _package_root(item: MetaDeliveryPackage) -> Path:
     if not root.is_dir():
         raise HTTPException(404, "投递文件夹不存在或尚未生成完成")
     return root
+
+
+def _owned_package(package_id: int, session: Session, user: AppUser) -> MetaDeliveryPackage:
+    item = session.get(MetaDeliveryPackage, package_id)
+    if not item or item.owner_user_id != user.id:
+        raise HTTPException(404, "投递文件夹不存在")
+    return item
+
+
+def _delivery_for_user(session: Session, drama: Drama, user: AppUser) -> tuple[list[Path], str]:
+    latest = session.exec(select(FactoryJob).where(
+        FactoryJob.drama_id == drama.id, FactoryJob.owner_user_id == user.id,
+        FactoryJob.status == "completed", FactoryJob.meta_count > 0,
+    ).order_by(FactoryJob.id.desc())).first()
+    if latest:
+        assets = session.exec(select(GeneratedAsset).where(
+            GeneratedAsset.factory_job_id == latest.id, GeneratedAsset.owner_user_id == user.id,
+            GeneratedAsset.kind == "meta_episode",
+        ).order_by(GeneratedAsset.sequence)).all()
+        paths = [Path(item.file_path).resolve() for item in assets]
+        if paths and all(path.is_file() for path in paths):
+            return paths, "factory_meta_split"
+    return episode_files(Path(drama.file_dir)), "source_episodes"
 
 
 def _package_file(root: Path, relative_path: str) -> Path:
@@ -101,32 +126,32 @@ def select_local_directory(request: Request):
 
 
 @router.post("/preflight")
-def check_package(payload: MetaSFSRequest, session: Session = Depends(get_session)):
+def check_package(payload: MetaSFSRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = session.get(Drama, payload.drama_id)
     if not drama:
         raise HTTPException(404, "剧目不存在")
-    return preflight(drama, payload)
+    return preflight(drama, payload, _delivery_for_user(session, drama, user))
 
 
 @router.post("/build")
-def create_package(payload: MetaSFSRequest, session: Session = Depends(get_session)):
+def create_package(payload: MetaSFSRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = session.get(Drama, payload.drama_id)
     if not drama:
         raise HTTPException(404, "剧目不存在")
     try:
-        output_dir, report = build_package(drama, payload, output_parent=_take_local_destination(payload.local_destination_token))
+        output_dir, report = build_package(drama, payload, output_parent=_take_local_destination(payload.local_destination_token), delivery=_delivery_for_user(session, drama, user))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"Meta 投递包构建失败：{exc}") from exc
-    item = MetaDeliveryPackage(drama_id=drama.id, series_slug=report["series_slug"], output_dir=str(output_dir.resolve()), status="ready", validation_json=report)
+    item = MetaDeliveryPackage(drama_id=drama.id, series_slug=report["series_slug"], output_dir=str(output_dir.resolve()), status="ready", validation_json=report, owner_user_id=user.id)
     session.add(item); session.commit(); session.refresh(item)
     return item
 
 
 @router.get("/packages", response_model=list[MetaDeliveryPackage])
-def list_packages(session: Session = Depends(get_session)):
-    items = session.exec(select(MetaDeliveryPackage).order_by(MetaDeliveryPackage.created_at.desc())).all()
+def list_packages(session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    items = session.exec(select(MetaDeliveryPackage).where(MetaDeliveryPackage.owner_user_id == user.id).order_by(MetaDeliveryPackage.created_at.desc())).all()
     changed = False
     for item in items:
         available = Path(item.output_dir).is_dir()
@@ -146,10 +171,8 @@ def list_packages(session: Session = Depends(get_session)):
 
 
 @router.get("/packages/{package_id}/files")
-def list_package_files(package_id: int, session: Session = Depends(get_session)):
-    item = session.get(MetaDeliveryPackage, package_id)
-    if not item:
-        raise HTTPException(404, "投递文件夹不存在")
+def list_package_files(package_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    item = _owned_package(package_id, session, user)
     root = _package_root(item)
     files = [
         {"path": path.relative_to(root).as_posix(), "size": path.stat().st_size}
@@ -160,19 +183,15 @@ def list_package_files(package_id: int, session: Session = Depends(get_session))
 
 
 @router.get("/packages/{package_id}/files/{relative_path:path}")
-def download_package_file(package_id: int, relative_path: str, session: Session = Depends(get_session)):
-    item = session.get(MetaDeliveryPackage, package_id)
-    if not item:
-        raise HTTPException(404, "投递文件夹不存在")
+def download_package_file(package_id: int, relative_path: str, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    item = _owned_package(package_id, session, user)
     target = _package_file(_package_root(item), relative_path)
     return FileResponse(target, filename=target.name)
 
 
 @router.get("/packages/{package_id}/archive")
-def download_package_archive(package_id: int, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
-    item = session.get(MetaDeliveryPackage, package_id)
-    if not item:
-        raise HTTPException(404, "投递文件夹不存在")
+def download_package_archive(package_id: int, background_tasks: BackgroundTasks, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    item = _owned_package(package_id, session, user)
     root = _package_root(item)
     settings = get_settings()
     archive = _create_package_archive(root, settings.media_root / "downloads", settings.upload_free_space_reserve_bytes)
@@ -181,10 +200,8 @@ def download_package_archive(package_id: int, background_tasks: BackgroundTasks,
 
 
 @router.post("/packages/{package_id}/open-folder")
-def open_package_folder(package_id: int, session: Session = Depends(get_session)):
-    item = session.get(MetaDeliveryPackage, package_id)
-    if not item:
-        raise HTTPException(404, "投递文件夹不存在")
+def open_package_folder(package_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    item = _owned_package(package_id, session, user)
     root = _package_root(item)
     try:
         if sys.platform == "win32":
@@ -199,10 +216,8 @@ def open_package_folder(package_id: int, session: Session = Depends(get_session)
 
 
 @router.post("/packages/{package_id}/copy-local")
-def copy_package_local(package_id: int, token: str, session: Session = Depends(get_session)):
-    item = session.get(MetaDeliveryPackage, package_id)
-    if not item:
-        raise HTTPException(404, "投递文件夹不存在")
+def copy_package_local(package_id: int, token: str, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    item = _owned_package(package_id, session, user)
     source = _package_root(item)
     destination_parent = _take_local_destination(token)
     if destination_parent is None:
@@ -220,10 +235,8 @@ def copy_package_local(package_id: int, token: str, session: Session = Depends(g
 
 
 @router.post("/packages/{package_id}/upload-drive", response_model=MetaDeliveryPackage)
-def upload_package(package_id: int, session: Session = Depends(get_session)):
-    item = session.get(MetaDeliveryPackage, package_id)
-    if not item:
-        raise HTTPException(404, "投递包不存在")
+def upload_package(package_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    item = _owned_package(package_id, session, user)
     item.status = "uploading"; item.last_error = ""
     session.add(item); session.commit()
     try:

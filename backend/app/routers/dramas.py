@@ -1,4 +1,3 @@
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -8,10 +7,11 @@ from sqlmodel import Session, select
 
 from ..config import get_settings
 from ..database import get_session
-from ..models import Clip, Drama
-from ..schemas import DramaCreateRequest, DramaDetail, DramaUpdate, GeneratedFile, HighlightsPayload, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
+from ..models import AppUser, Clip, Drama, GeneratedAsset
+from ..schemas import DramaCreateRequest, DramaDetail, DramaUpdate, HighlightsPayload, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
 from ..services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix, read_highlights, scan_dramas_with_logs, write_highlights
 from ..services.uploads import UploadStore, validate_title
+from ..services.auth import get_current_user
 
 router = APIRouter(prefix="/api/dramas", tags=["剧库"])
 
@@ -34,8 +34,6 @@ def to_detail(drama: Drama) -> DramaDetail:
     folder = Path(drama.file_dir)
     episodes = episode_files(folder)
     stills = files_with_suffix(folder / "stills", IMAGE_SUFFIXES)
-    generated_root = folder / "generated"
-    generated = sorted(path for path in generated_root.rglob("*") if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES) if generated_root.is_dir() else []
     data = drama.model_dump()
     data["episode_count"] = len(episodes)
     data["total_episode_count"] = max(drama.total_episode_count, 1)
@@ -44,7 +42,7 @@ def to_detail(drama: Drama) -> DramaDetail:
         episodes=[path.name for path in episodes],
         stills=[DramaDetail.safe_relative(path, media_root) for path in stills],
         highlights=read_highlights(folder),
-        generated_files=[GeneratedFile(name=path.relative_to(generated_root).as_posix(), size=path.stat().st_size, created_at=datetime.fromtimestamp(path.stat().st_mtime)) for path in generated],
+        generated_files=[],
     )
 
 
@@ -63,6 +61,7 @@ def create_drama_task(payload: DramaCreateRequest, session: Session = Depends(ge
         (folder / name).mkdir(parents=True, exist_ok=True)
     drama = Drama(
         title=title,
+        theater=payload.theater,
         description=payload.description.strip(),
         genres=payload.genres,
         is_ai_generated=payload.is_ai_generated,
@@ -96,6 +95,7 @@ def manual_register(payload: ManualRegisterRequest, session: Session = Depends(g
     if existing and Path(existing.file_dir).resolve() != folder: raise HTTPException(409, f"已存在同名剧：{existing.file_dir}")
     drama = existing or Drama(title=title, file_dir=str(folder), source_note=payload.source_note)
     drama.file_dir, drama.source_note, drama.episode_count = str(folder), payload.source_note.strip(), len(videos)
+    drama.theater = payload.theater
     if not drama.description.strip():
         drama.total_episode_count = max(drama.total_episode_count, len(videos))
     session.add(drama); session.commit(); session.refresh(drama)
@@ -103,28 +103,28 @@ def manual_register(payload: ManualRegisterRequest, session: Session = Depends(g
 
 
 @router.post("/uploads/init", response_model=UploadInitResult)
-def upload_init(payload: UploadInitRequest):
+def upload_init(payload: UploadInitRequest, user: AppUser = Depends(get_current_user)):
     try:
         settings = get_settings()
         upload_id, received = UploadStore(
             settings.media_root,
             max_file_size=settings.max_upload_file_bytes,
             free_space_reserve=settings.upload_free_space_reserve_bytes,
-        ).init(payload)
+        ).init(payload, user.id)
         return UploadInitResult(upload_id=upload_id, received_chunks=received)
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
 
 
 @router.put("/uploads/{upload_id}/chunks/{index}")
-def upload_chunk(upload_id: str, index: int, data: bytes = Body(..., media_type="application/octet-stream")):
-    try: return {"received_chunk": UploadStore(get_settings().media_root).write_chunk(upload_id, index, data)}
+def upload_chunk(upload_id: str, index: int, data: bytes = Body(..., media_type="application/octet-stream"), user: AppUser = Depends(get_current_user)):
+    try: return {"received_chunk": UploadStore(get_settings().media_root).write_chunk(upload_id, index, data, user.id)}
     except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/uploads/{upload_id}/complete", response_model=DramaDetail)
-def upload_complete(upload_id: str, session: Session = Depends(get_session)):
-    try: target, manifest = UploadStore(get_settings().media_root).complete(upload_id)
+def upload_complete(upload_id: str, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    try: target, manifest = UploadStore(get_settings().media_root).complete(upload_id, user.id)
     except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
     destination = manifest.get("destination", "episodes")
@@ -166,6 +166,7 @@ def upload_complete(upload_id: str, session: Session = Depends(get_session)):
                 progress=100,
                 current_step="completed",
                 asset_kind="publish",
+                owner_user_id=user.id,
             ))
     drama.source_note = manifest["source_note"]
     drama.episode_count = len(episode_files(Path(drama.file_dir)))
@@ -186,11 +187,12 @@ def get_drama(drama_id: int, session: Session = Depends(get_session)):
 
 
 @router.get("/{drama_id}/generated/{filename:path}")
-def get_generated_video(drama_id: int, filename: str, session: Session = Depends(get_session)):
+def get_generated_video(drama_id: int, filename: str, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = get_drama_or_404(drama_id, session)
     generated_dir = (Path(drama.file_dir) / "generated").resolve()
     target = (generated_dir / filename).resolve()
-    if generated_dir not in target.parents or not target.is_file() or target.suffix.lower() not in VIDEO_SUFFIXES:
+    asset = session.exec(select(GeneratedAsset).where(GeneratedAsset.drama_id == drama_id, GeneratedAsset.owner_user_id == user.id, GeneratedAsset.file_path == str(target))).first()
+    if generated_dir not in target.parents or not target.is_file() or target.suffix.lower() not in VIDEO_SUFFIXES or not asset:
         raise HTTPException(404, "成品不存在")
     return FileResponse(target, filename=target.name)
 

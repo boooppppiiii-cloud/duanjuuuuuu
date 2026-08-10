@@ -1,0 +1,4 @@
+app.duanju.chat {
+	encode zstd gzip
+	reverse_proxy frontend:80
+}

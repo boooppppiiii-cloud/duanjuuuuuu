@@ -7,12 +7,20 @@ from pydantic import BaseModel, Field, field_validator
 
 class DramaCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
+    theater: str = Field(min_length=1, max_length=80)
     description: str = Field(min_length=1, max_length=2000)
     total_episode_count: int = Field(ge=1, le=999)
     genres: list[str] = Field(min_length=1)
     language: str = Field(default="en_US", min_length=5, max_length=5)
     is_ai_generated: bool = False
     is_dubbed_content: bool = False
+
+    @field_validator("theater")
+    @classmethod
+    def theater_not_blank(cls, value: str) -> str:
+        if not value.strip().lstrip("#").strip():
+            raise ValueError("剧场不能为空")
+        return value.strip().lstrip("#").strip()
 
     @field_validator("language")
     @classmethod
@@ -24,6 +32,7 @@ class DramaCreateRequest(BaseModel):
 
 class DramaUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    theater: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=2000)
     genres: Optional[list[str]] = None
     actor_names: Optional[list[str]] = None
@@ -33,6 +42,15 @@ class DramaUpdate(BaseModel):
     language: Optional[str] = Field(default=None, min_length=5, max_length=5)
     promotion_episode_count: Optional[int] = Field(default=None, ge=1, le=999)
     total_episode_count: Optional[int] = Field(default=None, ge=1, le=999)
+
+    @field_validator("theater")
+    @classmethod
+    def theater_not_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        if not value.strip().lstrip("#").strip():
+            raise ValueError("剧场不能为空")
+        return value.strip().lstrip("#").strip()
 
     @field_validator("source_note")
     @classmethod
@@ -71,6 +89,7 @@ class GeneratedFile(BaseModel):
 class DramaDetail(BaseModel):
     id: int
     title: str
+    theater: str
     description: str
     genres: list[str]
     is_ai_generated: bool
@@ -109,8 +128,16 @@ class ScanResult(BaseModel):
 
 class ManualRegisterRequest(BaseModel):
     title: str = Field(min_length=1)
+    theater: str = Field(min_length=1, max_length=80)
     absolute_path: str = Field(min_length=1)
     source_note: str = Field(min_length=1)
+
+    @field_validator("theater")
+    @classmethod
+    def theater_not_blank(cls, value: str) -> str:
+        if not value.strip().lstrip("#").strip():
+            raise ValueError("剧场不能为空")
+        return value.strip().lstrip("#").strip()
 
 
 class UploadInitRequest(BaseModel):
@@ -245,6 +272,20 @@ class GeneratedAssetView(BaseModel):
     created_at: datetime
 
 
+class CloudAssetView(BaseModel):
+    id: int
+    drama_id: int
+    drama_title: str
+    uploader_email: str
+    kind: str
+    filename: str
+    size_bytes: int
+    duration: float
+    download_count: int
+    storage_backend: str
+    created_at: datetime
+
+
 class HookAssetView(BaseModel):
     id: int
     drama_id: int
@@ -295,9 +336,11 @@ class TitleGenerationRequest(BaseModel):
     account_type: str
     account_id: Optional[int] = None
     strategy_id: Optional[int] = None
+    strategy: Optional[dict] = None
     target_language: str = "English"
     formula: int | str = "auto"
     hot_tags: list[str] = Field(default_factory=list)
+    include_theater_tag: bool = True
 
     @field_validator("account_type")
     @classmethod
@@ -404,7 +447,8 @@ class PlatformAppConfigRequest(BaseModel):
 
 class AccountStrategyPayload(BaseModel):
     name: str
-    positioning: str
+    history_text: str = ""
+    positioning: str = ""
     persona_keywords: list[str] = Field(default_factory=list)
     tone_examples: str = ""
     daily_posts: int = Field(default=1, ge=1, le=10)

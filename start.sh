@@ -8,5 +8,5 @@ if ! python3 scripts/doctor.py; then
 fi
 docker compose up -d --build
 HOST_IP=$(hostname -I | awk '{print $1}')
-FRONTEND_PORT=${FRONTEND_PORT:-5174}
-echo "✅ 服务已启动。打开 http://${HOST_IP:-127.0.0.1}:${FRONTEND_PORT} 开始使用"
+FRONTEND_BIND_PORT=${FRONTEND_BIND_PORT:-5174}
+echo "✅ 服务已启动。打开 http://${HOST_IP:-127.0.0.1}:${FRONTEND_BIND_PORT} 开始使用"

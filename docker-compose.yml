@@ -18,6 +18,16 @@ services:
       PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:-http://127.0.0.1:8000}
       PUBLIC_UI_ORIGIN: ${PUBLIC_UI_ORIGIN:-http://127.0.0.1:5174}
       CREDENTIAL_SECRET: ${CREDENTIAL_SECRET:-}
+      DEVELOPER_EMAIL: ${DEVELOPER_EMAIL:-boooppppiiii@gmail.com}
+      DEVELOPER_INITIAL_PASSWORD: ${DEVELOPER_INITIAL_PASSWORD:-}
+      AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-30}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      CLOUD_STORAGE_BACKEND: ${CLOUD_STORAGE_BACKEND:-local}
+      CLOUD_STORAGE_ROOT: /app/media/cloud-library
       META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v24.0}
       PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
       GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE: ${GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE:-}
@@ -42,5 +52,27 @@ services:
     depends_on:
       - backend
     ports:
-      - "${FRONTEND_PORT:-5174}:80"
+      - "127.0.0.1:${FRONTEND_BIND_PORT:-5174}:80"
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    profiles:
+      - production
+    depends_on:
+      - frontend
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-app.duanju.chat}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

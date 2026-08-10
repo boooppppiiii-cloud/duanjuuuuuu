@@ -109,9 +109,9 @@ def _cover_issue(path: Path, ratio: float, min_width: int, min_height: int, labe
     return ""
 
 
-def preflight(drama: Drama, payload: MetaSFSRequest) -> dict:
+def preflight(drama: Drama, payload: MetaSFSRequest, delivery: tuple[list[Path], str] | None = None) -> dict:
     drama_dir = Path(drama.file_dir)
-    sources, source_mode = delivery_sources(drama_dir)
+    sources, source_mode = delivery or delivery_sources(drama_dir)
     expected_total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
     effective_description = drama.description.strip() or payload.description.strip()
     effective_genres = drama.genres or payload.genres
@@ -235,8 +235,8 @@ def _verify_output(path: Path) -> list[str]:
     return errors
 
 
-def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | None = None) -> tuple[Path, dict]:
-    check = preflight(drama, payload)
+def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | None = None, delivery: tuple[list[Path], str] | None = None) -> tuple[Path, dict]:
+    check = preflight(drama, payload, delivery)
     if check["blockers"]:
         raise ValueError("；".join(check["blockers"]))
     settings = get_settings()
@@ -246,7 +246,7 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
     series_dir = package_root / slug
     series_dir.mkdir(parents=True, exist_ok=False)
 
-    sources, source_mode = delivery_sources(Path(drama.file_dir))
+    sources, source_mode = delivery or delivery_sources(Path(drama.file_dir))
     total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
     description = drama.description.strip() or payload.description.strip()
     genres = drama.genres or payload.genres

@@ -1,4 +1,8 @@
 from pathlib import Path
+from datetime import datetime
+import os
+import shutil
+import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -6,15 +10,25 @@ from sqlmodel import Session, select
 
 from ..config import get_settings
 from ..database import get_session
-from ..models import Clip, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
-from ..schemas import FactoryAnalysisReviewRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, GeneratedAssetView, HookAssetView
+from ..models import AppUser, Clip, CloudAsset, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
+from ..schemas import CloudAssetView, FactoryAnalysisReviewRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, GeneratedAssetView, HookAssetView
 from ..services.factory_multimodal import FactoryAIUnavailableError, provider_name
 from ..services.script_analysis import ANALYSIS_VERSION, add_manual_sensitive, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review
 from ..services.drama_library import episode_files
 from ..services.factory_processing import factory_pipeline, sync_hook_assets
+from ..services.auth import bind_current_user, get_current_user, reset_current_user
+from ..services.usage import record_usage
 
 
 router = APIRouter(prefix="/api/factory", tags=["内容工厂"])
+
+
+def _run_analysis_as_user(user_id: int, *args) -> None:
+    token = bind_current_user(user_id)
+    try:
+        factory_analysis_pipeline.run(*args)
+    finally:
+        reset_current_user(token)
 
 
 def get_drama(drama_id: int, session: Session) -> Drama:
@@ -61,7 +75,7 @@ def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{drama_id}/analyze")
-def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
+def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = get_drama(drama_id, session)
     settings = get_settings()
     try:
@@ -72,6 +86,9 @@ def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, sessio
         return read_analysis(Path(drama.file_dir))
     words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
     previous = read_analysis(Path(drama.file_dir)) or {}
+    if previous.get("status") == "completed" and int(previous.get("analysis_version", 0)) == ANALYSIS_VERSION:
+        record_usage("内容识别", user_id=user.id, event_kind="feature", cache_hit=True, details={"drama_id": drama_id})
+        return previous
     resume = (
         previous.get("status") in {"queued", "processing", "failed"}
         and int(previous.get("analysis_version", 0)) == ANALYSIS_VERSION
@@ -80,7 +97,8 @@ def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, sessio
         queued_resume_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
         if resume else queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
     )
-    background_tasks.add_task(factory_analysis_pipeline.run, Path(drama.file_dir), drama.id, drama.title, settings, words, resume)
+    background_tasks.add_task(_run_analysis_as_user, user.id, Path(drama.file_dir), drama.id, drama.title, settings, words, resume)
+    record_usage("内容识别", user_id=user.id, event_kind="feature", cache_hit=False, details={"drama_id": drama_id, "resume": resume})
     return result
 
 
@@ -134,7 +152,7 @@ def analysis_video(drama_id: int, episode: str, session: Session = Depends(get_s
 
 
 @router.post("/{drama_id}/process", response_model=FactoryJobView)
-def start_processing(drama_id: int, payload: FactoryProcessRequest, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
+def start_processing(drama_id: int, payload: FactoryProcessRequest, background_tasks: BackgroundTasks, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = get_drama(drama_id, session)
     sources = episode_files(Path(drama.file_dir))
     if not sources:
@@ -144,7 +162,7 @@ def start_processing(drama_id: int, payload: FactoryProcessRequest, background_t
         not analysis or analysis.get("status") != "completed" or analysis.get("provider") not in {"gemini", "qwen"}
     ):
         raise HTTPException(422, "请先完成脚本与敏感内容识别，再生成净化版或高能片头版")
-    active = session.exec(select(FactoryJob).where(FactoryJob.drama_id == drama_id, FactoryJob.status.in_(["queued", "processing"]))).first()
+    active = session.exec(select(FactoryJob).where(FactoryJob.drama_id == drama_id, FactoryJob.owner_user_id == user.id, FactoryJob.status.in_(["queued", "processing"]))).first()
     if active:
         raise HTTPException(409, f"该剧已有加工任务 #{active.id} 正在运行")
     sync_hook_assets(session, drama)
@@ -163,6 +181,7 @@ def start_processing(drama_id: int, payload: FactoryProcessRequest, background_t
         hooks_per_variant=payload.hooks_per_variant,
         selected_hook_ids=list(dict.fromkeys(payload.hook_ids)),
         source_files=[path.name for path in sources],
+        owner_user_id=user.id,
     )
     session.add(job)
     session.commit()
@@ -172,29 +191,29 @@ def start_processing(drama_id: int, payload: FactoryProcessRequest, background_t
 
 
 @router.get("/{drama_id}/jobs", response_model=list[FactoryJobView])
-def list_jobs(drama_id: int, session: Session = Depends(get_session)):
+def list_jobs(drama_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     get_drama(drama_id, session)
-    return session.exec(select(FactoryJob).where(FactoryJob.drama_id == drama_id).order_by(FactoryJob.id.desc())).all()
+    return session.exec(select(FactoryJob).where(FactoryJob.drama_id == drama_id, FactoryJob.owner_user_id == user.id).order_by(FactoryJob.id.desc())).all()
 
 
 @router.get("/jobs/{job_id}", response_model=FactoryJobView)
-def get_job(job_id: int, session: Session = Depends(get_session)):
+def get_job(job_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     job = session.get(FactoryJob, job_id)
-    if not job:
+    if not job or job.owner_user_id != user.id:
         raise HTTPException(404, "加工任务不存在")
     return job
 
 
 @router.get("/{drama_id}/assets", response_model=list[GeneratedAssetView])
-def list_assets(drama_id: int, session: Session = Depends(get_session)):
+def list_assets(drama_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     get_drama(drama_id, session)
-    return session.exec(select(GeneratedAsset).where(GeneratedAsset.drama_id == drama_id).order_by(GeneratedAsset.id.desc())).all()
+    return session.exec(select(GeneratedAsset).where(GeneratedAsset.drama_id == drama_id, GeneratedAsset.owner_user_id == user.id).order_by(GeneratedAsset.id.desc())).all()
 
 
 @router.get("/assets/{asset_id}/download")
-def download_asset(asset_id: int, session: Session = Depends(get_session)):
+def download_asset(asset_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     asset = session.get(GeneratedAsset, asset_id)
-    if not asset:
+    if not asset or asset.owner_user_id != user.id:
         raise HTTPException(404, "成品不存在")
     drama = get_drama(asset.drama_id, session)
     path = Path(asset.file_path).resolve()
@@ -202,6 +221,69 @@ def download_asset(asset_id: int, session: Session = Depends(get_session)):
     if root not in path.parents or not path.is_file():
         raise HTTPException(404, "成品文件不存在")
     return FileResponse(path, filename=asset.filename)
+
+
+def cloud_view(item: CloudAsset, session: Session) -> CloudAssetView:
+    drama = session.get(Drama, item.drama_id)
+    uploader = session.get(AppUser, item.uploader_user_id)
+    return CloudAssetView(
+        id=item.id, drama_id=item.drama_id, drama_title=drama.title if drama else "",
+        uploader_email=uploader.email if uploader else "已删除用户", kind=item.kind, filename=item.filename,
+        size_bytes=item.size_bytes, duration=item.duration, download_count=item.download_count,
+        storage_backend=item.storage_backend, created_at=item.created_at,
+    )
+
+
+@router.post("/assets/{asset_id}/cloud", response_model=CloudAssetView)
+def upload_to_cloud_library(asset_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    asset = session.get(GeneratedAsset, asset_id)
+    if not asset or asset.owner_user_id != user.id:
+        raise HTTPException(404, "成品不存在")
+    existing = session.exec(select(CloudAsset).where(CloudAsset.source_asset_id == asset.id)).first()
+    if existing:
+        record_usage("上传云剧库", user_id=user.id, event_kind="feature", cache_hit=True, details={"asset_id": asset.id})
+        return cloud_view(existing, session)
+    source = Path(asset.file_path).resolve()
+    if not source.is_file():
+        raise HTTPException(404, "成品文件不存在")
+    settings = get_settings()
+    root = settings.cloud_storage_root.resolve()
+    target_dir = root / str(asset.drama_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{uuid.uuid4().hex}_{Path(asset.filename).name}"
+    backend = "local_hardlink"
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+        backend = "local_copy"
+    item = CloudAsset(
+        drama_id=asset.drama_id, source_asset_id=asset.id, uploader_user_id=user.id, kind=asset.kind,
+        filename=asset.filename, storage_backend=backend, storage_key=str(target), size_bytes=asset.size_bytes,
+        duration=asset.duration, created_at=datetime.utcnow(),
+    )
+    session.add(item); session.commit(); session.refresh(item)
+    record_usage("上传云剧库", user_id=user.id, event_kind="feature", details={"asset_id": asset.id, "storage_backend": backend})
+    return cloud_view(item, session)
+
+
+@router.get("/cloud-assets", response_model=list[CloudAssetView])
+def list_cloud_assets(session: Session = Depends(get_session)):
+    rows = session.exec(select(CloudAsset).order_by(CloudAsset.created_at.desc())).all()
+    return [cloud_view(row, session) for row in rows]
+
+
+@router.get("/cloud-assets/{cloud_id}/download")
+def download_cloud_asset(cloud_id: int, session: Session = Depends(get_session)):
+    item = session.get(CloudAsset, cloud_id)
+    if not item:
+        raise HTTPException(404, "云剧库文件不存在")
+    path = Path(item.storage_key).resolve()
+    root = get_settings().cloud_storage_root.resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(404, "云剧库文件不存在")
+    item.download_count += 1; session.add(item); session.commit()
+    return FileResponse(path, filename=item.filename)
 
 
 def hook_view(item: HookAsset, session: Session) -> HookAssetView:

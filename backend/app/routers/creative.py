@@ -1,17 +1,17 @@
 from pathlib import Path
-from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..models import Account, AccountStrategy, Basemap, Clip, ContentExample, Drama, HotNote, ImageQuota, Post, TagLibraryItem
-from ..schemas import BasemapGenerateRequest, BasemapReviewRequest, CoverCreateRequest, PostCreateRequest, TitleCandidates, TitleGenerationRequest
+from ..models import Account, AccountStrategy, AppUser, Basemap, Clip, Drama, ImageQuota, Post
+from ..schemas import AccountStrategyPayload, BasemapGenerateRequest, BasemapReviewRequest, CoverCreateRequest, PostCreateRequest, TitleCandidates, TitleGenerationRequest
 from ..services.cover import render_cover
 from ..services.imagegen import QuotaExceededError, generate_image
-from ..services.llm import LLMUnavailableError, build_prompt, generate_candidates
+from ..services.llm import LLMUnavailableError, apply_theater_tag, build_prompt, generate_candidates, normalize_theater_tag
 from ..services.moderation import find_hits, load_banned_words
+from ..services.auth import get_current_user
 
 router = APIRouter(prefix="/api/creative", tags=["标题与封面"])
 DATA_ROOT = Path(__file__).parents[2] / "data"
@@ -19,53 +19,47 @@ PROJECT_ROOT = Path(__file__).parents[3]
 
 
 @router.post("/titles", response_model=TitleCandidates)
-def titles(payload: TitleGenerationRequest, session: Session = Depends(get_session)):
+def titles(payload: TitleGenerationRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     clip = session.get(Clip, payload.clip_id)
     drama = session.get(Drama, clip.drama_id) if clip else None
-    if not clip or not drama:
+    if not clip or clip.owner_user_id != user.id or not drama:
         raise HTTPException(404, "切片或剧目不存在")
     account = session.get(Account, payload.account_id) if payload.account_id else None
-    strategy = session.get(AccountStrategy, payload.strategy_id) if payload.strategy_id else session.get(AccountStrategy, account.strategy_id) if account and account.strategy_id else None
+    try:
+        strategy = AccountStrategyPayload.model_validate(payload.strategy) if payload.strategy else session.get(AccountStrategy, payload.strategy_id) if payload.strategy_id else None
+    except Exception as exc:
+        raise HTTPException(422, f"本地运营策略格式不正确：{exc}") from exc
     account_type = account.account_type if account else payload.account_type
-    platform = account.platform if account else "all"
-    all_examples = session.exec(select(ContentExample).where(ContentExample.enabled == True)).all()  # noqa: E712
-    matched_examples = [item for item in all_examples if item.language.casefold() == payload.target_language.casefold() and item.platform in {"all", platform} and (not item.genres or bool(set(item.genres) & set(drama.genres)))][:5]
-    examples = "\n".join(item.content for item in matched_examples)
-    all_tags = session.exec(select(TagLibraryItem).where(TagLibraryItem.enabled == True)).all()  # noqa: E712
-    matched_tags = [item.tag for item in all_tags if item.language.casefold() == payload.target_language.casefold() and item.platform in {"all", platform} and (not item.genres or bool(set(item.genres) & set(drama.genres)))]
-    active_hot={item.content for item in session.exec(select(HotNote)).all() if item.expires_at>=date.today() and item.platform in {platform,"all"}}
-    hot_tags=[tag if tag.startswith("#") else "#"+tag.replace(" ","") for tag in payload.hot_tags if tag in active_hot]
-    formula = strategy.title_formula_preference if strategy and payload.formula == "auto" else payload.formula
-    strategy_context = ""
+    reference_content = ""
     if strategy:
-        strategy_context = f"\n账号策略：定位={strategy.positioning}；人设={strategy.persona_keywords}；口吻={strategy.tone_examples}；标签池={strategy.tag_pool}"
-    prompt = build_prompt(title=drama.title, genres=drama.genres, actors=drama.actor_names, subtitles=clip.subtitle_text, account_type=account_type, target_language=payload.target_language, formula=formula, examples=examples + strategy_context)
+        reference_content = strategy.history_text or strategy.tone_examples
+    theater_tag = normalize_theater_tag(drama.theater)
+    prompt = build_prompt(
+        title=drama.title,
+        synopsis=drama.description,
+        theater_tag=theater_tag,
+        include_theater_tag=payload.include_theater_tag,
+        genres=drama.genres,
+        actors=drama.actor_names,
+        subtitles=clip.subtitle_text,
+        account_type=account_type,
+        target_language=payload.target_language,
+        formula=payload.formula,
+        reference_content=reference_content,
+    )
     try:
         result = generate_candidates(prompt, is_ai_generated=drama.is_ai_generated, account_type=account_type, banned_words_path=DATA_ROOT / "banned_words.txt")
         if account and account_type == "official" and account.credentials_json.get("app_link"):
             result = result.model_copy(update={"candidates": [item.model_copy(update={"caption": item.caption.replace("{app_link}", str(account.credentials_json["app_link"]))}) for item in result.candidates]})
-        if strategy:
-            candidates = []
-            for item in result.candidates:
-                tags = list(dict.fromkeys(strategy.tag_pool + item.hashtags))
-                candidates.append(item.model_copy(update={"hashtags": tags}))
-            result = result.model_copy(update={"candidates": candidates})
-        if matched_examples or matched_tags:
-            influenced = []
-            for item in result.candidates:
-                influenced.append(item.model_copy(update={"hashtags": list(dict.fromkeys(matched_tags + hot_tags + item.hashtags))}))
-            result = result.model_copy(update={"candidates": influenced, "context_used": [f"样本:{x.content}" for x in matched_examples] + [f"标签:{x}" for x in matched_tags] + [f"热点:{x}" for x in hot_tags]})
-        elif hot_tags:
-            result = result.model_copy(update={"candidates":[item.model_copy(update={"hashtags":list(dict.fromkeys(hot_tags+item.hashtags))}) for item in result.candidates],"context_used":[f"热点:{x}" for x in hot_tags]})
-        return result
+        return apply_theater_tag(result, drama.theater, payload.include_theater_tag)
     except LLMUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
 
 
 @router.post("/posts", response_model=Post)
-def create_post(payload: PostCreateRequest, session: Session = Depends(get_session)):
+def create_post(payload: PostCreateRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     clip = session.get(Clip, payload.clip_id)
-    if not clip:
+    if not clip or clip.owner_user_id != user.id:
         raise HTTPException(404, "切片不存在")
     hits = find_hits(f"{payload.candidate.title}\n{payload.candidate.caption}", load_banned_words(DATA_ROOT / "banned_words.txt"))
     if hits:
@@ -74,14 +68,14 @@ def create_post(payload: PostCreateRequest, session: Session = Depends(get_sessi
     caption = payload.candidate.caption
     if drama and drama.is_ai_generated and "#aigc" not in caption.casefold():
         caption = f"{caption.rstrip()}\nAI-generated content #AIGC"
-    post = Post(clip_id=clip.id, title=payload.candidate.title, caption=caption, hashtags=payload.candidate.hashtags, title_formula=payload.candidate.formula)
+    post = Post(clip_id=clip.id, title=payload.candidate.title, caption=caption, hashtags=payload.candidate.hashtags, title_formula=payload.candidate.formula, owner_user_id=user.id)
     session.add(post); session.commit(); session.refresh(post)
     return post
 
 
 @router.get("/posts", response_model=list[Post])
-def list_posts(session: Session = Depends(get_session)):
-    return session.exec(select(Post).order_by(Post.id.desc())).all()
+def list_posts(session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    return session.exec(select(Post).where(Post.owner_user_id == user.id).order_by(Post.id.desc())).all()
 
 
 @router.post("/basemaps", response_model=list[Basemap])
@@ -135,11 +129,11 @@ def basemap_image(basemap_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/covers", response_model=Post)
-def create_covers(payload: CoverCreateRequest, session: Session = Depends(get_session)):
+def create_covers(payload: CoverCreateRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     post = session.get(Post, payload.post_id)
     clip = session.get(Clip, post.clip_id) if post else None
     drama = session.get(Drama, clip.drama_id) if clip else None
-    if not post or not clip or not drama:
+    if not post or post.owner_user_id != user.id or not clip or clip.owner_user_id != user.id or not drama:
         raise HTTPException(404, "成品、切片或剧目不存在")
     approved = session.exec(select(Basemap).where(Basemap.drama_id == drama.id, Basemap.status == "approved").order_by(Basemap.id.desc())).first()
     source = Path(approved.file_path) if approved and Path(approved.file_path).is_file() else None

@@ -1,12 +1,21 @@
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from .config import get_settings
 
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
 engine = create_engine(settings.database_url, connect_args=connect_args)
+
+if settings.database_url.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def configure_sqlite(connection, _):
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 def create_db_and_tables() -> None:
@@ -15,6 +24,7 @@ def create_db_and_tables() -> None:
     if settings.database_url.startswith("sqlite") and "drama" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("drama")}
         additions = {
+            "theater": "VARCHAR NOT NULL DEFAULT ''",
             "description": "VARCHAR NOT NULL DEFAULT ''",
             "is_dubbed_content": "BOOLEAN NOT NULL DEFAULT 0",
             "language": "VARCHAR NOT NULL DEFAULT 'en_US'",
@@ -28,6 +38,11 @@ def create_db_and_tables() -> None:
             for name, definition in additions.items():
                 if name not in existing:
                     connection.execute(text(f"ALTER TABLE drama ADD COLUMN {name} {definition}"))
+    if settings.database_url.startswith("sqlite") and "accountstrategy" in inspect(engine).get_table_names():
+        existing = {item["name"] for item in inspect(engine).get_columns("accountstrategy")}
+        if "history_text" not in existing:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE accountstrategy ADD COLUMN history_text VARCHAR NOT NULL DEFAULT ''"))
     if settings.database_url.startswith("sqlite") and "clip" in inspect(engine).get_table_names():
         existing = {item["name"] for item in inspect(engine).get_columns("clip")}
         additions = {
@@ -75,6 +90,7 @@ def create_db_and_tables() -> None:
             "follower_count": "INTEGER NOT NULL DEFAULT 0",
             "last_checked_at": "DATETIME",
             "connected_at": "DATETIME",
+            "removed_at": "DATETIME",
             "last_error": "VARCHAR NOT NULL DEFAULT ''",
             "capabilities": "JSON NOT NULL DEFAULT '[]'",
         }
@@ -140,6 +156,18 @@ def create_db_and_tables() -> None:
             for name, definition in additions.items():
                 if name not in existing:
                     connection.execute(text(f"ALTER TABLE socialcomment ADD COLUMN {name} {definition}"))
+    # Per-user operational records were introduced after the original shared MVP.
+    # Existing rows are claimed by the developer account during auth bootstrap.
+    private_tables = ("clip", "factoryjob", "generatedasset", "post", "publishjob", "metadeliverypackage")
+    if settings.database_url.startswith("sqlite"):
+        table_names = set(inspect(engine).get_table_names())
+        for table_name in private_tables:
+            if table_name not in table_names:
+                continue
+            existing = {item["name"] for item in inspect(engine).get_columns(table_name)}
+            if "owner_user_id" not in existing:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN owner_user_id INTEGER"))
 
 
 def get_session():

@@ -17,6 +17,9 @@ backend/data/models/
 backend/data/argos/
 backend/data/whisper/
 backend/data/pytest*/
+.pytest-run-*/
+.pytest-tmp-*/
+backend/.pytest-tmp-*/
 media/clips/
 media/posts/
 tmp/

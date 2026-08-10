@@ -107,11 +107,11 @@ class SerialPipeline:
 pipeline = SerialPipeline()
 
 
-def create_clip_records(session: Session, drama: Drama, template_name: str) -> list[Clip]:
+def create_clip_records(session: Session, drama: Drama, template_name: str, owner_user_id: int | None = None) -> list[Clip]:
     highlights = read_highlights(Path(drama.file_dir))
     clips: list[Clip] = []
     for item in highlights:
-        clip = Clip(drama_id=drama.id, template_name=template_name, source_eps=[item.episode], source_start=item.start, source_end=item.end)
+        clip = Clip(drama_id=drama.id, template_name=template_name, source_eps=[item.episode], source_start=item.start, source_end=item.end, owner_user_id=owner_user_id)
         session.add(clip); clips.append(clip)
     session.commit()
     for clip in clips: session.refresh(clip)
