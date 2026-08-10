@@ -15,7 +15,37 @@ from .credentials import resolve_account_secret
 from .finalizer import finalize_video
 from .publish import CHANNEL_REGISTRY
 from .publish.base import PublishPayload
-from .social_integrations import TIKTOK_API, _youtube_analytics, bearer_headers, graph_version, tiktok_access_token, youtube_access_token
+from .social_integrations import TIKTOK_API, _youtube_analytics, bearer_headers, graph_version, publish_first_comment, tiktok_access_token, youtube_access_token
+
+
+def _first_comment_text(job: PublishJob) -> str:
+    options = job.publish_options or {}
+    comments = options.get("first_comments") or {}
+    if isinstance(comments, dict):
+        return str(comments.get(str(job.post_id)) or "").strip()
+    return ""
+
+
+def _set_first_comment_state(job: PublishJob, **updates: object) -> None:
+    options = dict(job.publish_options or {})
+    options.update(updates)
+    job.publish_options = options
+
+
+def _try_first_comment(job: PublishJob, account: Account) -> bool:
+    text = _first_comment_text(job)
+    if not text or (job.publish_options or {}).get("first_comment_status") == "published":
+        return True
+    attempts = int((job.publish_options or {}).get("first_comment_attempts") or 0) + 1
+    try:
+        comment_id = publish_first_comment(account, job.platform_video_id, text)
+        _set_first_comment_state(job, first_comment_status="published", first_comment_id=comment_id, first_comment_attempts=attempts, first_comment_error="")
+        job.result_log = f"{job.result_log.rstrip()}；首条评论已真实发布"
+        return True
+    except Exception as exc:
+        _set_first_comment_state(job, first_comment_status="failed", first_comment_attempts=attempts, first_comment_error=str(exc)[:1000])
+        job.result_log = f"{job.result_log.rstrip()}；视频已提交，但首条评论失败：{exc}"
+        return False
 
 
 def prepare_publish_cover(source: Path, target: Path) -> Path:
@@ -51,6 +81,12 @@ def execute_publish_job(session: Session, job: PublishJob) -> PublishJob:
         raise RuntimeError("发布任务关联数据不完整")
     if account.status != "connected":
         job.status = "blocked"; job.result_log = "账号尚未通过真实连接检测，请先到账号矩阵完成连接"
+        session.add(job); session.commit(); session.refresh(job)
+        return job
+    first_comment = _first_comment_text(job)
+    if first_comment and account.platform == "tiktok":
+        job.status = "blocked"
+        job.result_log = "TikTok 当前官方商业 API 不支持创建评论，请清空首条评论后再发布"
         session.add(job); session.commit(); session.refresh(job)
         return job
     channel_cls = CHANNEL_REGISTRY.get(account.platform)
@@ -94,6 +130,10 @@ def execute_publish_job(session: Session, job: PublishJob) -> PublishJob:
         job.submitted_at = datetime.now()
         if result.status == "published":
             job.completed_at = datetime.now()
+            if first_comment and not _try_first_comment(job, account) and int((job.publish_options or {}).get("first_comment_attempts") or 0) < 3:
+                job.status = "submitted"
+        elif first_comment:
+            _set_first_comment_state(job, first_comment_status="pending", first_comment_attempts=0, first_comment_error="")
     except Exception as exc:
         job.retry_count += 1
         job.status = "failed"
@@ -144,6 +184,17 @@ def refresh_publish_status(session: Session, job: PublishJob) -> PublishJob:
                 job.status = "published"; job.completed_at = datetime.now(); job.result_log = "Facebook 处理完成"
             else:
                 job.status = "submitted"; job.result_log = f"Facebook 处理中：{status or 'uploaded'}"
+        elif account.platform == "instagram":
+            response = httpx.get(
+                f"https://graph.facebook.com/{graph_version(account)}/{job.platform_video_id}",
+                params={"fields": "id", "access_token": resolve_account_secret(account, "access_token")},
+                timeout=30,
+            )
+            response.raise_for_status()
+            job.status = "published"; job.completed_at = job.completed_at or datetime.now(); job.result_log = "Instagram Reel 已发布"
+        if job.status == "published" and _first_comment_text(job):
+            if not _try_first_comment(job, account) and int((job.publish_options or {}).get("first_comment_attempts") or 0) < 3:
+                job.status = "submitted"
     except Exception as exc:
         job.result_log = f"状态查询失败：{exc}"
     session.add(job); session.commit(); session.refresh(job)

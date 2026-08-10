@@ -58,11 +58,76 @@ def _reference_profile(reference_content: str) -> str:
     )
 
 
-def candidate_quality_issues(result: TitleCandidates, *, synopsis: str, subtitles: str, reference_content: str) -> list[str]:
+def _reference_format_requirements(reference_content: str) -> tuple[list[str], bool, int]:
+    markers = [marker for marker in ["🎬", "Title:", "👉", "Click to watch full", "📺"] if marker.casefold() in reference_content.casefold()]
+    hot_title = bool(re.search(r"(?i)(?:^|\n|：)\s*\[HOT\]", reference_content))
+    hashtag_count = len(re.findall(r"(?<!\w)#[\w-]+", reference_content))
+    return markers, hot_title, hashtag_count
+
+
+def _hashtag(value: str) -> str:
+    clean = re.sub(r"[^\w-]", "", value.strip().lstrip("#"), flags=re.UNICODE)
+    return f"#{clean}" if clean else ""
+
+
+def _reference_shaped_candidates(
+    result: TitleCandidates,
+    *,
+    reference_content: str,
+    drama_title: str,
+    theater_tag: str,
+    account_type: str,
+) -> TitleCandidates:
+    """Keep a saved reference's visible layout deterministic."""
+    markers, hot_title, _ = _reference_format_requirements(reference_content)
+    uses_title_template = all(marker in markers for marker in ["🎬", "Title:", "👉", "Click to watch full", "📺"])
+    reference_title = re.search(r"(?im)^参考标题样本\s*[:：]\s*(.+)$", reference_content)
+    exclamation_before_tag = bool(reference_title and re.search(r"!\s*#[\w-]+\s*$", reference_title.group(1)))
+    candidates: list[TitleCandidate] = []
+    for item in result.candidates:
+        tags: list[str] = []
+        for raw in [*item.hashtags, theater_tag]:
+            tag = _hashtag(raw)
+            if tag and tag.casefold() not in {row.casefold() for row in tags}:
+                tags.append(tag)
+
+        title = re.sub(r"(?i)^\s*\[HOT\]\s*", "", item.title).strip()
+        title = re.sub(r"\s*#[\w-]+\s*$", "", title).strip()
+        title = re.sub(r"\s*[→⇒]\s*", ", then ", title)
+        title = re.sub(r"\s+\+\s+", " and ", title)
+        title = title.rstrip(" ,.!?;:，。！？；：-—")
+        prefix = "[HOT] " if hot_title else ""
+        suffix_tag = _hashtag(theater_tag)
+        punctuation = "!" if exclamation_before_tag else ""
+        suffix = f"{punctuation}{suffix_tag}"
+        available = max(12, 99 - len(prefix) - len(suffix))
+        if len(title) > available:
+            title = title[:available].rsplit(" ", 1)[0].rstrip(" ,.!?;:，。！？；：-—")
+        title = f"{prefix}{title}{suffix}".strip()
+
+        caption = item.caption.strip()
+        if uses_title_template:
+            narrative = caption.split("📺", 1)[1] if "📺" in caption else caption
+            narrative = re.sub(
+                r"(?is)\s*(?:Full episodes?|watch full)[^\n]{0,120}?link\s+(?:is\s+)?in\s+(?:the\s+)?(?:first\s+)?comments?\s*$",
+                "",
+                narrative,
+            )
+            narrative = re.sub(r"(?<!\w)#[\w-]+", "", narrative)
+            narrative = re.sub(r"[ \t]{2,}", " ", narrative)
+            narrative = re.sub(r"\s*\n\s*", " ", narrative).strip()
+            cta = "👉Click to watch full: {app_link}" if account_type == "official" else "👉Click to watch full: link in first comment"
+            caption = f"🎬 Title: 【{drama_title}】 {cta} 📺 {narrative} {' '.join(tags)}".strip()
+        candidates.append(item.model_copy(update={"title": title, "caption": caption, "hashtags": tags}))
+    return result.model_copy(update={"candidates": candidates})
+
+
+def candidate_quality_issues(result: TitleCandidates, *, synopsis: str, subtitles: str, reference_content: str, drama_title: str = "", theater_tag: str = "", account_type: str = "creator") -> list[str]:
     """Flag generic or weakly grounded copy so the model can repair it once."""
     issues: list[str] = []
     story_terms = _meaningful_terms(f"{synopsis}\n{subtitles[:6000]}")
     reference_is_detailed = len(reference_content.strip()) >= 400
+    required_markers, hot_title, reference_hashtags = _reference_format_requirements(reference_content)
     normalized_titles: list[str] = []
     for index, item in enumerate(result.candidates, start=1):
         title = re.sub(r"\W+", "", item.title).casefold()
@@ -81,6 +146,27 @@ def candidate_quality_issues(result: TitleCandidates, *, synopsis: str, subtitle
             issues.append(f"候选 {index} 的文案过短，未形成完整剧情链")
         if len(item.title) >= 100:
             issues.append(f"候选 {index} 的标题达到或超过 100 字符")
+        if hot_title and not item.title.lstrip().upper().startswith("[HOT]"):
+            issues.append(f"候选 {index} 没有保留参考标题的 [HOT] 前缀")
+        for marker in required_markers:
+            if marker.casefold() not in item.caption.casefold():
+                issues.append(f"候选 {index} 没有保留参考文案版式标记 {marker}")
+        if reference_hashtags >= 5:
+            inline_hashtags = len(re.findall(r"(?<!\w)#[\w-]+", item.caption))
+            if inline_hashtags < min(8, max(4, reference_hashtags // 3)):
+                issues.append(f"候选 {index} 没有像参考文案一样在正文末尾保留标签段")
+        factual_copy = re.sub(r"(?<!\w)#[\w-]+", "", f"{item.title}\n{item.caption}")
+        source_copy = f"{drama_title}\n{synopsis}\n{subtitles}"
+        source_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", source_copy))
+        invented_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", factual_copy)) - source_numbers
+        if invented_numbers:
+            issues.append(f"候选 {index} 出现本剧资料没有的数字：{', '.join(sorted(invented_numbers))}")
+        allowed_acronyms = {"AI", "AIGC", "CTA", "HOT", "LGBT", "LGBTQ", "TV"}
+        source_acronyms = set(re.findall(r"\b[A-Z]{2,8}\b", source_copy))
+        output_acronyms = set(re.findall(r"\b[A-Z]{2,8}\b", factual_copy))
+        invented_acronyms = output_acronyms - source_acronyms - allowed_acronyms
+        if invented_acronyms:
+            issues.append(f"候选 {index} 出现本剧资料没有的机构、诊断或缩写：{', '.join(sorted(invented_acronyms))}")
     for left in range(len(normalized_titles)):
         for right in range(left + 1, len(normalized_titles)):
             if normalized_titles[left] and SequenceMatcher(None, normalized_titles[left], normalized_titles[right]).ratio() > .82:
@@ -165,16 +251,21 @@ def build_prompt(*, title: str, synopsis: str, theater_tag: str, include_theater
 - 生成恰好 3 组候选，每组必须采用不同的剧情卖点，不能只是同义改写。
 - 每组必须高度结合本剧，至少使用 2 个可在本剧简介或字幕中核对的具体事实；不得编造婚姻、怀孕、失忆、死亡、身份或反转。
 - title 必须少于 100 个字符，包含具体人物身份/关系、事件或后果之一，禁止只写 “A shocking secret changes everything” 一类空泛句。
-- caption 必须是可直接发布的完整文案：具体钩子 → 人物关系和事件因果 → 冲突升级/代价 → 保留关键悬念 → CTA。不要写成剧情百科，也不要只堆 hashtags。
+- 参考样本的版式优先级最高。必须像套用模板一样保留其段落顺序、固定前缀、括号样式、emoji 位置、CTA 位置和标签段位置，只替换标题与剧情内容。禁止自行改成箭头公式、项目符号或另一种“更简洁”的格式。
+- 有参考样本时，下方“标题四公式”只用于选择剧情卖点，绝不能改变参考标题的表面句式；禁止在标题中使用“+”“→”串联关键词。
+- 如果参考标题以 [HOT] 开头，输出标题也必须以 [HOT] 开头；如果参考正文采用“🎬 Title: 【剧名】 👉Click to watch full... 📺 剧情长段 #标签”的单段结构，三组 caption 必须保持相同结构和顺序。
+- caption 必须是可直接发布的完整文案。参考样本使用长剧情段时，输出也使用信息密度相近的长剧情段，写清人物关系、事件因果、冲突升级、代价和悬念，不能压缩成几个短句。
 - 模仿参考样本的表达密度和语言习惯，但严禁复制样本专属的人名、剧名、剧情、搜索码和链接；只有本剧资料里出现的事实才可写入。
-- hashtags 不含空格，优先沿用参考样本的数量与类型，同时加入与本剧题材和剧情一致的标签。
+- 不得把合理推测写成事实。输入没有明确提供时，禁止补写具体伤病名称、天数、机构、联盟、调查、执照、合约、资格、金额、处罚或人物履历；宁可少写一个细节，也不能编造戏剧性后果。
+- hashtags 不含空格，优先沿用参考样本的数量与类型，同时加入与本剧题材和剧情一致的标签。参考样本把 hashtags 放在正文末尾时，caption 末尾也必须写出同一批 hashtags，hashtags 数组同时返回它们供平台元数据使用。
 - 每组额外输出 source_facts：2-4 条直接摘自本剧简介或字幕的简短事实依据，保留输入原语言，仅供系统校验，不要放进 title/caption。
 - 只输出严格 JSON，不要 Markdown 围栏。
 
 标题四公式：
 {FORMULAS}
 指定公式：{formula}（auto 表示自行选择最合适公式）
-账号类型：{account_type}。official 文案尾部必须自然包含 APP 引导和占位符 {{app_link}}；creator 文案尾部必须包含与“Full episodes 👉 link in comments”语义一致的目标语言话术。
+账号类型：{account_type}。official 文案必须在参考样本原 CTA 位置使用占位符 {{app_link}}；creator 文案必须在同一位置写明“link in first comment”，不得另起一行重复 CTA。
+参考样本中的旧 URL、搜索码只用于识别版式，不得复制到新剧：official 用 {{app_link}} 替代旧链接；creator 保留相同 CTA 位置并改为首条评论引导。
 剧场规则：{theater_rule}
 
 参考样本的自动风格摘要：
@@ -251,6 +342,14 @@ def generate_candidates(prompt: str, *, is_ai_generated: bool, account_type: str
         for attempt in range(2):
             try:
                 result = parse_candidates(provider(current_prompt))
+                if quality_context:
+                    result = _reference_shaped_candidates(
+                        result,
+                        reference_content=quality_context.get("reference_content", ""),
+                        drama_title=quality_context.get("drama_title", ""),
+                        theater_tag=quality_context.get("theater_tag", ""),
+                        account_type=account_type,
+                    )
                 quality_issues = candidate_quality_issues(result, **quality_context) if quality_context else []
                 if quality_issues and attempt == 0:
                     current_prompt = _repair_prompt(prompt, result, quality_issues)
@@ -260,7 +359,9 @@ def generate_candidates(prompt: str, *, is_ai_generated: bool, account_type: str
                 for item in result.candidates:
                     caption = item.caption
                     required = "{app_link}" if account_type == "official" else "Full episodes 👉 link in comments"
-                    if required.casefold() not in caption.casefold(): caption = f"{caption.rstrip()}\n{required}"
+                    creator_cta_present = bool(re.search(r"(?i)(?:link\s+(?:is\s+)?in\s+(?:the\s+)?(?:first\s+)?comments?|first\s+comment)", caption))
+                    if account_type == "official" and required.casefold() not in caption.casefold(): caption = f"{caption.rstrip()}\n{required}"
+                    if account_type != "official" and not creator_cta_present: caption = f"{caption.rstrip()}\n{required}"
                     if is_ai_generated and "#aigc" not in caption.casefold(): caption = f"{caption.rstrip()}\nAI-generated content #AIGC"
                     updated.append(item.model_copy(update={"caption": caption, "hit_words": find_hits(f"{item.title}\n{caption}", words)}))
                 context_used = ["剧情简介"]

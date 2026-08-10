@@ -15,7 +15,7 @@ import { useAuth } from '../auth'
 import { getLocalBindings,getLocalStrategies } from '../localStrategies'
 
 type CoverKind='vertical'|'square'|'horizontal'
-type ContentDraft={clipId:number;title:string;caption:string;hashtags:string[];links:string;formula:number;hitWords:string[]}
+type ContentDraft={clipId:number;title:string;caption:string;hashtags:string[];firstComment:string;formula:number;hitWords:string[]}
 
 const statusMeta:Record<string,{label:string;color:string}>={
  queued:{label:'等待排期',color:'blue'},uploading:{label:'正在上传',color:'processing'},submitted:{label:'平台处理中',color:'gold'},
@@ -24,7 +24,7 @@ const statusMeta:Record<string,{label:string;color:string}>={
 const filename=(path:string)=>path.split(/[\\/]/).pop()||path
 const theaterTag=(theater='')=>`#${theater.trim().replace(/^#+/,'').replace(/\s+/g,'')}`
 const preferredCover=(drama?:Drama):CoverKind|undefined=>drama?.cover_horizontal_path?'horizontal':drama?.cover_vertical_path?'vertical':drama?.cover_square_path?'square':undefined
-const blankDraft=(clipId:number):ContentDraft=>({clipId,title:'',caption:'',hashtags:[],links:'',formula:1,hitWords:[]})
+const blankDraft=(clipId:number):ContentDraft=>({clipId,title:'',caption:'',hashtags:[],firstComment:'',formula:1,hitWords:[]})
 
 export default function Publish({embedded=false}:{embedded?:boolean}){
  const[params]=useSearchParams();const navigate=useNavigate();const{user}=useAuth()
@@ -114,8 +114,8 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
    try{
     const accountType=selectedAccountRows[0]?.account_type||'official'
     const created:Post[]=[]
-    for(const draft of selectedDrafts){const caption=[draft.caption.trim(),draft.links.trim()].filter(Boolean).join('\n\n');const candidate:TitleCandidate={formula:draft.formula,title:draft.title.trim(),caption,hashtags:draft.hashtags,hit_words:draft.hitWords};created.push(await api.createPost(draft.clipId,accountType,candidate))}
-    const options:Record<string,unknown>={cover_kind:coverKind,youtube_privacy:values.youtube_privacy||'private',made_for_kids:Boolean(values.made_for_kids),tiktok_privacy:values.tiktok_privacy,disable_duet:Boolean(values.disable_duet),disable_comment:Boolean(values.disable_comment),disable_stitch:Boolean(values.disable_stitch),facebook_published:values.facebook_published!==false,instagram_video_urls:Object.fromEntries(created.map((post,index)=>[String(post.id),values[`instagram_url_${selectedDrafts[index].clipId}`]||'']))}
+    for(const draft of selectedDrafts){const candidate:TitleCandidate={formula:draft.formula,title:draft.title.trim(),caption:draft.caption.trim(),hashtags:draft.hashtags,hit_words:draft.hitWords};created.push(await api.createPost(draft.clipId,accountType,candidate))}
+    const options:Record<string,unknown>={cover_kind:coverKind,youtube_privacy:values.youtube_privacy||'private',made_for_kids:Boolean(values.made_for_kids),tiktok_privacy:values.tiktok_privacy,disable_duet:Boolean(values.disable_duet),disable_comment:Boolean(values.disable_comment),disable_stitch:Boolean(values.disable_stitch),facebook_published:values.facebook_published!==false,instagram_video_urls:Object.fromEntries(created.map((post,index)=>[String(post.id),values[`instagram_url_${selectedDrafts[index].clipId}`]||''])),first_comments:Object.fromEntries(created.map((post,index)=>[String(post.id),selectedDrafts[index].firstComment.trim()]))}
     await api.batchPublish(created.map(x=>x.id),selectedAccounts,time,mode==='now',Boolean(values.ai_disclosure),options)
     setPosts(old=>[...created.reverse(),...old]);await load();setView('records');msg.success(mode==='now'?'已提交平台，正在任务记录中跟踪':'发布排期已保存')
    }catch(e){msg.error((e as Error).message);throw e}finally{setWorking(false)}
@@ -151,7 +151,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
     </Card>
 
     <Card className="publish-flow-card" title={<span><b>03</b> 发布内容（可直接修改）</span>}>
-     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-grid"><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="在这里直接输入或修改发布标题"/></Form.Item><Form.Item label="标签"><Input value={draft.hashtags.join(' ')} onChange={e=>editDraft(draft.clipId,{hashtags:e.target.value.split(/[\s,]+/).filter(Boolean)})} placeholder="多个标签用空格分隔"/></Form.Item></div><Form.Item label="文案" required><Input.TextArea autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value})} placeholder="在这里直接输入或修改视频简介、行动号召和说明"/></Form.Item><Form.Item label="引流链接 / 补充内容"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.links} onChange={e=>editDraft(draft.clipId,{links:e.target.value})} placeholder="可选：落地页链接、{app_link} 或引导评论区话术"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请在上方选择要发布的视频':'当前剧目没有可发布视频，请先本地上传或在内容工厂生成成品'}/>}
+     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-grid"><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="在这里直接输入或修改发布标题"/></Form.Item><Form.Item label="标签"><Input value={draft.hashtags.join(' ')} onChange={e=>editDraft(draft.clipId,{hashtags:e.target.value.split(/[\s,]+/).filter(Boolean)})} placeholder="多个标签用空格分隔"/></Form.Item></div><Form.Item label="文案" required><Input.TextArea autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value})} placeholder="在这里直接输入或修改视频简介、行动号召和说明"/></Form.Item><Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="可选：发布成功后自动作为首条评论发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请在上方选择要发布的视频':'当前剧目没有可发布视频，请先本地上传或在内容工厂生成成品'}/>}
     </Card>
 
     <Card className="publish-flow-card" title={<span><b>04</b> 发布设置与确认</span>}>

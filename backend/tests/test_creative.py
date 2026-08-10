@@ -8,7 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.models import ImageQuota
 from app.services.cover import render_cover
 from app.services.imagegen import QuotaExceededError, consume_quota
-from app.services.llm import apply_theater_tag, build_prompt, generate_candidates, parse_candidates, strip_fences
+from app.services.llm import _reference_shaped_candidates, apply_theater_tag, build_prompt, generate_candidates, parse_candidates, strip_fences
 
 
 def test_json_fence_cleanup_and_strict_three_candidates():
@@ -54,6 +54,29 @@ def test_prompt_uses_saved_history_and_drama_synopsis():
     assert "参考样本只决定“怎么写”" in prompt
     assert "source_facts" in prompt
     assert "不得编造婚姻、怀孕、失忆、死亡、身份或反转" in prompt
+    assert "参考样本的版式优先级最高" in prompt
+    assert "禁止在标题中使用“+”“→”" in prompt
+
+
+def test_saved_reference_layout_is_applied_exactly():
+    raw = '{"candidates":[' + ','.join(
+        f'{{"formula":2,"title":"Illegal Touching + Team Doctor → Rain Kiss {i} #DramaBox","caption":"A grounded story about Ian and Noah. Full episodes 👉 link in comments","hashtags":["GayDrama","#SportsRomance"],"source_facts":["Ian is the team doctor","Noah is the captain"]}}'
+        for i in (1, 2, 3)
+    ) + ']}'
+    reference = "参考标题样本：[HOT] A Secret Returns!#FlickReels\n🎬 Title: 【A Secret】 👉Click to watch full: old-link 📺 Story #Drama"
+    result = _reference_shaped_candidates(
+        parse_candidates(raw),
+        reference_content=reference,
+        drama_title="Illegal Touching",
+        theater_tag="#DramaBox",
+        account_type="creator",
+    )
+    for item in result.candidates:
+        assert item.title.startswith("[HOT]") and item.title.endswith("!#DramaBox")
+        assert "+" not in item.title and "→" not in item.title
+        assert item.caption.startswith("🎬 Title: 【Illegal Touching】 👉Click to watch full: link in first comment 📺")
+        assert item.caption.endswith("#GayDrama #SportsRomance #DramaBox")
+        assert item.hashtags == ["#GayDrama", "#SportsRomance", "#DramaBox"]
 
 
 def test_generic_copy_is_rewritten_with_story_facts(monkeypatch, tmp_path: Path):

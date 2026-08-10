@@ -114,3 +114,62 @@ def test_unresolved_app_link_is_never_sent(monkeypatch, tmp_path: Path):
         result = execute_publish_job(session, job)
         assert result.status == "failed"
         assert "官方观看链接" in result.result_log
+
+
+def test_first_comment_is_posted_after_real_platform_publish(monkeypatch, tmp_path: Path):
+    import app.services.publisher as module
+
+    class VerifiedChannel:
+        def publish(self, payload):
+            return PublishResult(success=True, video_id="published-video", status="published", platform_url="https://platform.example/published-video")
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'first-comment.db'}")
+    SQLModel.metadata.create_all(engine)
+    settings = SimpleNamespace(ffmpeg_binary="ffmpeg", media_root=tmp_path / "media", serverchan_key="")
+    monkeypatch.setattr(module, "get_settings", lambda: settings)
+    monkeypatch.setattr(module, "finalize_video", lambda *args: Path(args[1]))
+    monkeypatch.setitem(module.CHANNEL_REGISTRY, "facebook", VerifiedChannel)
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(module, "publish_first_comment", lambda account, video_id, text: calls.append((account.platform, video_id, text)) or "comment-1")
+    with Session(engine) as session:
+        _, _, post, account = seed(session, tmp_path, ai=False)
+        account.platform = "facebook"; session.add(account)
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), publish_options={"first_comments": {str(post.id): "Watch here: https://example.com"}})
+        session.add(job); session.commit(); session.refresh(job)
+        result = execute_publish_job(session, job)
+        assert calls == [("facebook", "published-video", "Watch here: https://example.com")]
+        assert result.publish_options["first_comment_status"] == "published"
+        assert result.publish_options["first_comment_id"] == "comment-1"
+        assert "首条评论已真实发布" in result.result_log
+
+
+def test_tiktok_first_comment_is_blocked_before_video_upload(tmp_path: Path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'tiktok-comment.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _, _, post, account = seed(session, tmp_path, ai=False)
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), publish_options={"first_comments": {str(post.id): "A real first comment"}})
+        session.add(job); session.commit(); session.refresh(job)
+        result = execute_publish_job(session, job)
+        assert result.status == "blocked"
+        assert result.platform_video_id == ""
+        assert "TikTok" in result.result_log and "不支持创建评论" in result.result_log
+
+
+def test_youtube_first_comment_uses_top_level_comment_api(monkeypatch):
+    from app.services import social_integrations as module
+
+    captured: dict = {}
+    class Response:
+        is_error = False
+        def json(self): return {"id": "youtube-comment-id"}
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return Response()
+    monkeypatch.setattr(module, "youtube_access_token", lambda account: "token")
+    monkeypatch.setattr(module.httpx, "post", fake_post)
+    comment_id = module.publish_first_comment(Account(platform="youtube", name="Channel"), "video-1", "Pinned link")
+    assert comment_id == "youtube-comment-id"
+    assert captured["url"].endswith("/commentThreads")
+    assert captured["json"]["snippet"]["videoId"] == "video-1"
+    assert captured["json"]["snippet"]["topLevelComment"]["snippet"]["textOriginal"] == "Pinned link"

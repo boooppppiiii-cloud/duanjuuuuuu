@@ -574,7 +574,8 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .comment-card-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:9px; color:#7c847b; font-size:9px; }
 .comment-card-footer a,.comment-card-footer>span { max-width:42%; overflow:hidden; color:#53674c; text-overflow:ellipsis; white-space:nowrap; }
 .comment-card-footer a:hover { color:#779e51; }
-button:focus-visible,a:focus-visible,input:not(.ant-select-selection-search-input):not(.ant-input-number-input):focus-visible,textarea:focus-visible{outline:2px solid var(--lime-deep)!important;outline-offset:2px}
+button:focus-visible,a:focus-visible{outline:2px solid var(--lime-deep)!important;outline-offset:2px}
+input:focus-visible,textarea:focus-visible{outline:0!important;outline-offset:0!important}
 .ant-select-selection-search-input:focus-visible,.ant-input-number-input:focus-visible,.ant-picker-input>input:focus-visible{outline:0!important}
 .ant-select-focused .ant-select-selector{border-color:var(--lime-deep)!important;box-shadow:0 0 0 3px rgba(207,245,149,.34)!important}
 .ant-select-selector,.ant-input,.ant-input-affix-wrapper,.ant-input-number,.ant-picker{transform:none!important}

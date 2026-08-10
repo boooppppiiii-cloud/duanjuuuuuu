@@ -32,7 +32,7 @@ def titles(payload: TitleGenerationRequest, session: Session = Depends(get_sessi
     account_type = account.account_type if account else payload.account_type
     reference_content = ""
     if strategy:
-        reference_parts = [strategy.history_text, strategy.tone_examples]
+        reference_parts = [f"参考标题样本：{strategy.name}", strategy.history_text, strategy.tone_examples]
         strategy_guidance = "；".join(filter(None, [
             f"账号定位：{strategy.positioning}" if strategy.positioning else "",
             f"人设关键词：{', '.join(strategy.persona_keywords)}" if strategy.persona_keywords else "",
@@ -62,7 +62,14 @@ def titles(payload: TitleGenerationRequest, session: Session = Depends(get_sessi
             is_ai_generated=drama.is_ai_generated,
             account_type=account_type,
             banned_words_path=DATA_ROOT / "banned_words.txt",
-            quality_context={"synopsis": drama.description, "subtitles": clip.subtitle_text, "reference_content": reference_content},
+            quality_context={
+                "synopsis": drama.description,
+                "subtitles": clip.subtitle_text,
+                "reference_content": reference_content,
+                "drama_title": drama.title,
+                "theater_tag": theater_tag if payload.include_theater_tag else "",
+                "account_type": account_type,
+            },
         )
         if account and account_type == "official" and account.credentials_json.get("app_link"):
             result = result.model_copy(update={"candidates": [item.model_copy(update={"caption": item.caption.replace("{app_link}", str(account.credentials_json["app_link"]))}) for item in result.candidates]})

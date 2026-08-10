@@ -497,3 +497,32 @@ def reply_to_comment(account: Account, external_id: str, message: str) -> str:
     if not reply_id:
         raise RuntimeError("平台未返回回复 ID，未记录为成功")
     return reply_id
+
+
+def publish_first_comment(account: Account, video_id: str, message: str) -> str:
+    """Create a real top-level comment on a newly published platform video."""
+    text = message.strip()
+    if not text:
+        return ""
+    if account.platform == "youtube":
+        response = httpx.post(
+            f"{YOUTUBE_API}/commentThreads",
+            params={"part": "snippet"},
+            headers=bearer_headers(youtube_access_token(account)),
+            json={"snippet": {"videoId": video_id, "topLevelComment": {"snippet": {"textOriginal": text}}}},
+            timeout=30,
+        )
+        _raise(response, "YouTube 首条评论")
+    elif account.platform in {"facebook", "instagram"}:
+        response = httpx.post(
+            f"{META_GRAPH}/{graph_version(account)}/{video_id}/comments",
+            params={"access_token": resolve_account_secret(account, "access_token"), "message": text},
+            timeout=30,
+        )
+        _raise(response, "Meta 首条评论")
+    else:
+        raise RuntimeError("TikTok 当前官方商业 API 不支持创建评论；首条评论不能伪造为发布成功")
+    comment_id = str(response.json().get("id") or "")
+    if not comment_id:
+        raise RuntimeError("平台未返回评论 ID，首条评论未记录为成功")
+    return comment_id
