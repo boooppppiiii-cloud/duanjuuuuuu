@@ -18,7 +18,7 @@ html { overflow-y:scroll; scrollbar-gutter:stable; background:var(--canvas); }
 body { width:100%; margin:0; overflow-x:hidden; background:var(--canvas); }
 button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease,box-shadow .18s ease,background .18s ease; }
 .app-shell { min-height:100vh; margin:0; border:0; border-radius:0; overflow:visible; background:var(--canvas)!important; box-shadow:none; }
-.sidebar { position:sticky!important; z-index:20; top:0; align-self:flex-start; height:100vh; overflow:hidden; background:#fff!important; border-right:1px solid var(--line); }
+.sidebar { position:fixed!important; z-index:20; top:0; bottom:0; left:0; height:100vh; overflow:hidden; background:#fff!important; border-right:1px solid var(--line); box-shadow:7px 0 24px rgba(35,47,32,.035); }
 .sidebar .ant-layout-sider-children { display:flex; height:100%; min-height:0; flex-direction:column; }
 .sidebar .ant-layout-sider-trigger { background:#f3f5f1!important; color:#626a62!important; border-top:1px solid var(--line); }
 .sidebar .ant-menu { min-height:0; flex:1; overflow-y:auto; overscroll-behavior:contain; border-inline-end:0!important; background:transparent; padding:8px 10px 20px; }
@@ -37,7 +37,8 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .brand b,.brand small { display:block; white-space:nowrap; }
 .brand b { font-size:14px; letter-spacing:.02em; }
 .brand small { color:#8c958c; font-size:8px; font-weight:600; letter-spacing:.115em; margin-top:3px; }
-.main-layout { min-width:0; background:var(--canvas)!important; }
+.main-layout { width:calc(100% - 224px); min-width:0; margin-left:224px; background:var(--canvas)!important; transition:width .2s ease,margin-left .2s ease; }
+.app-shell.is-sidebar-collapsed .main-layout { width:calc(100% - 68px); margin-left:68px; }
 .content { width:100%; max-width:1640px; margin:0 auto; padding:22px 26px 44px; }
 .workspace-page { display:grid; grid-template-columns:minmax(0,1fr); min-width:0; gap:16px; }
 .workspace-page>* { min-width:0; }

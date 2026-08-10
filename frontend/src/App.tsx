@@ -26,7 +26,7 @@ export default function App(){
  useEffect(()=>{window.scrollTo({top:0,left:0,behavior:'instant'})},[location.pathname])
  const active=useMemo(()=>{const first=location.pathname.split('/')[1];return first||'home'},[location.pathname])
  const jump=(key:string)=>navigate(key==='home'?'/':`/${key}`)
- return <Layout className="app-shell">
+ return <Layout className={`app-shell ${collapsed?'is-sidebar-collapsed':''}`}>
   <Layout.Sider className="sidebar" width={224} collapsedWidth={68} collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="light">
    <div className={`brand ${collapsed?'is-collapsed':''}`}><JushuLogo size={40}/>{!collapsed&&<div><b>剧枢</b><small>DRAMA OPS HUB</small></div>}</div>
    <Menu mode="inline" selectedKeys={[active]} items={nav} onClick={({key})=>jump(String(key))}/>
