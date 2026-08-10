@@ -361,6 +361,10 @@ class TitleCandidate(BaseModel):
     caption: str = Field(min_length=1)
     hashtags: list[str]
     hit_words: list[str] = Field(default_factory=list)
+    # Internal grounding evidence returned by the model.  The publishing UI does
+    # not need to render it, but the backend uses it to reject generic copy that
+    # is unrelated to the selected drama.
+    source_facts: list[str] = Field(default_factory=list)
 
 
 class TitleCandidates(BaseModel):

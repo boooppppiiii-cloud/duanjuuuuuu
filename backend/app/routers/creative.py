@@ -32,7 +32,16 @@ def titles(payload: TitleGenerationRequest, session: Session = Depends(get_sessi
     account_type = account.account_type if account else payload.account_type
     reference_content = ""
     if strategy:
-        reference_content = strategy.history_text or strategy.tone_examples
+        reference_parts = [strategy.history_text, strategy.tone_examples]
+        strategy_guidance = "；".join(filter(None, [
+            f"账号定位：{strategy.positioning}" if strategy.positioning else "",
+            f"人设关键词：{', '.join(strategy.persona_keywords)}" if strategy.persona_keywords else "",
+            f"常用标签：{' '.join(strategy.tag_pool)}" if strategy.tag_pool else "",
+            f"偏好标题公式：{strategy.title_formula_preference}" if strategy.title_formula_preference else "",
+        ]))
+        if strategy_guidance:
+            reference_parts.insert(0, strategy_guidance)
+        reference_content = "\n\n".join(dict.fromkeys(part.strip() for part in reference_parts if part and part.strip()))
     theater_tag = normalize_theater_tag(drama.theater)
     prompt = build_prompt(
         title=drama.title,
@@ -48,7 +57,13 @@ def titles(payload: TitleGenerationRequest, session: Session = Depends(get_sessi
         reference_content=reference_content,
     )
     try:
-        result = generate_candidates(prompt, is_ai_generated=drama.is_ai_generated, account_type=account_type, banned_words_path=DATA_ROOT / "banned_words.txt")
+        result = generate_candidates(
+            prompt,
+            is_ai_generated=drama.is_ai_generated,
+            account_type=account_type,
+            banned_words_path=DATA_ROOT / "banned_words.txt",
+            quality_context={"synopsis": drama.description, "subtitles": clip.subtitle_text, "reference_content": reference_content},
+        )
         if account and account_type == "official" and account.credentials_json.get("app_link"):
             result = result.model_copy(update={"candidates": [item.model_copy(update={"caption": item.caption.replace("{app_link}", str(account.credentials_json["app_link"]))}) for item in result.candidates]})
         return apply_theater_tag(result, drama.theater, payload.include_theater_tag)
