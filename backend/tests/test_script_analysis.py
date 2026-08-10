@@ -281,6 +281,37 @@ def test_read_analysis_consolidates_stored_overlapping_sensitive_ranges(tmp_path
     assert risk["frame_files"] == ["a.jpg", "d.jpg"]
 
 
+def test_overlapping_sensitive_ranges_merge_even_when_categories_differ(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed", "analysis_version": script_analysis.ANALYSIS_VERSION,
+        "sensitive_count": 2,
+        "episodes": [{
+            "episode": "The Name We Buried-第9集.mp4", "duration": 180, "segments": [], "high_energy": [],
+            "sensitive": [{
+                "start": 8, "end": 67, "source": "gemini",
+                "detected_start": 13, "detected_end": 52,
+                "boundary_padding_seconds": {"before": 5.0, "after": 15.0},
+                "sensitive": {"性暴力": ["强迫控制"]}, "overall_risk_score": 85,
+                "risk_scores": {"action": 88}, "review_status": "approved",
+                "evidence": ["强迫控制"], "frame_files": ["a.jpg"],
+            }, {
+                "start": 59, "end": 61, "source": "gemini",
+                "sensitive": {"暴力": ["拖拽脚踝"]}, "overall_risk_score": 75,
+                "risk_scores": {"action": 85}, "review_status": "approved",
+                "evidence": ["拖拽脚踝"], "frame_files": ["b.jpg"],
+            }],
+        }],
+    })
+
+    result = script_analysis.read_analysis(tmp_path)
+
+    assert result["sensitive_count"] == 1
+    risk = result["episodes"][0]["sensitive"][0]
+    assert (risk["start"], risk["end"]) == (8.0, 67.0)
+    assert set(risk["sensitive"]) == {"性暴力", "暴力"}
+    assert risk["overall_risk_score"] == 85
+
+
 def test_read_analysis_migrates_early_v4_sensitive_padding(tmp_path: Path):
     script_analysis.write_analysis(tmp_path, {
         "status": "completed", "analysis_version": script_analysis.ANALYSIS_VERSION,

@@ -207,9 +207,13 @@ def _merge_sensitive_candidates(
             continue
         previous = merged[-1]
         same_sexual_scene = _is_sexual_candidate(previous) and _is_sexual_candidate(row)
-        same_category = bool(_candidate_categories(previous) & _candidate_categories(row))
         gap = float(row.get("start", 0)) - float(previous.get("end", 0))
-        if not ((same_sexual_scene and gap <= SEXUAL_SCENE_MERGE_GAP) or (same_category and gap <= 0)):
+        # Any overlapping risk intervals describe one removal range even when
+        # the model labels their sub-events differently (for example sexual
+        # violence followed by violence). Sexual candidates also use a small
+        # gap so one continuous scene is not fragmented by window boundaries.
+        overlaps = gap <= 0
+        if not (overlaps or (same_sexual_scene and gap <= SEXUAL_SCENE_MERGE_GAP)):
             merged.append(row)
             continue
         previous["start"] = min(float(previous.get("start", 0)), float(row.get("start", 0)))
