@@ -193,6 +193,14 @@ class FactoryAnalysisReviewRequest(BaseModel):
     new_end: Optional[float] = Field(default=None, gt=0)
 
 
+class FactoryManualSensitiveRequest(BaseModel):
+    episode: str = Field(min_length=1)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    category: str = "色情"
+    note: str = "人工确认色情内容，必须剪除"
+
+
 class FactoryJobView(BaseModel):
     id: int
     drama_id: int

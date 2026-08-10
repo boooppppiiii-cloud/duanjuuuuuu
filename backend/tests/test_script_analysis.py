@@ -126,3 +126,61 @@ def test_read_analysis_repairs_character_split_reasons(tmp_path: Path):
     assert risk["sensitive"]["性暗示"] == ["人物反复身体撞击"]
     persisted = script_analysis.analysis_file(tmp_path).read_text(encoding="utf-8")
     assert '"红衣女子冷酷宣称牺牲百年换取预言"' in persisted
+
+
+def test_read_analysis_keeps_only_top_ten_high_energy_candidates(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed",
+        "high_energy_count": 12,
+        "episodes": [{
+            "episode": "Episode1.mp4", "segments": [], "sensitive": [],
+            "high_energy": [{"start": score, "end": score + 1, "energy_score": score} for score in range(1, 13)],
+        }],
+    })
+
+    result = script_analysis.read_analysis(tmp_path)
+
+    assert result is not None
+    scores = [row["energy_score"] for row in result["episodes"][0]["high_energy"]]
+    assert len(scores) == 10
+    assert min(scores) == 3
+    assert result["high_energy_count"] == 10
+
+
+def test_evidence_frames_are_repaired_to_candidate_start_and_end(tmp_path: Path):
+    frame_dir = tmp_path / "analysis_frames"; frame_dir.mkdir()
+    for milliseconds in (1000, 5000, 9000):
+        (frame_dir / f"E001_{milliseconds:010d}.jpg").write_bytes(b"jpeg")
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed", "high_energy_count": 1,
+        "episodes": [{
+            "episode": "Episode1.mp4", "segments": [], "sensitive": [],
+            "high_energy": [{"start": 1.2, "end": 8.8, "energy_score": 90, "frame_files": ["E001_0000005000.jpg"]}],
+        }],
+    })
+
+    result = script_analysis.read_analysis(tmp_path)
+
+    assert result is not None
+    assert result["episodes"][0]["high_energy"][0]["frame_files"] == ["E001_0000001000.jpg", "E001_0000009000.jpg"]
+
+
+def test_manual_sensitive_range_is_persistent_and_always_removed(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed", "sensitive_count": 0,
+        "episodes": [{
+            "episode": "Episode5.mp4", "duration": 180, "segments": [], "high_energy": [], "sensitive": [],
+        }],
+    })
+
+    result = script_analysis.add_manual_sensitive(
+        tmp_path, "Episode5.mp4", 60, 115, "色情", "人工确认色情内容，必须剪除",
+    )
+
+    risk = result["episodes"][0]["sensitive"][0]
+    assert risk["start"] == 60
+    assert risk["end"] == 115
+    assert risk["review_status"] == "approved"
+    assert risk["overall_risk_score"] == 100
+    assert risk["source"] == "manual"
+    assert script_analysis.manual_sensitive_file(tmp_path).is_file()

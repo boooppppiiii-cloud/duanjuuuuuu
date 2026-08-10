@@ -7,9 +7,9 @@ from sqlmodel import Session, select
 from ..config import get_settings
 from ..database import get_session
 from ..models import Clip, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
-from ..schemas import FactoryAnalysisReviewRequest, FactoryJobView, FactoryProcessRequest, GeneratedAssetView, HookAssetView
+from ..schemas import FactoryAnalysisReviewRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, GeneratedAssetView, HookAssetView
 from ..services.factory_multimodal import FactoryAIUnavailableError, provider_name
-from ..services.script_analysis import ANALYSIS_VERSION, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review
+from ..services.script_analysis import ANALYSIS_VERSION, add_manual_sensitive, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review
 from ..services.drama_library import episode_files
 from ..services.factory_processing import factory_pipeline, sync_hook_assets
 
@@ -91,6 +91,17 @@ def review_analysis(drama_id: int, payload: FactoryAnalysisReviewRequest, sessio
         return update_review(
             Path(drama.file_dir), payload.episode, payload.kind, payload.start, payload.end,
             payload.decision, payload.new_start, payload.new_end,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/{drama_id}/analysis/sensitive/manual")
+def mark_manual_sensitive(drama_id: int, payload: FactoryManualSensitiveRequest, session: Session = Depends(get_session)):
+    drama = get_drama(drama_id, session)
+    try:
+        return add_manual_sensitive(
+            Path(drama.file_dir), payload.episode, payload.start, payload.end, payload.category, payload.note,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

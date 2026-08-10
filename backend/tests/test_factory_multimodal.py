@@ -74,6 +74,11 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
                 "overall_risk_score": 15,
                 "risk_scores": {"body_focus": 0, "action": 10, "dialogue_context": 15, "expression_audio": 0, "scene_context": 0},
                 "reasons": ["仅有侮辱性台词，无违规行为"], "frame_indices": [],
+            }, {
+                "start": 2, "end": 3, "category": "软色情", "confidence": .15,
+                "overall_risk_score": 15,
+                "risk_scores": {"body_focus": 20, "action": 10, "dialogue_context": 5, "expression_audio": 0, "scene_context": 10},
+                "reasons": ["低置信色情风险也交给人工复核"], "frame_indices": [],
             }],
         }
 
@@ -89,12 +94,13 @@ def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tm
     assert result["episodes"][0]["high_energy"][0]["review_status"] == "pending"
     assert result["episodes"][0]["high_energy"][0]["energy_reasons"] == ["身份反转"]
     risk = result["episodes"][0]["sensitive"][0]
-    assert len(result["episodes"][0]["sensitive"]) == 1
+    assert len(result["episodes"][0]["sensitive"]) == 2
     assert risk["review_status"] == "approved"
     assert risk["overall_risk_score"] == 86
     assert risk["risk_scores"]["action"] == 92
     assert risk["sensitive"]["性暗示"] == ["连续画面出现裙底接触与身体撞击"]
     assert risk["frame_files"] == [frame.name]
+    assert result["episodes"][0]["sensitive"][1]["overall_risk_score"] == 15
 
     updated = script_analysis.update_review(tmp_path, "01.mp4", "sensitive", 5, 7, "rejected")
     assert updated["episodes"][0]["sensitive"][0]["review_status"] == "rejected"

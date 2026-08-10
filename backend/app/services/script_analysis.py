@@ -22,7 +22,9 @@ from .hook_recommender import loudness_peaks, media_duration
 
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
 ANALYSIS_VERSION = 3
+MAX_HIGH_ENERGY_CANDIDATES = 10
 RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
+SEXUAL_CATEGORIES = {"软色情", "性暗示", "色情", "性行为", "性暴力"}
 SENSITIVE_TERMS = {
     "暴力": ["杀", "打死", "砍", "枪", "血", "尸体", "绑架", "虐待", "暴力"],
     "色情": ["裸", "床戏", "性侵", "强奸", "色情", "胸部", "脱衣", "性行为"],
@@ -31,6 +33,10 @@ SENSITIVE_TERMS = {
 
 def analysis_file(folder: Path) -> Path:
     return folder / "factory_analysis.json"
+
+
+def manual_sensitive_file(folder: Path) -> Path:
+    return folder / "manual_sensitive.json"
 
 
 def _reason_list(value: Any) -> list[str]:
@@ -75,12 +81,113 @@ def _normalize_analysis_reasons(payload: dict[str, Any]) -> bool:
     return changed
 
 
+def _frame_time(path: Path) -> float | None:
+    try:
+        return int(path.stem.rsplit("_", 1)[1]) / 1000
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _stored_edge_frames(folder: Path, episode_index: int, start: float, end: float) -> list[str]:
+    candidates = [
+        (second, path.name) for path in (folder / "analysis_frames").glob(f"E{episode_index:03d}_*.jpg")
+        if (second := _frame_time(path)) is not None
+    ]
+    if not candidates:
+        return []
+    first = min(candidates, key=lambda item: abs(item[0] - start))
+    last = min(candidates, key=lambda item: abs(item[0] - end))
+    return list(dict.fromkeys([first[1], last[1]]))
+
+
+def _normalize_evidence_frames(folder: Path, payload: dict[str, Any]) -> bool:
+    changed = False
+    for episode_index, episode in enumerate(payload.get("episodes", []) or [], start=1):
+        if not isinstance(episode, dict):
+            continue
+        for collection in ("high_energy", "sensitive"):
+            for row in episode.get(collection, []) or []:
+                if not isinstance(row, dict):
+                    continue
+                frames = _stored_edge_frames(folder, episode_index, float(row.get("start", 0)), float(row.get("end", 0)))
+                if frames and frames != row.get("frame_files"):
+                    row["frame_files"] = frames
+                    changed = True
+    return changed
+
+
+def _limit_high_energy(payload: dict[str, Any], maximum: int = MAX_HIGH_ENERGY_CANDIDATES) -> bool:
+    episodes = [item for item in payload.get("episodes", []) or [] if isinstance(item, dict)]
+    ranked = [row for episode in episodes for row in episode.get("high_energy", []) or [] if isinstance(row, dict)]
+    keep = {id(row) for row in sorted(ranked, key=lambda row: float(row.get("energy_score", 0)), reverse=True)[:maximum]}
+    changed = False
+    for episode in episodes:
+        rows = episode.get("high_energy", []) or []
+        limited = [row for row in rows if id(row) in keep]
+        if len(limited) != len(rows):
+            episode["high_energy"] = limited
+            changed = True
+    count = sum(len(episode.get("high_energy", []) or []) for episode in episodes)
+    if payload.get("high_energy_count") != count:
+        payload["high_energy_count"] = count
+        changed = True
+    return changed
+
+
+def _read_manual_sensitive(folder: Path) -> list[dict[str, Any]]:
+    path = manual_sensitive_file(folder)
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _merge_manual_sensitive(folder: Path, payload: dict[str, Any]) -> bool:
+    changed = False
+    episodes = [item for item in payload.get("episodes", []) or [] if isinstance(item, dict)]
+    by_name = {str(item.get("episode")): (index, item) for index, item in enumerate(episodes, start=1)}
+    for manual in _read_manual_sensitive(folder):
+        match = by_name.get(str(manual.get("episode")))
+        if not match:
+            continue
+        episode_index, episode = match
+        start, end = float(manual.get("start", 0)), float(manual.get("end", 0))
+        rows = episode.setdefault("sensitive", [])
+        existing = next((row for row in rows if row.get("source") == "manual" and abs(float(row.get("start", 0)) - start) < .11 and abs(float(row.get("end", 0)) - end) < .11), None)
+        note = str(manual.get("note") or "人工确认色情内容，必须剪除")
+        row = {
+            "start": start, "end": end, "text": _text_for_range(episode.get("segments", []), start, end),
+            "energy_score": 0.0, "energy_reasons": [], "high_energy": False,
+            "sensitive": {str(manual.get("category") or "色情"): [note]},
+            "confidence": 1.0, "overall_risk_score": 100,
+            "risk_scores": {key: 100 for key in RISK_SCORE_KEYS},
+            "review_status": "approved", "evidence": [note],
+            "frame_files": _stored_edge_frames(folder, episode_index, start, end), "source": "manual",
+        }
+        if existing != row:
+            if existing is None:
+                rows.append(row)
+            else:
+                existing.clear(); existing.update(row)
+            changed = True
+    count = sum(len(episode.get("sensitive", []) or []) for episode in episodes)
+    if payload.get("sensitive_count") != count:
+        payload["sensitive_count"] = count
+        changed = True
+    return changed
+
+
 def read_analysis(folder: Path) -> dict[str, Any] | None:
     target = analysis_file(folder)
     if not target.is_file():
         return None
     payload = json.loads(target.read_text(encoding="utf-8"))
-    repaired = _normalize_analysis_reasons(payload)
+    repaired = any((
+        _normalize_analysis_reasons(payload),
+        _normalize_evidence_frames(folder, payload),
+        _limit_high_energy(payload),
+        _merge_manual_sensitive(folder, payload),
+    ))
     if repaired and payload.get("status") == "completed":
         write_analysis(folder, payload)
     return payload
@@ -93,6 +200,31 @@ def write_analysis(folder: Path, payload: dict[str, Any]) -> dict[str, Any]:
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp.replace(target)
     return payload
+
+
+def add_manual_sensitive(folder: Path, episode_name: str, start: float, end: float, category: str, note: str) -> dict[str, Any]:
+    analysis = read_analysis(folder)
+    if not analysis or analysis.get("status") != "completed":
+        raise ValueError("请先完成内容识别")
+    episode = next((item for item in analysis.get("episodes", []) if item.get("episode") == episode_name), None)
+    if not episode:
+        raise ValueError("未找到指定剧集")
+    duration = float(episode.get("duration", 0))
+    start = round(max(0.0, start), 2)
+    end = round(min(duration or end, end), 2)
+    if end <= start:
+        raise ValueError("必剪片段结束时间必须晚于开始时间")
+    rows = _read_manual_sensitive(folder)
+    item = {"episode": episode_name, "start": start, "end": end, "category": category or "色情", "note": note or "人工确认色情内容，必须剪除"}
+    existing = next((row for row in rows if row.get("episode") == episode_name and abs(float(row.get("start", 0)) - start) < .11 and abs(float(row.get("end", 0)) - end) < .11), None)
+    if existing is None:
+        rows.append(item)
+    else:
+        existing.clear(); existing.update(item)
+    path = manual_sensitive_file(folder)
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    _merge_manual_sensitive(folder, analysis)
+    return write_analysis(folder, analysis)
 
 
 def utc_timestamp() -> str:
@@ -164,14 +296,12 @@ def _candidate_range(raw: dict[str, Any], start_bound: float, end_bound: float, 
     return (round(start, 2), round(end, 2)) if end > start + 0.2 else None
 
 
-def _candidate_frames(raw: dict[str, Any], frames: list[Any]) -> list[str]:
-    requested: set[int] = set()
-    for value in raw.get("frame_indices", []) or []:
-        try:
-            requested.add(int(value))
-        except (TypeError, ValueError):
-            continue
-    return [row.path.name for row in frames if row.index in requested][:4]
+def _candidate_frames(frames: list[Any], start: float, end: float) -> list[str]:
+    if not frames:
+        return []
+    first = min(frames, key=lambda row: abs(float(row.second) - start))
+    last = min(frames, key=lambda row: abs(float(row.second) - end))
+    return list(dict.fromkeys([first.path.name, last.path.name]))
 
 
 def _model_candidates(
@@ -194,7 +324,7 @@ def _model_candidates(
             "start": start, "end": end, "text": _text_for_range(segments, start, end),
             "energy_score": round(score, 1), "energy_reasons": reasons, "high_energy": True,
             "sensitive": {}, "confidence": round(score / 100, 2), "review_status": "pending",
-            "evidence": reasons, "frame_files": _candidate_frames(raw, frames), "source": source,
+            "evidence": reasons, "frame_files": _candidate_frames(frames, start, end), "source": source,
         })
     for raw in data.get("sensitive", []) or []:
         bounds = _candidate_range(raw, window_start, window_end, 2.0)
@@ -220,7 +350,8 @@ def _model_candidates(
             overall_risk_score = 0
         if not overall_risk_score and any(risk_scores.values()):
             overall_risk_score = round(max(risk_scores.values()))
-        if "overall_risk_score" in raw and overall_risk_score < 30:
+        threshold = 10 if category in SEXUAL_CATEGORIES else 30
+        if "overall_risk_score" in raw and overall_risk_score < threshold:
             continue
         confidence = max(confidence, overall_risk_score / 100)
         sensitive.append({
@@ -231,7 +362,7 @@ def _model_candidates(
             "overall_risk_score": overall_risk_score,
             "risk_scores": risk_scores,
             "review_status": "approved" if overall_risk_score >= 60 or confidence >= 0.75 else "pending",
-            "evidence": reasons, "frame_files": _candidate_frames(raw, frames), "source": source,
+            "evidence": reasons, "frame_files": _candidate_frames(frames, start, end), "source": source,
         })
     return high_energy, sensitive
 
@@ -432,6 +563,8 @@ def analyze_drama(
         "updated_at": utc_timestamp(), "resume_count": resume_count,
         "analysis_version": ANALYSIS_VERSION,
     }
+    _limit_high_energy(result)
+    _merge_manual_sensitive(folder, result)
     return write_analysis(folder, result)
 
 
