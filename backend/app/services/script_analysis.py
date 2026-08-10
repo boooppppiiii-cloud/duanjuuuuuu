@@ -24,8 +24,8 @@ ANALYSIS_VERSION = 4
 MAX_HIGH_ENERGY_CANDIDATES = 10
 RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
 SEXUAL_CATEGORIES = {"软色情", "性暗示", "色情", "性行为", "性暴力"}
-SEXUAL_SCENE_PADDING_BEFORE = 4.0
-SEXUAL_SCENE_PADDING_AFTER = 6.0
+SEXUAL_SCENE_PADDING_BEFORE = 5.0
+SEXUAL_SCENE_PADDING_AFTER = 15.0
 SEXUAL_SCENE_MERGE_GAP = 15.0
 SENSITIVE_TERMS = {
     "暴力": ["杀", "打死", "砍", "枪", "血", "尸体", "绑架", "虐待", "暴力"],

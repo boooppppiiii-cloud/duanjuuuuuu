@@ -210,8 +210,8 @@ def test_sexual_candidates_are_conservatively_expanded_and_merged():
     merged = script_analysis._merge_sensitive_candidates(rows, 180, [])
 
     assert len(merged) == 1
-    assert merged[0]["start"] == 60
-    assert merged[0]["end"] == 114
+    assert merged[0]["start"] == 59
+    assert merged[0]["end"] == 123
     assert merged[0]["review_status"] == "approved"
     assert merged[0]["overall_risk_score"] == 82
     assert set(merged[0]["sensitive"]) == {"性暗示", "软色情"}
