@@ -117,6 +117,22 @@ def analysis_frame(drama_id: int, filename: str, session: Session = Depends(get_
     return FileResponse(path, media_type="image/jpeg", filename=path.name)
 
 
+@router.get("/{drama_id}/analysis/video/{episode}")
+def analysis_video(drama_id: int, episode: str, session: Session = Depends(get_session)):
+    """Stream an original episode inline so the review timeline can seek without copying it."""
+    drama = get_drama(drama_id, session)
+    path = next((item for item in episode_files(Path(drama.file_dir)) if item.name == episode), None)
+    if path is None or not path.is_file():
+        raise HTTPException(404, "原片视频不存在")
+    media_type = {
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm",
+    }.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=media_type, filename=path.name, content_disposition_type="inline")
+
+
 @router.post("/{drama_id}/process", response_model=FactoryJobView)
 def start_processing(drama_id: int, payload: FactoryProcessRequest, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
     drama = get_drama(drama_id, session)

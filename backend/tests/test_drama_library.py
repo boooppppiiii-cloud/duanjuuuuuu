@@ -54,6 +54,15 @@ def test_scan_update_highlights_and_stills(tmp_path: Path):
         still = client.get(f"/api/dramas/{drama_id}/stills/one.jpg")
         assert still.status_code == 200
 
+        preview = client.get(
+            f"/api/factory/{drama_id}/analysis/video/EP01.mp4",
+            headers={"Range": "bytes=0-2"},
+        )
+        assert preview.status_code == 206
+        assert preview.content == b"fak"
+        assert preview.headers["content-type"].startswith("video/mp4")
+        assert preview.headers["content-disposition"].startswith("inline")
+
 
 def test_direct_video_upload_and_manual_register(tmp_path: Path):
     media = tmp_path / "media"; os.environ["MEDIA_ROOT"] = str(media); os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'imports.db'}"
