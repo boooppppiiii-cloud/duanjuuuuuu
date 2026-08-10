@@ -18,10 +18,10 @@ html { overflow-y:scroll; scrollbar-gutter:stable; background:var(--canvas); }
 body { width:100%; margin:0; overflow-x:hidden; background:var(--canvas); }
 button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease,box-shadow .18s ease,background .18s ease; }
 .app-shell { min-height:100vh; margin:0; border:0; border-radius:0; overflow:clip; background:var(--canvas)!important; box-shadow:none; }
-.sidebar { position:sticky!important; top:0; height:100vh; background:#fff!important; border-right:1px solid var(--line); }
-.sidebar .ant-layout-sider-children { display:flex; flex-direction:column; }
+.sidebar { position:sticky!important; z-index:20; top:0; align-self:flex-start; height:100vh; overflow:hidden; background:#fff!important; border-right:1px solid var(--line); }
+.sidebar .ant-layout-sider-children { display:flex; height:100%; min-height:0; flex-direction:column; }
 .sidebar .ant-layout-sider-trigger { background:#f3f5f1!important; color:#626a62!important; border-top:1px solid var(--line); }
-.sidebar .ant-menu { flex:1; overflow-y:auto; border-inline-end:0!important; background:transparent; padding:8px 10px 20px; }
+.sidebar .ant-menu { min-height:0; flex:1; overflow-y:auto; overscroll-behavior:contain; border-inline-end:0!important; background:transparent; padding:8px 10px 20px; }
 .sidebar .ant-menu { scrollbar-width:thin; scrollbar-color:#c8cec6 transparent; }
 .sidebar .ant-menu::-webkit-scrollbar { width:4px; }.sidebar .ant-menu::-webkit-scrollbar-thumb { border-radius:8px; background:#c8cec6; }
 .sidebar .ant-menu-item { margin:3px 0; color:#5f675f; font-weight:600; }
