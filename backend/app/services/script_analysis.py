@@ -173,8 +173,14 @@ def _merge_sensitive_candidates(
     for original in rows:
         row = dict(original)
         if _is_sexual_candidate(row):
-            row["start"] = round(max(0.0, float(row.get("start", 0)) - SEXUAL_SCENE_PADDING_BEFORE), 2)
-            row["end"] = round(min(duration, float(row.get("end", 0)) + SEXUAL_SCENE_PADDING_AFTER), 2)
+            detected_start, detected_end = float(row.get("start", 0)), float(row.get("end", 0))
+            row["detected_start"] = round(detected_start, 2)
+            row["detected_end"] = round(detected_end, 2)
+            row["boundary_padding_seconds"] = {
+                "before": SEXUAL_SCENE_PADDING_BEFORE, "after": SEXUAL_SCENE_PADDING_AFTER,
+            }
+            row["start"] = round(max(0.0, detected_start - SEXUAL_SCENE_PADDING_BEFORE), 2)
+            row["end"] = round(min(duration, detected_end + SEXUAL_SCENE_PADDING_AFTER), 2)
             # High-recall mode removes suspected sexual content unless a reviewer explicitly keeps it.
             row["review_status"] = "approved"
         prepared.append(row)
@@ -193,6 +199,8 @@ def _merge_sensitive_candidates(
             continue
         previous["start"] = min(float(previous.get("start", 0)), float(row.get("start", 0)))
         previous["end"] = max(float(previous.get("end", 0)), float(row.get("end", 0)))
+        previous["detected_start"] = min(float(previous.get("detected_start", previous["start"])), float(row.get("detected_start", row["start"])))
+        previous["detected_end"] = max(float(previous.get("detected_end", previous["end"])), float(row.get("detected_end", row["end"])))
         previous["confidence"] = max(float(previous.get("confidence", 0)), float(row.get("confidence", 0)))
         previous["overall_risk_score"] = max(int(previous.get("overall_risk_score", 0)), int(row.get("overall_risk_score", 0)))
         previous["review_status"] = "approved" if "approved" in {previous.get("review_status"), row.get("review_status")} else "pending"
@@ -209,6 +217,39 @@ def _merge_sensitive_candidates(
         row["end"] = round(float(row.get("end", 0)), 2)
         row["text"] = _text_for_range(segments, row["start"], row["end"])
     return merged
+
+
+def _normalize_sensitive_padding(payload: dict[str, Any]) -> bool:
+    """Migrate early v4 rows from 4s/6s padding to the calibrated 5s/15s profile."""
+    if int(payload.get("analysis_version", 0)) != ANALYSIS_VERSION:
+        return False
+    changed = False
+    for episode in payload.get("episodes", []) or []:
+        if not isinstance(episode, dict):
+            continue
+        duration = float(episode.get("duration", 0))
+        for row in episode.get("sensitive", []) or []:
+            if not isinstance(row, dict) or row.get("source") == "manual" or not _is_sexual_candidate(row):
+                continue
+            profile = row.get("boundary_padding_seconds")
+            if isinstance(profile, dict) and "detected_start" in row and "detected_end" in row:
+                detected_start = float(row["detected_start"])
+                detected_end = float(row["detected_end"])
+            elif profile is None:
+                detected_start = float(row.get("start", 0)) + 4.0
+                detected_end = max(detected_start, float(row.get("end", 0)) - 6.0)
+            else:
+                continue
+            start = round(max(0.0, detected_start - SEXUAL_SCENE_PADDING_BEFORE), 2)
+            end = round(min(duration or detected_end + SEXUAL_SCENE_PADDING_AFTER, detected_end + SEXUAL_SCENE_PADDING_AFTER), 2)
+            expected_profile = {"before": SEXUAL_SCENE_PADDING_BEFORE, "after": SEXUAL_SCENE_PADDING_AFTER}
+            if row.get("start") != start or row.get("end") != end or profile != expected_profile:
+                row["start"], row["end"] = start, end
+                row["detected_start"], row["detected_end"] = round(detected_start, 2), round(detected_end, 2)
+                row["boundary_padding_seconds"] = expected_profile
+                row["text"] = _text_for_range(episode.get("segments", []), start, end)
+                changed = True
+    return changed
 
 
 def _dedupe_high_energy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -271,6 +312,7 @@ def read_analysis(folder: Path) -> dict[str, Any] | None:
     payload = json.loads(target.read_text(encoding="utf-8"))
     repaired = any((
         _normalize_analysis_reasons(payload),
+        _normalize_sensitive_padding(payload),
         _normalize_evidence_frames(folder, payload),
         _limit_high_energy(payload),
         _merge_manual_sensitive(folder, payload),

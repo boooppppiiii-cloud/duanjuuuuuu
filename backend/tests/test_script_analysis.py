@@ -216,3 +216,26 @@ def test_sexual_candidates_are_conservatively_expanded_and_merged():
     assert merged[0]["overall_risk_score"] == 82
     assert set(merged[0]["sensitive"]) == {"性暗示", "软色情"}
     assert merged[0]["frame_files"] == ["first.jpg", "last.jpg"]
+    assert merged[0]["boundary_padding_seconds"] == {"before": 5.0, "after": 15.0}
+
+
+def test_read_analysis_migrates_early_v4_sensitive_padding(tmp_path: Path):
+    script_analysis.write_analysis(tmp_path, {
+        "status": "completed", "analysis_version": script_analysis.ANALYSIS_VERSION,
+        "episodes": [{
+            "episode": "Episode1.mp4", "duration": 180, "segments": [], "high_energy": [],
+            "sensitive": [{
+                "start": 85.8, "end": 119.9, "source": "gemini",
+                "sensitive": {"软色情": ["连续风险场景"]}, "frame_files": [],
+            }],
+        }],
+    })
+
+    result = script_analysis.read_analysis(tmp_path)
+
+    risk = result["episodes"][0]["sensitive"][0]
+    assert risk["detected_start"] == 89.8
+    assert risk["detected_end"] == 113.9
+    assert risk["start"] == 84.8
+    assert risk["end"] == 128.9
+    assert risk["boundary_padding_seconds"] == {"before": 5.0, "after": 15.0}
