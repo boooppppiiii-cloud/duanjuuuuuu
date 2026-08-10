@@ -17,7 +17,7 @@
 html { overflow-y:scroll; scrollbar-gutter:stable; background:var(--canvas); }
 body { width:100%; margin:0; overflow-x:hidden; background:var(--canvas); }
 button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease,box-shadow .18s ease,background .18s ease; }
-.app-shell { min-height:100vh; margin:0; border:0; border-radius:0; overflow:clip; background:var(--canvas)!important; box-shadow:none; }
+.app-shell { min-height:100vh; margin:0; border:0; border-radius:0; overflow:visible; background:var(--canvas)!important; box-shadow:none; }
 .sidebar { position:sticky!important; z-index:20; top:0; align-self:flex-start; height:100vh; overflow:hidden; background:#fff!important; border-right:1px solid var(--line); }
 .sidebar .ant-layout-sider-children { display:flex; height:100%; min-height:0; flex-direction:column; }
 .sidebar .ant-layout-sider-trigger { background:#f3f5f1!important; color:#626a62!important; border-top:1px solid var(--line); }
