@@ -10,6 +10,7 @@ export type LocalWorkspace={
 export type LocalModelUsage={client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind:'model_call';provider:string;model:string;input_tokens:number;output_tokens:number;total_tokens:number;api_calls:number;details:Record<string,unknown>}
 
 type LocalRequestOptions=RequestInit&{timeoutMs?:number}
+type LoopbackRequestInit=RequestInit&{targetAddressSpace?:'loopback'}
 
 async function localError(response:Response){
   try{const payload=await response.json();return typeof payload?.detail==='string'?payload.detail:'本地工作区请求失败'}catch{return '本地工作区请求失败'}
@@ -18,9 +19,18 @@ async function localError(response:Response){
 async function localRequest<T>(path:string,options:LocalRequestOptions={}):Promise<T>{
   const controller=new AbortController();const timeout=window.setTimeout(()=>controller.abort(),options.timeoutMs??10_000)
   try{
-    const response=await fetch(`${LOCAL_WORKSPACE_ORIGIN}${path}`,{
-      ...options,signal:controller.signal,headers:{'Content-Type':'application/json',...(options.headers||{})},cache:'no-store',credentials:'omit',
-    })
+    const request=new Request(`${LOCAL_WORKSPACE_ORIGIN}${path}`,{
+      ...options,
+      signal:controller.signal,
+      headers:{'Content-Type':'application/json',...(options.headers||{})},
+      cache:'no-store',
+      credentials:'omit',
+      mode:'cors',
+      // Chrome/Edge 142+ requires an explicit loopback request so it can
+      // present the one-time "local network access" permission prompt.
+      targetAddressSpace:'loopback',
+    } as LoopbackRequestInit)
+    const response=await fetch(request)
     if(!response.ok)throw new Error(await localError(response))
     return await response.json() as T
   }catch(error){
@@ -32,6 +42,7 @@ async function localRequest<T>(path:string,options:LocalRequestOptions={}):Promi
 
 export const localWorkspace={
   health:()=>localRequest<{status:string;ffmpeg_ready:boolean;workspace_root:string}>('/api/local/health',{timeoutMs:1800}),
+  requestAccess:()=>localRequest<{status:string;ffmpeg_ready:boolean;workspace_root:string}>('/api/local/health',{timeoutMs:15_000}),
   get:(dramaId:number)=>localRequest<LocalWorkspace>(`/api/local/workspaces/${dramaId}`,{timeoutMs:2500}),
   select:(drama:Drama)=>localRequest<LocalWorkspace>('/api/local/workspaces/select',{
     method:'POST',timeoutMs:310_000,body:JSON.stringify({

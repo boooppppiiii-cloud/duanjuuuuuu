@@ -120,16 +120,18 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    detect().catch(error=>{if(!cancelled)msg.error(error.message)})
    return()=>{cancelled=true}
  },[dramaId])
- const showLocalWorkspaceHelp=()=>Modal.info({title:'本地助手未启动',okText:'知道了',content:<div className="local-workspace-help"><p>请在本机项目目录双击 <b>start-local-workspace.bat</b>。</p><p>看到“本地工作区已启动”后，回到这里再次点击“选择本地文件夹”。源视频不会上传服务器。</p></div>})
+ const showLocalWorkspaceHelp=()=>Modal.info({title:'无法连接本地助手',okText:'知道了',content:<div className="local-workspace-help"><p>首次使用时，请在浏览器地址栏旁的提示中允许“本地网络访问”。如果之前点过拒绝，请打开本站权限并重新允许。</p><p>同时确认本机已经运行 <b>start-local-workspace.bat</b>，然后再次点击“选择本地文件夹”。</p><p>源视频只保存在这台电脑，不会上传服务器。</p></div>})
  const connectLocalSource=async()=>{if(!drama)return;setAction('connecting');setLocalStatus('checking');try{
-   try{await localClient.health()}catch{setLocalStatus('offline');showLocalWorkspaceHelp();return}
+   msg.loading({key:'local-access',content:'正在连接本地助手；若浏览器询问本地网络访问，请点“允许”',duration:0})
+   try{await localClient.requestAccess()}catch{msg.destroy('local-access');setLocalStatus('offline');showLocalWorkspaceHelp();return}
+   msg.destroy('local-access')
    setLocalStatus('ready')
    const selected=await localClient.select(drama)
    setLocalSource(selected);setLocalStatus('ready');setCheck(undefined)
    api.registerLocalSourceManifest(drama.id,{folder_name:selected.folder_name,file_count:selected.file_count,total_bytes:selected.total_bytes,filenames:selected.files.map(file=>file.relative_path)}).catch(()=>undefined)
    const[src,items]=await Promise.all([localClient.metaFactorySource(drama.id),localClient.metaPackages()]);setSource(src);setPackages(items)
    msg.success(`已连接“${selected.folder_name}”，共 ${selected.file_count} 个视频；文件未上传服务器`)
- }catch(e){const text=(e as Error).message;if(text.includes('未检测到本地工作区')||text.includes('未启动')){setLocalStatus('offline');showLocalWorkspaceHelp()}else if(!text.includes('取消选择'))msg.error(text)}finally{setAction(null)}}
+ }catch(e){msg.destroy('local-access');const text=(e as Error).message;if(text.includes('未检测到本地工作区')||text.includes('未启动')||text.includes('响应超时')){setLocalStatus('offline');showLocalWorkspaceHelp()}else if(!text.includes('取消选择'))msg.error(text)}finally{setAction(null)}}
  const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
  const rememberPackage=(item:MetaPackage)=>setPackages(old=>[item,...old.filter(row=>row.id!==item.id)])
  const waitForPackage=async(id:number)=>{
