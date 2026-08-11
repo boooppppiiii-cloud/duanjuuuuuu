@@ -394,6 +394,22 @@ class FactoryPipeline:
                     duration = probe_media(settings.ffprobe_binary, source)["duration"]
                     source_info.append((source, duration))
 
+                if "meta_split" in modes:
+                    split_rows = [
+                        (index, source.name, duration, len(balanced_lengths(duration, float(job.max_duration_seconds))))
+                        for index, (source, duration) in enumerate(source_info, start=1)
+                        if duration > float(job.max_duration_seconds)
+                    ]
+                    for episode_index, filename, duration, output_count in split_rows:
+                        job.warnings = [
+                            *job.warnings,
+                            f"第 {episode_index} 集（{filename}）时长 {duration:.1f} 秒，超过 180 秒，将均分为 {output_count} 集",
+                        ]
+                    if split_rows:
+                        projected = sum(len(balanced_lengths(duration, float(job.max_duration_seconds))) for _, duration in source_info)
+                        job.warnings = [*job.warnings, f"Meta 切分：{len(source_info)} 个原片将生成 {projected} 个投递文件"]
+                    self._save(session, job, "已完成 Meta 超时剧集检查", 8)
+
                 body_target: Path | None = None
                 body_duration = 0.0
                 if modes & {"clean_full", "hook_variants"}:

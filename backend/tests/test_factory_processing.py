@@ -8,6 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.models import Drama, FactoryJob, HookAsset
 from app.schemas import FactoryProcessRequest
 from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, build_meta_episode_plan, hook_clip_range, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
+from app.services.drama_library import deduplicate_episode_copies
 
 
 def test_natural_order_and_balanced_four_minutes():
@@ -32,6 +33,19 @@ def test_meta_split_uses_global_episode_numbers_after_a_source_is_split(tmp_path
         (4, 1, 5),
     ]
     assert [(part.start, part.end) for part in plan[2:4]] == [(0, 120), (120, 240)]
+
+
+def test_identical_reuploads_of_a_numbered_episode_are_ignored(tmp_path: Path):
+    original = tmp_path / "Drama-EP.1第1集.mp4"
+    copy = tmp_path / "Drama-EP.1第1集 (1).mp4"
+    second = tmp_path / "Drama-EP.2第2集.mp4"
+    original.write_bytes(b"same-video")
+    copy.write_bytes(b"same-video")
+    second.write_bytes(b"second")
+
+    result = deduplicate_episode_copies([copy, second, original])
+
+    assert [path.name for path in result] == [original.name, second.name]
 
 
 def test_hook_clip_range_is_between_fifteen_and_thirty_seconds():

@@ -28,10 +28,38 @@ def files_with_suffix(folder: Path, suffixes: set[str]) -> list[Path]:
     return sorted((path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in suffixes), key=natural_file_key)
 
 
+def _episode_number(path: Path) -> int | None:
+    for pattern in (r"(?i)\bep(?:isode)?[\s._-]*(\d+)", r"第\s*(\d+)\s*集"):
+        match = re.search(pattern, path.stem)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _copy_name_penalty(path: Path) -> tuple[int, int]:
+    stem = path.stem.casefold()
+    copied = bool(re.search(r"\(\d+\)\s*$", stem) or re.search(r"(?:copy|副本)\s*$", stem))
+    return (1 if copied else 0, len(path.name))
+
+
+def deduplicate_episode_copies(paths: list[Path]) -> list[Path]:
+    """Ignore byte-identical re-uploads of the same numbered episode without deleting source files."""
+    groups: dict[tuple[int, int], list[Path]] = {}
+    unique: list[Path] = []
+    for path in paths:
+        episode = _episode_number(path)
+        if episode is None:
+            unique.append(path)
+            continue
+        groups.setdefault((episode, path.stat().st_size), []).append(path)
+    unique.extend(min(candidates, key=_copy_name_penalty) for candidates in groups.values())
+    return sorted(unique, key=natural_file_key)
+
+
 def episode_files(folder: Path) -> list[Path]:
     """优先规范 episodes/，同时兼容视频直接放在剧名目录。"""
     nested = files_with_suffix(folder / "episodes", VIDEO_SUFFIXES)
-    return nested or files_with_suffix(folder, VIDEO_SUFFIXES)
+    return deduplicate_episode_copies(nested or files_with_suffix(folder, VIDEO_SUFFIXES))
 
 
 def scan_dramas_with_logs(session: Session, media_root: Path) -> tuple[list[Drama], list[dict]]:
