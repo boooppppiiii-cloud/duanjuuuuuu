@@ -121,8 +121,8 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    detect().catch(error=>{if(!cancelled)msg.error(error.message)})
    return()=>{cancelled=true}
  },[dramaId])
- const showLocalWorkspaceHelp=()=>showLocalAssistantInstallPrompt()
- const connectLocalSource=async()=>{if(!drama)return;setAction('connecting');setLocalStatus('checking');try{
+ const showLocalWorkspaceHelp=()=>showLocalAssistantInstallPrompt({autoDownload:true})
+ const connectLocalSource=async()=>{if(!drama)return;if(localStatus==='offline'){showLocalWorkspaceHelp();return}setAction('connecting');setLocalStatus('checking');try{
    msg.loading({key:'local-access',content:'正在连接本地助手；若浏览器询问本地网络访问，请点“允许”',duration:0})
    try{await localClient.requestAccess()}catch{msg.destroy('local-access');setLocalStatus('offline');showLocalWorkspaceHelp();return}
    msg.destroy('local-access')
