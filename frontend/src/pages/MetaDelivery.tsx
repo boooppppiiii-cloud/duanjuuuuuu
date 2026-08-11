@@ -1,10 +1,11 @@
-import { Alert,Button,Card,Form,Input,List,Modal,Progress,Select,Space,Steps,Switch,Table,Tag,Typography,message } from 'antd'
+import { Alert,Button,Card,Form,Input,List,Progress,Select,Space,Steps,Switch,Table,Tag,Typography,message } from 'antd'
 import { CheckCircleOutlined,EditOutlined,FolderOpenOutlined,SafetyCertificateOutlined } from '@ant-design/icons'
 import { useEffect,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Drama,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
 import { localWorkspace as localClient,type LocalWorkspace } from '../localWorkspace'
+import { showLocalAssistantInstallPrompt } from '../components/LocalAssistantPrompt'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
 const defaults={locale:'en_US',genres:['Drama'],release_date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),ai_content:false,dubbed_content:false}
@@ -120,7 +121,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    detect().catch(error=>{if(!cancelled)msg.error(error.message)})
    return()=>{cancelled=true}
  },[dramaId])
- const showLocalWorkspaceHelp=()=>Modal.info({title:'无法连接本地助手',okText:'知道了',content:<div className="local-workspace-help"><p>首次使用时，请在浏览器地址栏旁的提示中允许“本地网络访问”。如果之前点过拒绝，请打开本站权限并重新允许。</p><p>同时确认本机已经运行 <b>start-local-workspace.bat</b>，然后再次点击“选择本地文件夹”。</p><p>源视频只保存在这台电脑，不会上传服务器。</p></div>})
+ const showLocalWorkspaceHelp=()=>showLocalAssistantInstallPrompt()
  const connectLocalSource=async()=>{if(!drama)return;setAction('connecting');setLocalStatus('checking');try{
    msg.loading({key:'local-access',content:'正在连接本地助手；若浏览器询问本地网络访问，请点“允许”',duration:0})
    try{await localClient.requestAccess()}catch{msg.destroy('local-access');setLocalStatus('offline');showLocalWorkspaceHelp();return}

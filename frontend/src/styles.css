@@ -80,6 +80,13 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .ant-form-item-label>label { color:#545d54!important; font-size:11px!important; font-weight:650; }
 .ant-modal-content,.ant-drawer-content { border-radius:20px; }
 .ant-modal-header { margin-bottom:16px; }
+.local-assistant-prompt { display:grid; gap:15px; }
+.local-assistant-prompt>p { margin:0; color:var(--muted); line-height:1.7; }
+.local-assistant-steps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.local-assistant-steps>span { display:grid; grid-template-columns:26px minmax(0,1fr); align-items:center; gap:8px; min-width:0; padding:10px; border:1px solid var(--line); border-radius:11px; background:var(--soft); }
+.local-assistant-steps b { display:grid; place-items:center; width:26px; height:26px; border-radius:8px; background:var(--lime); }
+.local-assistant-steps small { color:#4f584e; line-height:1.45; }
+.local-assistant-note { color:var(--muted); line-height:1.6; }
 .ant-table-wrapper .ant-table-thead>tr>th { background:#f7f8f5; color:#747c73; font-size:10px; font-weight:750; text-transform:none; }
 .ant-table-wrapper .ant-table-tbody>tr>td { color:#343a33; font-size:12px; }
 .ant-table-wrapper .ant-table-tbody>tr:last-child>td { border-bottom:0; }
