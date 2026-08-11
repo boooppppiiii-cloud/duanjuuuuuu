@@ -223,6 +223,8 @@ def test_task_metadata_cover_upload_and_approved_asset_library(tmp_path: Path):
         user_id = login_test_user(client)
         invalid = client.post("/api/dramas", json={"title": "错误任务", "description": "", "total_episode_count": 3, "genres": []})
         assert invalid.status_code == 422
+        invalid_theater = client.post("/api/dramas", json={"title": "未知剧场", "theater": "Other", "description": "test", "total_episode_count": 3, "genres": ["Drama"]})
+        assert invalid_theater.status_code == 422
         created = client.post("/api/dramas", json={"title": "海外测试剧", "theater": "#FlickReels", "description": "A mistaken marriage becomes a second chance at love.", "total_episode_count": 12, "genres": ["Drama", "Romance"], "language": "es_LA", "is_ai_generated": True, "is_dubbed_content": True})
         assert created.status_code == 200, created.text
         drama = created.json(); assert drama["episode_count"] == 0; assert drama["theater"] == "FlickReels"; assert drama["description"].startswith("A mistaken marriage"); assert drama["genres"] == ["Drama", "Romance"]; assert drama["language"] == "es_LA"; assert drama["is_ai_generated"] is True; assert drama["is_dubbed_content"] is True; assert drama["total_episode_count"] == 12

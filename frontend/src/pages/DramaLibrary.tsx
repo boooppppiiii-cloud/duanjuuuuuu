@@ -3,6 +3,7 @@ import { Button,Card,Collapse,Empty,Form,Input,InputNumber,message,Modal,Progres
 import { CloudDownloadOutlined,FolderOpenOutlined,PictureOutlined,PlusOutlined,ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { api,type CloudAsset,Drama,ScanLog } from '../api'
+import { theaterOptions } from '../options'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
 const languageOptions=[
@@ -58,7 +59,7 @@ export default function DramaLibrary(){
 
   <Modal title="新建剧目任务" open={createOpen} onCancel={()=>setCreateOpen(false)} footer={null} width={620} destroyOnHidden><Form form={createForm} layout="vertical" initialValues={{genres:['Drama'],language:'en_US',total_episode_count:80,is_ai_generated:false,is_dubbed_content:false}} onFinish={createTask}>
     <Form.Item name="title" label="短剧名称" rules={[{required:true,message:'请输入短剧名称'}]}><Input autoFocus placeholder="例如：午夜契约"/></Form.Item>
-    <Form.Item name="theater" label="剧场" extra="AI 撰写标题文案时默认转成剧场标签，例如 FlickReels → #FlickReels。" rules={[{required:true,message:'请输入剧场'}]}><Input placeholder="例如：FlickReels"/></Form.Item>
+    <Form.Item name="theater" label="剧场" extra="AI 撰写标题文案时会自动加入对应剧场标签。" rules={[{required:true,message:'请选择剧场'}]}><Select placeholder="选择剧场" options={theaterOptions}/></Form.Item>
     <Form.Item name="description" label="剧情简介" rules={[{required:true,message:'请输入剧情简介'}]}><Input.TextArea rows={4} placeholder="用于生成 Meta 系列 CSV，请填写完整剧情梗概"/></Form.Item>
     <div className="form-grid"><Form.Item name="total_episode_count" label="总集数" rules={[{required:true}]}><InputNumber min={1} max={999} className="full-width"/></Form.Item><Form.Item name="language" label="语种" rules={[{required:true}]}><Select showSearch optionFilterProp="label" options={languageOptions}/></Form.Item></div>
     <Form.Item name="genres" label="题材分类" rules={[{required:true,message:'至少选择一种题材'}]}><Select mode="multiple" options={genres.map(value=>({value,label:value}))}/></Form.Item>
@@ -68,7 +69,7 @@ export default function DramaLibrary(){
 
   {localRuntime&&<Modal title="登记已有本地素材" open={registerOpen} onCancel={()=>setRegisterOpen(false)} footer={null} destroyOnHidden><Form form={registerForm} layout="vertical" onFinish={register}>
     <Form.Item name="title" label="剧名" rules={[{required:true}]}><Input/></Form.Item>
-    <Form.Item name="theater" label="剧场" rules={[{required:true,message:'请输入剧场'}]}><Input placeholder="例如：FlickReels"/></Form.Item>
+    <Form.Item name="theater" label="剧场" rules={[{required:true,message:'请选择剧场'}]}><Select placeholder="选择剧场" options={theaterOptions}/></Form.Item>
     <Form.Item name="absolute_path" label="本地文件夹路径" rules={[{required:true}]}><Input placeholder="例如 D:\短剧素材\我的短剧"/></Form.Item>
     <Form.Item name="source_note" label="素材来源" initialValue="已获授权素材" rules={[{required:true}]}><Input/></Form.Item>
     <Button block type="primary" htmlType="submit">校验并登记</Button>

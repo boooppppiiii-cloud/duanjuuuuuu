@@ -4,6 +4,17 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+THEATER_OPTIONS = ("DramaBox", "FlickReels", "ShortMax", "GoodShort", "MoboReels", "StarShort")
+
+
+def normalize_theater(value: str) -> str:
+    normalized = value.strip().lstrip("#").strip()
+    if not normalized:
+        raise ValueError("剧场不能为空")
+    if normalized not in THEATER_OPTIONS:
+        raise ValueError(f"剧场必须选择：{'、'.join(THEATER_OPTIONS)}")
+    return normalized
+
 
 class DramaCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
@@ -18,9 +29,7 @@ class DramaCreateRequest(BaseModel):
     @field_validator("theater")
     @classmethod
     def theater_not_blank(cls, value: str) -> str:
-        if not value.strip().lstrip("#").strip():
-            raise ValueError("剧场不能为空")
-        return value.strip().lstrip("#").strip()
+        return normalize_theater(value)
 
     @field_validator("language")
     @classmethod
@@ -48,9 +57,7 @@ class DramaUpdate(BaseModel):
     def theater_not_blank(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
-        if not value.strip().lstrip("#").strip():
-            raise ValueError("剧场不能为空")
-        return value.strip().lstrip("#").strip()
+        return normalize_theater(value)
 
     @field_validator("source_note")
     @classmethod
@@ -144,9 +151,7 @@ class ManualRegisterRequest(BaseModel):
     @field_validator("theater")
     @classmethod
     def theater_not_blank(cls, value: str) -> str:
-        if not value.strip().lstrip("#").strip():
-            raise ValueError("剧场不能为空")
-        return value.strip().lstrip("#").strip()
+        return normalize_theater(value)
 
 
 class UploadInitRequest(BaseModel):
