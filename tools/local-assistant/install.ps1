@@ -3,10 +3,14 @@ $ProgressPreference = "SilentlyContinue"
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$repoArchive = "https://github.com/boooppppiiii-cloud/duanjuuuuuu/archive/refs/heads/main.zip"
-$installRoot = Join-Path $env:LOCALAPPDATA "Jushu\assistant"
+$pythonInstallerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+$ffmpegArchiveUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+$installRoot = if ($env:JUSHU_ASSISTANT_INSTALL_ROOT) { $env:JUSHU_ASSISTANT_INSTALL_ROOT } else { Join-Path $env:LOCALAPPDATA "Jushu\assistant" }
 $appRoot = Join-Path $installRoot "app"
 $venvRoot = Join-Path $installRoot ".venv"
+$runtimeRoot = Join-Path $installRoot "runtime"
+$pythonRoot = Join-Path $runtimeRoot "python"
+$ffmpegRoot = Join-Path $runtimeRoot "ffmpeg"
 $settingsFile = Join-Path $installRoot "settings.env"
 $launcherFile = Join-Path $installRoot "start-jushu-local-assistant.ps1"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("jushu-assistant-" + [guid]::NewGuid().ToString("N"))
@@ -28,52 +32,21 @@ function Write-Step([string]$text) {
     Write-Host ("[Jushu] " + $text) -ForegroundColor Green
 }
 
-function Resolve-ExecutablePath([object]$value) {
-    if ($null -eq $value) { return $null }
-    $candidate = [string]$value
-    if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
-    try {
-        $item = Get-Item -LiteralPath $candidate -ErrorAction Stop
-        if ($item.PSIsContainer) { return $null }
-        return $item.FullName
-    } catch {
-        return $null
-    }
-}
-
-function Find-Python {
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
-        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe")
-    )
-    $commands = @(Get-Command python.exe -All -ErrorAction SilentlyContinue)
-    foreach ($command in $commands) {
-        $commandPath = Resolve-ExecutablePath $command.Source
-        if ($commandPath) { $candidates += $commandPath }
-    }
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        $candidatePath = Resolve-ExecutablePath $candidate
-        if (-not $candidatePath) { continue }
+function Invoke-VerifiedDownload([string]$uri, [string]$destination, [string]$label, [long]$minimumBytes) {
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
-            $supported = & $candidatePath -c "import sys; print('yes' if (3, 11) <= sys.version_info[:2] < (3, 13) else 'no')" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $supported -eq "yes") { return $candidatePath }
-        } catch { }
+            Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+            Write-Host ("Downloading {0} ({1}/3)..." -f $label, $attempt)
+            Invoke-WebRequest -Uri $uri -OutFile $destination -UseBasicParsing -TimeoutSec 900
+            $download = Get-Item -LiteralPath $destination -ErrorAction Stop
+            if ($download.Length -lt $minimumBytes) { throw "The downloaded file is incomplete." }
+            return
+        } catch {
+            Write-InstallLog ("Download failed for " + $label + ": " + $_.Exception.Message)
+            if ($attempt -eq 3) { throw "Could not download $label after three attempts. Check the network connection and retry." }
+            Start-Sleep -Seconds (2 * $attempt)
+        }
     }
-    return $null
-}
-
-function Find-WinGetBinary([string]$name) {
-    $command = Get-Command $name -ErrorAction SilentlyContinue
-    if ($command) {
-        $commandPath = Resolve-ExecutablePath $command.Source
-        if ($commandPath) { return $commandPath }
-    }
-    $packagesRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
-    if (Test-Path -LiteralPath $packagesRoot) {
-        return Get-ChildItem -LiteralPath $packagesRoot -Recurse -Filter $name -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1 -ExpandProperty FullName
-    }
-    return $null
 }
 
 try {
@@ -83,40 +56,52 @@ try {
         throw "The current Windows user directory is unavailable."
     }
 
-    Write-Step "Checking the Python runtime"
-    $python = Find-Python
-    if (-not $python) {
-        $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-        $wingetPath = if ($winget) { Resolve-ExecutablePath $winget.Source } else { $null }
-        if (-not $wingetPath) {
-            throw "Python 3.11/3.12 is missing and winget is unavailable. Install Python 3.12 from https://www.python.org/downloads/windows/ and run this installer again."
-        }
-        Write-Host "Installing Python 3.12 for the current Windows user..."
-        & $wingetPath install --id Python.Python.3.12 --exact --scope user --silent --accept-package-agreements --accept-source-agreements
-        if ($LASTEXITCODE -ne 0) { throw "Python installation failed with exit code $LASTEXITCODE." }
-        $python = Find-Python
-        if (-not $python) { throw "Python was installed but is not visible yet. Run this installer again." }
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+
+    Write-Step "Preparing the private Python runtime"
+    $python = Join-Path $pythonRoot "python.exe"
+    if (-not (Test-Path -LiteralPath $python)) {
+        $pythonInstaller = Join-Path $tempRoot "python-3.12.10-amd64.exe"
+        Invoke-VerifiedDownload $pythonInstallerUrl $pythonInstaller "the private Python runtime" 20000000
+        New-Item -ItemType Directory -Path $pythonRoot -Force | Out-Null
+        $pythonInstall = Start-Process -FilePath $pythonInstaller -ArgumentList @(
+            "/quiet", "InstallAllUsers=0", "TargetDir=`"$pythonRoot`"", "Include_pip=1", "Include_launcher=0",
+            "AssociateFiles=0", "Shortcuts=0", "PrependPath=0", "Include_test=0", "Include_doc=0", "Include_tcltk=0"
+        ) -Wait -PassThru -WindowStyle Hidden
+        if ($pythonInstall.ExitCode -ne 0) { throw "Installing the private Python runtime failed with exit code $($pythonInstall.ExitCode)." }
+    }
+    if (-not (Test-Path -LiteralPath $python)) { throw "The private Python runtime was not installed correctly." }
+    $pythonVersion = & $python -c "import sys; print('.'.join(map(str, sys.version_info[:2])))"
+    if ($LASTEXITCODE -ne 0 -or $pythonVersion -ne "3.12") {
+        throw "The private Python runtime is invalid. Delete $pythonRoot and run the installer again."
     }
 
-    Write-Step "Downloading the latest Jushu Local Assistant"
-    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
-    $archiveFile = Join-Path $tempRoot "source.zip"
-    Invoke-WebRequest -Uri $repoArchive -OutFile $archiveFile -UseBasicParsing
-    Expand-Archive -LiteralPath $archiveFile -DestinationPath $tempRoot -Force
-    $sourceRoot = Get-ChildItem -LiteralPath $tempRoot -Directory | Where-Object { $_.Name -like "duanjuuuuuu-*" } | Select-Object -First 1
-    if (-not $sourceRoot) { throw "The downloaded archive has an unexpected structure. Try again later." }
+    Write-Step "Installing the bundled Jushu Local Assistant"
+    $sourceBackend = Join-Path $PSScriptRoot "backend"
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceBackend "local_workspace.py"))) {
+        throw "The installer package is incomplete. Download the latest package from the Jushu web app and extract it again."
+    }
 
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -in @("python.exe", "pythonw.exe") -and $_.CommandLine -match "backend\.local_workspace" } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $appRoot) { Remove-Item -LiteralPath $appRoot -Recurse -Force }
-    New-Item -ItemType Directory -Path $appRoot -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $sourceRoot.FullName "backend") -Destination $appRoot -Recurse -Force
+    New-Item -ItemType Directory -Path (Join-Path $appRoot "backend") -Force | Out-Null
+    Copy-Item -Path (Join-Path $sourceBackend "*") -Destination (Join-Path $appRoot "backend") -Recurse -Force
 
     Write-Step "Installing local video components (first install can take several minutes)"
     $venvPython = Join-Path $venvRoot "Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $venvPython)) {
+    $venvReady = $false
+    if (Test-Path -LiteralPath $venvPython) {
+        try {
+            $venvBase = & $venvPython -c "import sys; print(sys.base_prefix)" 2>$null
+            $venvReady = $LASTEXITCODE -eq 0 -and ([System.IO.Path]::GetFullPath($venvBase).TrimEnd('\') -eq [System.IO.Path]::GetFullPath($pythonRoot).TrimEnd('\'))
+        } catch { $venvReady = $false }
+    }
+    if (-not $venvReady) {
+        if (Test-Path -LiteralPath $venvRoot) { Remove-Item -LiteralPath $venvRoot -Recurse -Force }
         & $python -m venv $venvRoot
         if ($LASTEXITCODE -ne 0) { throw "Creating the local Python environment failed." }
     }
@@ -125,31 +110,39 @@ try {
     & $venvPython -m pip install --disable-pip-version-check -r (Join-Path $appRoot "backend\requirements-local-assistant.txt")
     if ($LASTEXITCODE -ne 0) { throw "Installing Local Assistant dependencies failed." }
 
-    Write-Step "Checking FFmpeg video tools"
-    $ffmpeg = Find-WinGetBinary "ffmpeg.exe"
-    $ffprobe = Find-WinGetBinary "ffprobe.exe"
-    if (-not $ffmpeg -or -not $ffprobe) {
-        $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-        $wingetPath = if ($winget) { Resolve-ExecutablePath $winget.Source } else { $null }
-        if (-not $wingetPath) { throw "FFmpeg is missing and winget is unavailable." }
-        Write-Host "Installing FFmpeg..."
-        & $wingetPath install --id Gyan.FFmpeg --exact --scope user --silent --accept-package-agreements --accept-source-agreements
-        if ($LASTEXITCODE -ne 0) { throw "FFmpeg installation failed with exit code $LASTEXITCODE." }
-        $ffmpeg = Find-WinGetBinary "ffmpeg.exe"
-        $ffprobe = Find-WinGetBinary "ffprobe.exe"
-        if (-not $ffmpeg -or -not $ffprobe) { throw "FFmpeg was installed but is not visible yet. Run this installer again." }
+    Write-Step "Preparing the private FFmpeg video tools"
+    $ffmpeg = Join-Path $ffmpegRoot "bin\ffmpeg.exe"
+    $ffprobe = Join-Path $ffmpegRoot "bin\ffprobe.exe"
+    if (-not (Test-Path -LiteralPath $ffmpeg) -or -not (Test-Path -LiteralPath $ffprobe)) {
+        $ffmpegArchive = Join-Path $tempRoot "ffmpeg-release-essentials.zip"
+        $ffmpegExtract = Join-Path $tempRoot "ffmpeg-extracted"
+        Invoke-VerifiedDownload $ffmpegArchiveUrl $ffmpegArchive "the private FFmpeg runtime" 50000000
+        Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath $ffmpegExtract -Force
+        $downloadedFfmpeg = Get-ChildItem -LiteralPath $ffmpegExtract -Recurse -Filter "ffmpeg.exe" -File | Select-Object -First 1
+        if (-not $downloadedFfmpeg) { throw "The FFmpeg archive has an unexpected structure." }
+        $downloadedFfprobe = Join-Path $downloadedFfmpeg.Directory.FullName "ffprobe.exe"
+        if (-not (Test-Path -LiteralPath $downloadedFfprobe)) { throw "The FFmpeg archive does not contain ffprobe.exe." }
+        $ffmpegBin = Join-Path $ffmpegRoot "bin"
+        if (Test-Path -LiteralPath $ffmpegRoot) { Remove-Item -LiteralPath $ffmpegRoot -Recurse -Force }
+        New-Item -ItemType Directory -Path $ffmpegBin -Force | Out-Null
+        Copy-Item -Path (Join-Path $downloadedFfmpeg.Directory.FullName "*") -Destination $ffmpegBin -Force
     }
+    if (-not (Test-Path -LiteralPath $ffmpeg) -or -not (Test-Path -LiteralPath $ffprobe)) { throw "The private FFmpeg runtime was not installed correctly." }
 
-    if (-not (Test-Path -LiteralPath $settingsFile)) {
-        $ffmpegValue = $ffmpeg.Replace("\", "/")
-        $ffprobeValue = $ffprobe.Replace("\", "/")
-        @"
-FFMPEG_BINARY=$ffmpegValue
-FFPROBE_BINARY=$ffprobeValue
-GEMINI_API_KEY=
-QWEN_API_KEY=
-"@ | Set-Content -LiteralPath $settingsFile -Encoding UTF8
+    $settings = [ordered]@{}
+    if (Test-Path -LiteralPath $settingsFile) {
+        foreach ($line in Get-Content -LiteralPath $settingsFile -Encoding UTF8) {
+            if ([string]::IsNullOrWhiteSpace($line) -or $line.TrimStart().StartsWith("#")) { continue }
+            $parts = $line.Split("=", 2)
+            if ($parts.Count -eq 2) { $settings[$parts[0].Trim()] = $parts[1].Trim() }
+        }
     }
+    $settings["FFMPEG_BINARY"] = $ffmpeg.Replace("\", "/")
+    $settings["FFPROBE_BINARY"] = $ffprobe.Replace("\", "/")
+    if (-not $settings.Contains("GEMINI_API_KEY")) { $settings["GEMINI_API_KEY"] = "" }
+    if (-not $settings.Contains("QWEN_API_KEY")) { $settings["QWEN_API_KEY"] = "" }
+    $settingsLines = @($settings.GetEnumerator() | ForEach-Object { "{0}={1}" -f $_.Key, $_.Value })
+    [System.IO.File]::WriteAllLines($settingsFile, $settingsLines, (New-Object System.Text.UTF8Encoding($false)))
 
     @'
 $ErrorActionPreference = "Stop"
@@ -209,7 +202,7 @@ Set-Location -LiteralPath $appRoot
         Start-Sleep -Seconds 1
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
-            if ($health.status -eq "ok") { $ready = $true; break }
+            if ($health.status -eq "ok" -and $health.capabilities -contains "meta_direct_local_v2") { $ready = $true; break }
         } catch { }
     }
     if (-not $ready) { throw "The Local Assistant was installed but did not start in time. Open the Jushu Local Assistant desktop shortcut and retry." }

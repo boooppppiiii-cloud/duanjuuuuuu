@@ -55,6 +55,7 @@ class _MetaEpisodeDraft:
 PROFILES = {
     "balanced": {"crf": "23", "preset": "veryfast", "audio": "128k"},
     "small": {"crf": "28", "preset": "fast", "audio": "96k"},
+    "meta": {"preset": "veryfast", "audio": "192k"},
 }
 
 
@@ -69,7 +70,11 @@ def hook_clip_range(start: float, end: float, media_duration: float) -> tuple[fl
 
 def probe_media(ffprobe: str, path: Path) -> dict:
     result = subprocess.run(
-        [ffprobe, "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", str(path)],
+        [
+            ffprobe, "-v", "error", "-show_entries",
+            "format=format_name,duration,size,bit_rate:stream=codec_type,codec_name,width,height,channels,bit_rate",
+            "-of", "json", str(path),
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -82,7 +87,35 @@ def probe_media(ffprobe: str, path: Path) -> dict:
     if duration <= 0:
         raise MediaCommandError(f"视频时长无效：{path.name}")
     streams = data.get("streams") or []
-    return {"duration": duration, "has_audio": any(row.get("codec_type") == "audio" for row in streams)}
+    video = next((row for row in streams if row.get("codec_type") == "video"), {})
+    audio = next((row for row in streams if row.get("codec_type") == "audio"), {})
+    media_format = data.get("format") or {}
+    return {
+        "duration": duration,
+        "size": int(media_format.get("size") or path.stat().st_size),
+        "format": str(media_format.get("format_name") or "").lower(),
+        "has_audio": bool(audio),
+        "width": int(video.get("width") or 0),
+        "height": int(video.get("height") or 0),
+        "video_codec": str(video.get("codec_name") or "").lower(),
+        "video_bitrate": int(video.get("bit_rate") or media_format.get("bit_rate") or 0),
+        "audio_codec": str(audio.get("codec_name") or "").lower(),
+        "audio_channels": int(audio.get("channels") or 0),
+    }
+
+
+def meta_video_is_compliant(info: dict) -> bool:
+    return (
+        "mp4" in str(info.get("format") or "")
+        and info.get("video_codec") == "h264"
+        and int(info.get("width") or 0) == 1080
+        and int(info.get("height") or 0) == 1920
+        and int(info.get("video_bitrate") or 0) >= 2_500_000
+        and info.get("audio_codec") == "aac"
+        and int(info.get("audio_channels") or 0) == 2
+        and 60 <= float(info.get("duration") or 0) <= 180
+        and int(info.get("size") or 0) <= 2 * 1024**3
+    )
 
 
 def merge_ranges(ranges: list[tuple[float, float]], duration: float) -> list[tuple[float, float]]:
@@ -366,10 +399,21 @@ def _encode_piece(
     else:
         base += ["-f", "lavfi", "-t", f"{part.duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
         mapping = ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
-    video_filter = "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,fps=30"
-    command = base + mapping + [
-        "-vf", video_filter, "-c:v", "libx264", "-preset", profile["preset"], "-crf", profile["crf"],
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", profile["audio"], "-ar", "48000", "-ac", "2",
+    if profile_name == "meta":
+        video_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=25"
+        video_options = [
+            "-vf", video_filter, "-c:v", "libx264", "-preset", profile["preset"], "-pix_fmt", "yuv420p",
+            "-b:v", "3M", "-minrate", "3M", "-maxrate", "3M", "-bufsize", "6M",
+            "-x264-params", "nal-hrd=cbr:force-cfr=1",
+        ]
+    else:
+        video_filter = "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,fps=30"
+        video_options = [
+            "-vf", video_filter, "-c:v", "libx264", "-preset", profile["preset"], "-crf", profile["crf"],
+            "-pix_fmt", "yuv420p",
+        ]
+    command = base + mapping + video_options + [
+        "-c:a", "aac", "-b:a", profile["audio"], "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart", str(output),
     ]
     if on_progress:
@@ -672,13 +716,14 @@ class FactoryPipeline:
                         )
                         only_part = part.parts[0] if len(part.parts) == 1 else None
                         original_duration = source_durations.get(only_part.path.resolve(), 0.0) if only_part else 0.0
+                        source_media = probe_media(settings.ffprobe_binary, only_part.path) if only_part else {}
                         direct_copy = bool(
                             only_part
                             and abs(only_part.start) <= 0.05
                             and abs(only_part.end - original_duration) <= 0.05
+                            and meta_video_is_compliant(source_media)
                         )
-                        suffix = only_part.path.suffix.casefold() if direct_copy and only_part else ".mp4"
-                        filename = f"J{job.id:04d}_E{part.sequence:03d}{suffix}"
+                        filename = f"J{job.id:04d}_E{part.sequence:03d}.mp4"
                         target = meta_dir / filename
                         if direct_copy and only_part:
                             shutil.copy2(only_part.path, target)
@@ -686,7 +731,13 @@ class FactoryPipeline:
                         else:
                             actual = render_timeline_slice(
                                 list(part.parts), target,
-                                work / f"meta_{part.sequence:03d}", job.compression_profile,
+                                work / f"meta_{part.sequence:03d}", "meta",
+                            )
+                        from .meta_sfs import _verify_output
+                        compliance_errors = _verify_output(target)
+                        if compliance_errors:
+                            raise MediaCommandError(
+                                f"Meta 单集 {part.sequence} 生成后规格不合规：{'；'.join(compliance_errors)}"
                             )
                         meta_files.append(target)
                         session.add(GeneratedAsset(

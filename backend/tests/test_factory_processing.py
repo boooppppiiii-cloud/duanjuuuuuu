@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import Drama, FactoryJob, HookAsset
 from app.schemas import FactoryProcessRequest
-from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, build_meta_episode_plan, hook_clip_range, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
+from app.services.factory_processing import TimelinePart, _encode_piece, balanced_lengths, build_hook_groups, build_meta_episode_plan, hook_clip_range, meta_video_is_compliant, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
 from app.services.drama_library import deduplicate_episode_copies
 
 
@@ -135,6 +135,38 @@ def test_render_timeline_reports_progress_across_all_parts(monkeypatch, tmp_path
 
     assert duration == 40
     assert progress == [.125, .25, .625, 1, 1]
+
+
+def test_meta_encoder_uses_official_full_hd_bitrate_and_audio(monkeypatch, tmp_path: Path):
+    import app.services.factory_processing as module
+
+    commands: list[list[str]] = []
+    source = tmp_path / "source.mp4"; source.write_bytes(b"video")
+    monkeypatch.setattr(module, "probe_media", lambda *_: {"has_audio": True})
+    monkeypatch.setattr(module, "run_command", lambda command: commands.append(command))
+
+    _encode_piece("ffmpeg", "ffprobe", TimelinePart(source, source.name, 0, 90), tmp_path / "target.mp4", "meta")
+
+    command = commands[0]
+    assert "scale=1080:1920" in command[command.index("-vf") + 1]
+    assert command[command.index("-b:v") + 1] == "3M"
+    assert command[command.index("-minrate") + 1] == "3M"
+    assert command[command.index("-c:a") + 1] == "aac"
+    assert command[command.index("-b:a") + 1] == "192k"
+    assert command[command.index("-ac") + 1] == "2"
+    assert "-crf" not in command
+
+
+def test_meta_direct_copy_requires_all_official_video_specs():
+    compliant = {
+        "format": "mov,mp4", "video_codec": "h264", "width": 1080, "height": 1920,
+        "video_bitrate": 3_000_000, "audio_codec": "aac", "audio_channels": 2,
+        "duration": 90, "size": 40_000_000,
+    }
+    assert meta_video_is_compliant(compliant)
+    assert not meta_video_is_compliant({**compliant, "width": 720, "height": 1280})
+    assert not meta_video_is_compliant({**compliant, "video_bitrate": 1_800_000})
+    assert not meta_video_is_compliant({**compliant, "audio_codec": "mp3"})
 
 
 def test_analysis_sensitive_segments_get_safety_buffer(tmp_path: Path):
