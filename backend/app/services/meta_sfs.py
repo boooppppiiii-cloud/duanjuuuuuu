@@ -168,7 +168,7 @@ def preflight(
             if info["size"] > 2 * 1024**3:
                 issues.append("文件超过 2GB")
                 blockers.append(f"第 {index} 集文件超过 2GB")
-            if (info["width"], info["height"]) != (1080, 1920): issues.append("将自动转为 1080x1920")
+            if not _video_dimensions_ready(info): issues.append("将自动转为竖版高清尺寸")
             if info["video_codec"] != "h264": issues.append("将自动转为 H.264")
             if info["audio_codec"] != "aac" or info["audio_channels"] != 2: issues.append("将自动转为 AAC 双声道")
             if issues and not any("时长" in item or "2GB" in item for item in issues):
@@ -214,7 +214,7 @@ def preflight(
         "blockers": list(dict.fromkeys(blockers)),
         "automatic_fixes": list(dict.fromkeys(fixable)),
         "requirements": {
-            "video": "MP4/H.264 · 9:16 · 1080x1920 · 60秒-3分钟 · AAC双声道 · 单文件≤2GB",
+            "video": "MP4/H.264 · 9:16 · 至少720x1280 · 60秒-3分钟 · AAC双声道 · 单文件≤2GB",
             "cover": "3:4，至少 1440x1920",
             "square_cover": "1:1，至少 1200x1200",
             "background": "可选；16:9，至少 1920x1080",
@@ -229,10 +229,16 @@ def _render_cover(source: Path, target: Path, size: tuple[int, int]) -> None:
         ImageOps.fit(image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.42)).save(target, quality=94, subsampling=0)
 
 
+def _video_dimensions_ready(info: dict) -> bool:
+    width = int(info.get("width") or 0)
+    height = int(info.get("height") or 0)
+    return width >= 720 and height >= 1280 and abs(width / height - 9 / 16) <= 0.01
+
+
 def _video_stream_copy_ready(info: dict) -> bool:
     return (
         info.get("video_codec") == "h264"
-        and (info.get("width"), info.get("height")) == (1080, 1920)
+        and _video_dimensions_ready(info)
     )
 
 
@@ -269,7 +275,7 @@ def _verify_output(path: Path) -> list[str]:
     info = inspect_video(path)
     errors = []
     if info["video_codec"] != "h264": errors.append("视频编码不是 H.264")
-    if (info["width"], info["height"]) != (1080, 1920): errors.append("分辨率不是 1080x1920")
+    if not _video_dimensions_ready(info): errors.append("分辨率低于竖版 720x1280")
     if not 59.5 <= info["duration"] <= 180.5: errors.append("时长不在 60 秒到 3 分钟之间")
     if info["audio_codec"] != "aac" or info["audio_channels"] != 2: errors.append("音频不是 AAC 双声道")
     if info["size"] > 2 * 1024**3: errors.append("文件超过 2GB")

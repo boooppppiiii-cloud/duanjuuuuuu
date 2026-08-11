@@ -112,7 +112,7 @@ def test_normalize_video_only_reencodes_noncompliant_audio(monkeypatch, tmp_path
     meta_sfs._normalize_video(
         tmp_path / "source.mp4",
         tmp_path / "target.mp4",
-        compliant_video(video_bitrate=1_800_000, audio_codec="mp3"),
+        compliant_video(width=720, height=1280, video_bitrate=1_800_000, audio_codec="mp3"),
     )
 
     command = commands[0]
@@ -124,7 +124,7 @@ def test_verify_output_accepts_h264_below_previous_bitrate_floor(monkeypatch, tm
     monkeypatch.setattr(
         meta_sfs,
         "inspect_video",
-        lambda _: compliant_video(video_bitrate=1_800_000),
+        lambda _: compliant_video(width=720, height=1280, video_bitrate=1_800_000),
     )
 
     assert meta_sfs._verify_output(tmp_path / "target.mp4") == []
@@ -138,7 +138,7 @@ def test_normalize_video_uses_fast_server_preset_for_noncompliant_video(monkeypa
     meta_sfs._normalize_video(
         tmp_path / "source.mp4",
         tmp_path / "target.mp4",
-        compliant_video(width=720, height=1280),
+        compliant_video(width=640, height=1136),
     )
 
     command = commands[0]
