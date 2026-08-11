@@ -258,7 +258,7 @@ def _normalize_video(source: Path, target: Path, info: dict) -> None:
         command += [
             "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0", "-shortest",
             "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=25",
-            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-b:v", "3M",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-b:v", "3M",
             "-minrate", "3M", "-maxrate", "3M", "-bufsize", "6M", "-x264-params", "nal-hrd=cbr:force-cfr=1",
             "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-movflags", "+faststart", str(target),
         ]

@@ -120,6 +120,22 @@ def test_normalize_video_only_reencodes_noncompliant_audio(monkeypatch, tmp_path
     assert command[command.index("-c:a") + 1] == "aac"
 
 
+def test_normalize_video_uses_fast_server_preset_for_noncompliant_video(monkeypatch, tmp_path: Path):
+    commands = []
+    monkeypatch.setattr(meta_sfs, "_binary", lambda _: "ffmpeg")
+    monkeypatch.setattr(meta_sfs.subprocess, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stderr=""))
+
+    meta_sfs._normalize_video(
+        tmp_path / "source.mp4",
+        tmp_path / "target.mp4",
+        compliant_video(width=720, height=1280),
+    )
+
+    command = commands[0]
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert command[command.index("-preset") + 1] == "veryfast"
+
+
 def test_preflight_prefers_factory_meta_split_outputs(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video(duration=120.0))
     drama = make_drama(tmp_path)
