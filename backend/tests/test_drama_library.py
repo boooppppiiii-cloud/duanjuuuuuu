@@ -162,6 +162,58 @@ def test_source_storage_details_and_safe_source_deletion(tmp_path: Path):
         assert (generated_dir / "keep.mp4").read_bytes() == b"generated-video"
 
 
+def test_local_workspace_syncs_metadata_and_analysis_without_video_upload(tmp_path: Path):
+    media = tmp_path / "media"
+    os.environ["MEDIA_ROOT"] = str(media)
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'local-workspace.db'}"
+    os.environ["PUBLIC_UI_ORIGIN"] = "http://127.0.0.1:5174"
+
+    import app.config
+    app.config.get_settings.cache_clear()
+    import app.database
+    import app.routers.dramas
+    import app.routers.factory
+    import app.main
+    importlib.reload(app.database)
+    importlib.reload(app.routers.dramas)
+    importlib.reload(app.routers.factory)
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login_test_user(client)
+        created = client.post("/api/dramas", json={
+            "title": "本地工作区测试剧", "theater": "DramaBox", "description": "test",
+            "total_episode_count": 2, "genres": ["Drama"], "language": "en_US",
+            "is_ai_generated": False, "is_dubbed_content": False,
+        })
+        assert created.status_code == 200, created.text
+        drama = created.json()
+        manifest = client.put(f"/api/dramas/{drama['id']}/local-source-manifest", json={
+            "folder_name": "My Local Drama", "file_count": 2, "total_bytes": 987654321,
+            "filenames": ["Episode1.mp4", "nested/Episode2.mp4"],
+        })
+        assert manifest.status_code == 200, manifest.text
+        assert manifest.json()["episode_count"] == 2
+        assert manifest.json()["source_files"] == []
+        assert not any((Path(drama["file_dir"]) / "episodes").iterdir())
+
+        analysis = {
+            "status": "completed", "progress": 100, "current_step": "识别完成", "error_message": "",
+            "drama_id": drama["id"], "title": drama["title"], "provider": "gemini", "model": "test",
+            "episode_count": 2, "total_duration": 240, "segment_count": 0, "high_energy_count": 0,
+            "sensitive_count": 0, "sampled_frame_count": 12, "api_call_count": 4,
+            "episodes": [
+                {"episode": "Episode1.mp4", "duration": 120, "segments": [], "high_energy": [], "sensitive": []},
+                {"episode": "Episode2.mp4", "duration": 120, "segments": [], "high_energy": [], "sensitive": []},
+            ],
+        }
+        synced = client.put(f"/api/factory/{drama['id']}/analysis/local", json=analysis)
+        assert synced.status_code == 200, synced.text
+        assert synced.json()["storage_mode"] == "local_workspace"
+        assert (Path(drama["file_dir"]) / "factory_analysis.json").is_file()
+        assert list((Path(drama["file_dir"]) / "episodes").glob("*.mp4")) == []
+
+
 def test_task_metadata_cover_upload_and_approved_asset_library(tmp_path: Path):
     media = tmp_path / "media"; os.environ["MEDIA_ROOT"] = str(media); os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'tasks.db'}"
     import app.config; app.config.get_settings.cache_clear()

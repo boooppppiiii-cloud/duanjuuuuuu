@@ -47,7 +47,7 @@ export type SocialComment = { id:number;external_id:string;platform:string;accou
 export type EngagementSummary = { total:number;analyzed:number;pending:number;needs_human:number;high_risk:number;buyer_intent:number;sentiment:{positive:number;negative:number;neutral:number};health:'healthy'|'watch'|'urgent' }
 export type ScriptSegment = { start:number;end:number;text:string;energy_score:number;energy_reasons:string[];high_energy:boolean;sensitive:Record<string,string[]>;confidence?:number;overall_risk_score?:number;risk_scores?:{body_focus?:number;action?:number;dialogue_context?:number;expression_audio?:number;scene_context?:number};review_status?:'not_applicable'|'pending'|'approved'|'rejected';evidence?:string[];frame_files?:string[];source?:string }
 export type EpisodeAnalysis = { episode:string;duration:number;segment_count:number;segments:ScriptSegment[];high_energy:ScriptSegment[];sensitive:ScriptSegment[];summary?:string }
-export type FactoryAnalysis = { status:'not_analyzed'|'queued'|'processing'|'completed'|'failed';progress:number;current_step:string;error_message:string;drama_id:number;title:string;source?:string;provider?:string;model?:string;configured_provider?:string;configured_model?:string;ai_ready?:boolean;requires_reanalysis?:boolean;is_active?:boolean;generated_at?:string;updated_at?:string;resume_count?:number;episode_count:number;total_duration:number;segment_count:number;high_energy_count:number;sensitive_count:number;sampled_frame_count:number;api_call_count:number;episodes:EpisodeAnalysis[] }
+export type FactoryAnalysis = { status:'not_analyzed'|'queued'|'processing'|'completed'|'failed';progress:number;current_step:string;error_message:string;drama_id:number;title:string;source?:string;provider?:string;model?:string;configured_provider?:string;configured_model?:string;ai_ready?:boolean;requires_reanalysis?:boolean;is_active?:boolean;generated_at?:string;updated_at?:string;resume_count?:number;reused_from_cloud?:boolean;storage_mode?:string;episode_count:number;total_duration:number;segment_count:number;high_energy_count:number;sensitive_count:number;sampled_frame_count:number;api_call_count:number;episodes:EpisodeAnalysis[] }
 export type FactoryOutputMode = 'clean_full'|'hook_variants'|'meta_split'
 export type FactoryJob = { id:number;drama_id:number;status:'queued'|'processing'|'completed'|'failed';current_step:string;progress:number;max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:string;output_modes:FactoryOutputMode[];hooks_per_variant:number;selected_hook_ids:number[];source_files:string[];clean_count:number;publish_count:number;meta_count:number;total_duration:number;removed_seconds:number;output_bytes:number;output_dir:string;warnings:string[];error_message:string;created_at:string;started_at:string|null;completed_at:string|null }
 export type GeneratedAsset = { id:number;factory_job_id:number;drama_id:number;kind:'clean_full'|'hook_full'|'meta_episode';sequence:number;filename:string;duration:number;size_bytes:number;hook_asset_id:number|null;hook_asset_ids:number[];clip_id:number|null;created_at:string }
@@ -111,13 +111,14 @@ export const api = {
   register: (email:string,password:string) => request<{user:AuthUser}>('/api/auth/register',{method:'POST',body:JSON.stringify({email,password})}),
   logout: () => request<{logged_out:boolean}>('/api/auth/logout',{method:'POST'}),
   adminAnalytics: (days=30) => request<AdminAnalytics>(`/api/admin/analytics?days=${days}`),
-  sendTelemetry: (events:{client_event_id:string;feature:string;success:boolean;duration_ms:number;details:Record<string,unknown>}[]) => request<{accepted:number}>('/api/telemetry/events',{method:'POST',body:JSON.stringify({events})}),
+  sendTelemetry: (events:{client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind?:'client_feature'|'model_call';provider?:string;model?:string;input_tokens?:number;output_tokens?:number;total_tokens?:number;api_calls?:number;details:Record<string,unknown>}[]) => request<{accepted:number}>('/api/telemetry/events',{method:'POST',body:JSON.stringify({events})}),
   list: (refresh=false) => request<Drama[]>('/api/dramas',{cacheTtlMs:60_000,forceRefresh:refresh}),
   createDramaTask: (body:{title:string;theater:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),
   get: (id: string) => request<Drama>(`/api/dramas/${id}`),
   update: (id: number, body: object) => request<Drama>(`/api/dramas/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteDramaSources: (id:number,filename?:string) => request<Drama>(`/api/dramas/${id}/source-files${filename?`?filename=${encodeURIComponent(filename)}`:''}`,{method:'DELETE'}),
+  registerLocalSourceManifest: (id:number,body:{folder_name:string;file_count:number;total_bytes:number;filenames:string[]}) => request<Drama>(`/api/dramas/${id}/local-source-manifest`,{method:'PUT',body:JSON.stringify(body)}),
   highlights: (id: number, highlights: Highlight[]) => request<Drama>(`/api/dramas/${id}/highlights`, { method: 'PUT', body: JSON.stringify({ highlights }) }),
   clips: (dramaId?: number,refresh=false) => request<Clip[]>(`/api/clips${dramaId ? `?drama_id=${dramaId}` : ''}`,{cacheTtlMs:30_000,forceRefresh:refresh}),
   createClips: (dramaId: number, templateName = 'suspense_hook') => request<Clip[]>('/api/clips/batch', { method: 'POST', body: JSON.stringify({ drama_id: dramaId, template_name: templateName }) }),
@@ -177,6 +178,7 @@ export const api = {
   workspaceSummary: () => request<WorkspaceSummary>('/api/workspace/summary'),
   factoryAnalysis: (dramaId:number) => request<FactoryAnalysis>(`/api/factory/${dramaId}/analysis`),
   analyzeFactory: (dramaId:number) => request<FactoryAnalysis>(`/api/factory/${dramaId}/analyze`,{method:'POST'}),
+  importLocalFactoryAnalysis: (dramaId:number,body:FactoryAnalysis) => request<FactoryAnalysis>(`/api/factory/${dramaId}/analysis/local`,{method:'PUT',body:JSON.stringify(body)}),
   reviewFactoryAnalysis: (dramaId:number,body:{episode:string;kind:'high_energy'|'sensitive';start:number;end:number;decision:'approved'|'rejected'|'pending';new_start?:number;new_end?:number}) => request<FactoryAnalysis>(`/api/factory/${dramaId}/analysis/review`,{method:'PATCH',body:JSON.stringify(body)}),
   factoryFrameUrl: (dramaId:number,filename:string) => `/api/factory/${dramaId}/analysis/frames/${encodeURIComponent(filename)}`,
   startFactoryProcessing: (dramaId:number,body:{max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:'balanced'|'small';output_modes:FactoryOutputMode[];hooks_per_variant:number;hook_ids:number[]}) => request<FactoryJob>(`/api/factory/${dramaId}/process`,{method:'POST',body:JSON.stringify(body)}),
@@ -193,6 +195,7 @@ export const api = {
   metaPreflight: (body:MetaSFSInput) => request<MetaPreflight>('/api/meta-sfs/preflight',{method:'POST',body:JSON.stringify(body)}),
   buildMetaPackage: (body:MetaSFSInput) => request<MetaPackage>('/api/meta-sfs/build',{method:'POST',body:JSON.stringify(body)}),
   metaPackages: () => request<MetaPackage[]>('/api/meta-sfs/packages'),
+  metaPackage: (id:number) => request<MetaPackage>(`/api/meta-sfs/packages/${id}`),
   metaPackageFiles: (id:number) => request<MetaPackageFiles>(`/api/meta-sfs/packages/${id}/files`),
   metaPackageFileUrl: (id:number,path:string) => `/api/meta-sfs/packages/${id}/files/${path.split('/').map(encodeURIComponent).join('/')}`,
   metaPackageArchiveUrl: (id:number) => `/api/meta-sfs/packages/${id}/archive`,

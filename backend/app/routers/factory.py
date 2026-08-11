@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime
+import json
 import os
 import shutil
 import uuid
@@ -13,7 +14,7 @@ from ..database import get_session
 from ..models import AppUser, Clip, CloudAsset, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
 from ..schemas import CloudAssetView, FactoryAnalysisReviewRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, GeneratedAssetView, HookAssetView
 from ..services.factory_multimodal import FactoryAIUnavailableError, provider_name
-from ..services.script_analysis import ANALYSIS_VERSION, add_manual_sensitive, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review
+from ..services.script_analysis import ANALYSIS_VERSION, add_manual_sensitive, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review, write_analysis
 from ..services.drama_library import episode_files
 from ..services.factory_processing import factory_pipeline, sync_hook_assets
 from ..services.auth import bind_current_user, get_current_user, reset_current_user
@@ -72,6 +73,44 @@ def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
         **base, "ai_ready": ai_ready, "configured_provider": provider, "configured_model": model,
         "requires_reanalysis": requires_reanalysis, "is_active": factory_analysis_pipeline.is_active(drama_id),
     }
+
+
+@router.put("/{drama_id}/analysis/local")
+def import_local_analysis(
+    drama_id: int,
+    payload: dict,
+    session: Session = Depends(get_session),
+    user: AppUser = Depends(get_current_user),
+):
+    """Persist the small reusable analysis result while keeping source videos on the operator's PC."""
+    drama = get_drama(drama_id, session)
+    if payload.get("status") != "completed" or int(payload.get("drama_id", -1)) != drama_id:
+        raise HTTPException(422, "只能同步当前剧目已完成的本地识别结果")
+    episodes = payload.get("episodes")
+    if not isinstance(episodes, list) or not episodes or len(episodes) > 5000:
+        raise HTTPException(422, "本地识别结果的剧集清单不合法")
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 25 * 1024 * 1024:
+        raise HTTPException(413, "识别结果超过 25MB，请减少冗余脚本后重试")
+    cleaned = dict(payload)
+    cleaned["drama_id"] = drama_id
+    cleaned["title"] = drama.title
+    cleaned["storage_mode"] = "local_workspace"
+    cleaned["synced_by_user_id"] = user.id
+    cleaned["source_files"] = [str(item.get("episode", ""))[:500] for item in episodes if isinstance(item, dict)]
+    result = write_analysis(Path(drama.file_dir), cleaned)
+    drama.episode_count = len(episodes)
+    session.add(drama)
+    session.commit()
+    sync_hook_assets(session, drama)
+    record_usage(
+        "内容识别",
+        user_id=user.id,
+        event_kind="feature",
+        success=True,
+        client_event_id=f"local-analysis:{user.id}:{drama_id}:{payload.get('generated_at') or payload.get('updated_at') or 'completed'}",
+        details={"drama_id": drama_id, "storage_mode": "local_workspace", "episodes": len(episodes)},
+    )
+    return result
 
 
 @router.post("/{drama_id}/analyze")

@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from ..config import get_settings
 from ..database import get_session
 from ..models import AppUser, Clip, Drama, FactoryJob, GeneratedAsset
-from ..schemas import DramaCreateRequest, DramaDetail, DramaUpdate, HighlightsPayload, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
+from ..schemas import DramaCreateRequest, DramaDetail, DramaUpdate, HighlightsPayload, LocalSourceManifestRequest, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
 from ..services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix, read_highlights, scan_dramas_with_logs, write_highlights
 from ..services.script_analysis import factory_analysis_pipeline
 from ..services.uploads import UploadStore, validate_title
@@ -59,7 +59,7 @@ def to_detail(drama: Drama) -> DramaDetail:
     source_storage, source_storage_path = source_storage_info(folder, source_files)
     stills = files_with_suffix(folder / "stills", IMAGE_SUFFIXES)
     data = drama.model_dump()
-    data["episode_count"] = len(episodes)
+    data["episode_count"] = max(len(episodes), drama.episode_count)
     data["total_episode_count"] = max(drama.total_episode_count, 1)
     return DramaDetail(
         **data,
@@ -201,6 +201,25 @@ def upload_complete(upload_id: str, session: Session = Depends(get_session), use
     if not drama.description.strip():
         drama.total_episode_count = max(drama.total_episode_count, drama.episode_count, 1)
     session.add(drama); session.commit(); session.refresh(drama)
+    return to_detail(drama)
+
+
+@router.put("/{drama_id}/local-source-manifest", response_model=DramaDetail)
+def register_local_source_manifest(
+    drama_id: int,
+    payload: LocalSourceManifestRequest,
+    session: Session = Depends(get_session),
+    _: AppUser = Depends(get_current_user),
+):
+    """Store metadata only; local video bytes and absolute paths never reach the server."""
+    drama = get_drama_or_404(drama_id, session)
+    drama.episode_count = payload.file_count
+    drama.source_note = f"本地工作区 · {payload.folder_name}"
+    if drama.total_episode_count <= 1:
+        drama.total_episode_count = max(1, payload.file_count)
+    session.add(drama)
+    session.commit()
+    session.refresh(drama)
     return to_detail(drama)
 
 

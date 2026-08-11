@@ -163,6 +163,32 @@ class UploadInitResult(BaseModel):
     received_chunks: list[int]
 
 
+class LocalSourceManifestRequest(BaseModel):
+    folder_name: str = Field(min_length=1, max_length=255)
+    file_count: int = Field(ge=1, le=5000)
+    total_bytes: int = Field(ge=0)
+    filenames: list[str] = Field(default_factory=list, max_length=5000)
+
+    @field_validator("folder_name")
+    @classmethod
+    def local_folder_name_only(cls, value: str) -> str:
+        name = value.strip()
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            raise ValueError("本地文件夹名称不合法")
+        return name
+
+    @field_validator("filenames")
+    @classmethod
+    def local_filenames_are_relative(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            name = value.strip().replace("\\", "/")
+            if not name or name.startswith("/") or "../" in f"/{name}/":
+                raise ValueError("本地文件清单包含不合法路径")
+            cleaned.append(name[:500])
+        return cleaned
+
+
 class ClipCreateRequest(BaseModel):
     drama_id: int
     template_name: str = "suspense_hook"

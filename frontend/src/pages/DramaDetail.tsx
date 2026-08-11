@@ -4,6 +4,7 @@ import { ArrowLeftOutlined,DatabaseOutlined,DeleteOutlined,ExperimentOutlined,Fo
 import { useNavigate,useParams } from 'react-router-dom'
 import { api,Drama,EmotionWord,Highlight,HookSuggestion } from '../api'
 import { coverImageSpecs,prepareCoverImage,type CoverKind,type PreparedCoverImage } from '../utils/coverImage'
+import { localWorkspace as localClient,type LocalWorkspace } from '../localWorkspace'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
 const languageOptions=[
@@ -24,6 +25,7 @@ export default function DramaDetail(){
  const{id=''}=useParams()
  const navigate=useNavigate()
  const[drama,setDrama]=useState<Drama>()
+ const[localSource,setLocalSource]=useState<LocalWorkspace>()
  const[suggestions,setSuggestions]=useState<HookSuggestion[]>([])
  const[words,setWords]=useState<EmotionWord[]>([])
  const[newWord,setNewWord]=useState('')
@@ -44,7 +46,7 @@ export default function DramaDetail(){
   language:data.language,genres:data.genres,actor_names:data.actor_names,source_note:data.source_note,
   is_ai_generated:data.is_ai_generated,is_dubbed_content:data.is_dubbed_content,
  })}
- const load=async()=>{try{applyDrama(await api.get(id))}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
+ const load=async()=>{try{const value=await api.get(id);applyDrama(value);try{setLocalSource(await localClient.get(value.id))}catch{setLocalSource(undefined)}}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
  const loadHooks=async()=>{const[s,w]=await Promise.all([api.hookSuggestions(Number(id)),api.emotionWords()]);setSuggestions(s);setWords(w)}
  useEffect(()=>{void load();void loadHooks().catch(e=>msg.error(e.message))},[id])
  useEffect(()=>()=>{if(cropReview?.previewUrl)URL.revokeObjectURL(cropReview.previewUrl)},[cropReview])
@@ -73,6 +75,10 @@ export default function DramaDetail(){
   {title:'依据',render:(_:unknown,row:HookSuggestion)=>row.reasons.map(reason=><Tag key={reason}>{reason}</Tag>)},{title:'状态',dataIndex:'status'},
   {title:'人工决定',render:(_:unknown,row:HookSuggestion)=><Space><Button type="primary" disabled={row.status!=='pending'} onClick={()=>decide(row,'adopt')}>采纳</Button><Button disabled={row.status!=='pending'} onClick={()=>decide(row,'ignore')}>忽略</Button></Space>},
  ]
+ const sourceFiles=localSource?.files.map(file=>({name:file.relative_path,size_bytes:file.size_bytes}))??drama.source_files??[]
+ const sourceBytes=localSource?.total_bytes??drama.source_size_bytes??0
+ const sourcePath=localSource?.absolute_path??drama.source_storage_path
+ const sourceIsLocal=Boolean(localSource)||drama.source_storage==='local'
 
  return <div className="workspace-page drama-detail-page">{context}
   <div className="page-heading page-heading-rich"><Space><Button icon={<ArrowLeftOutlined/>} onClick={()=>navigate('/dramas')}>返回</Button><Typography.Title level={2}>{drama.title}</Typography.Title></Space><Button type="primary" icon={<ExperimentOutlined/>} onClick={()=>navigate(`/factory?drama=${drama.id}`)}>进入内容工厂</Button></div>
@@ -88,18 +94,19 @@ export default function DramaDetail(){
    <Button size="large" type="primary" htmlType="submit" icon={<SaveOutlined/>} loading={saving}>保存剧目资料</Button>
   </Form></Card>
 
-  <Card title="源文件存储" extra={(drama.source_files??[]).length>0&&<Button danger icon={<DeleteOutlined/>} loading={deletingSource==='*'} disabled={Boolean(deletingSource)} onClick={()=>setPendingSourceDelete('*')}>清空全部</Button>}>
+  <Card title="源文件存储" extra={!sourceIsLocal&&(drama.source_files??[]).length>0&&<Button danger icon={<DeleteOutlined/>} loading={deletingSource==='*'} disabled={Boolean(deletingSource)} onClick={()=>setPendingSourceDelete('*')}>清空全部</Button>}>
    <div className="drama-source-storage-summary">
-    <div><span>保存位置</span><strong><DatabaseOutlined/><Tag color={drama.source_storage==='server'?'green':'blue'}>{drama.source_storage==='server'?'服务器':'本机'}</Tag></strong></div>
-    <div><span>源文件</span><strong>{drama.source_files?.length??0} 个</strong></div>
-    <div><span>占用空间</span><strong>{fileSize(drama.source_size_bytes??0)}</strong></div>
+    <div><span>保存位置</span><strong><DatabaseOutlined/><Tag color={sourceIsLocal?'green':'blue'}>{sourceIsLocal?'本机':'服务器旧素材'}</Tag></strong></div>
+    <div><span>源文件</span><strong>{sourceFiles.length} 个</strong></div>
+    <div><span>占用空间</span><strong>{sourceIsLocal?'不占服务器 · ':''}{fileSize(sourceBytes)}</strong></div>
    </div>
-   <div className="drama-source-path"><FolderOpenOutlined/><Typography.Text copyable ellipsis={{tooltip:drama.source_storage_path}}>{drama.source_storage_path}</Typography.Text></div>
-   <Table rowKey="name" size="small" className="drama-source-table" dataSource={drama.source_files??[]} locale={{emptyText:'尚未上传源文件'}} pagination={(drama.source_files?.length??0)>8?{pageSize:8,showSizeChanger:false}:false} columns={[
+   <div className="drama-source-path"><FolderOpenOutlined/><Typography.Text copyable ellipsis={{tooltip:sourcePath}}>{sourcePath}</Typography.Text></div>
+   <Table rowKey="name" size="small" className="drama-source-table" dataSource={sourceFiles} locale={{emptyText:'尚未连接源文件；请前往内容工厂选择本地文件夹'}} pagination={sourceFiles.length>8?{pageSize:8,showSizeChanger:false}:false} columns={[
     {title:'文件名',dataIndex:'name',ellipsis:true},
     {title:'大小',dataIndex:'size_bytes',width:110,render:(value:number)=>fileSize(value)},
-    {title:'操作',width:90,render:(_:unknown,row:{name:string})=><Button danger type="link" size="small" loading={deletingSource===row.name} disabled={Boolean(deletingSource)} onClick={()=>setPendingSourceDelete(row.name)}>删除</Button>},
+    ...(!sourceIsLocal?[{title:'操作',width:90,render:(_:unknown,row:{name:string})=><Button danger type="link" size="small" loading={deletingSource===row.name} disabled={Boolean(deletingSource)} onClick={()=>setPendingSourceDelete(row.name)}>删除</Button>}]:[]),
    ]}/>
+   {sourceIsLocal&&<Typography.Text type="secondary">网页只读取该文件夹；删除或移动原片请在电脑文件管理器中操作。</Typography.Text>}
   </Card>
 
   <Modal

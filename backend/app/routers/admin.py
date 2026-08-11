@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -21,6 +22,13 @@ class TelemetryItem(BaseModel):
     feature: str = Field(min_length=1, max_length=100)
     success: bool = True
     duration_ms: int = Field(default=0, ge=0)
+    event_kind: Literal["client_feature", "model_call"] = "client_feature"
+    provider: str = Field(default="", max_length=80)
+    model: str = Field(default="", max_length=160)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    api_calls: int = Field(default=0, ge=0, le=1)
     details: dict = Field(default_factory=dict)
 
 
@@ -33,9 +41,11 @@ def telemetry(payload: TelemetryBatch, user: AppUser = Depends(get_current_user)
     accepted = 0
     for event in payload.events:
         accepted += int(record_usage(
-            event.feature, user_id=user.id, event_kind="client_feature", success=event.success,
+            event.feature, user_id=user.id, event_kind=event.event_kind, success=event.success,
             duration_ms=event.duration_ms, client_event_id=event.client_event_id,
-            details={**event.details, "source": "browser_outbox"},
+            provider=event.provider, model=event.model, input_tokens=event.input_tokens,
+            output_tokens=event.output_tokens, total_tokens=event.total_tokens, api_calls=event.api_calls,
+            details={**event.details, "source": "local_workspace" if event.event_kind == "model_call" else "browser_outbox"},
         ))
     return {"accepted": accepted}
 
