@@ -112,12 +112,22 @@ def test_normalize_video_only_reencodes_noncompliant_audio(monkeypatch, tmp_path
     meta_sfs._normalize_video(
         tmp_path / "source.mp4",
         tmp_path / "target.mp4",
-        compliant_video(audio_codec="mp3"),
+        compliant_video(video_bitrate=1_800_000, audio_codec="mp3"),
     )
 
     command = commands[0]
     assert command[command.index("-c:v") + 1] == "copy"
     assert command[command.index("-c:a") + 1] == "aac"
+
+
+def test_verify_output_accepts_h264_below_previous_bitrate_floor(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        meta_sfs,
+        "inspect_video",
+        lambda _: compliant_video(video_bitrate=1_800_000),
+    )
+
+    assert meta_sfs._verify_output(tmp_path / "target.mp4") == []
 
 
 def test_normalize_video_uses_fast_server_preset_for_noncompliant_video(monkeypatch, tmp_path: Path):

@@ -170,7 +170,6 @@ def preflight(
                 blockers.append(f"第 {index} 集文件超过 2GB")
             if (info["width"], info["height"]) != (1080, 1920): issues.append("将自动转为 1080x1920")
             if info["video_codec"] != "h264": issues.append("将自动转为 H.264")
-            if info["video_bitrate"] < 2_500_000: issues.append("将自动提升视频码率到 3Mbps")
             if info["audio_codec"] != "aac" or info["audio_channels"] != 2: issues.append("将自动转为 AAC 双声道")
             if issues and not any("时长" in item or "2GB" in item for item in issues):
                 fixable.append(f"第 {index} 集：" + "、".join(issues))
@@ -215,7 +214,7 @@ def preflight(
         "blockers": list(dict.fromkeys(blockers)),
         "automatic_fixes": list(dict.fromkeys(fixable)),
         "requirements": {
-            "video": "MP4/H.264 · 9:16 · 1080x1920 · 60秒-3分钟 · 视频码率≥2.5Mbps · AAC双声道 · 单文件≤2GB",
+            "video": "MP4/H.264 · 9:16 · 1080x1920 · 60秒-3分钟 · AAC双声道 · 单文件≤2GB",
             "cover": "3:4，至少 1440x1920",
             "square_cover": "1:1，至少 1200x1200",
             "background": "可选；16:9，至少 1920x1080",
@@ -234,7 +233,6 @@ def _video_stream_copy_ready(info: dict) -> bool:
     return (
         info.get("video_codec") == "h264"
         and (info.get("width"), info.get("height")) == (1080, 1920)
-        and int(info.get("video_bitrate") or 0) >= 2_500_000
     )
 
 
@@ -273,7 +271,6 @@ def _verify_output(path: Path) -> list[str]:
     if info["video_codec"] != "h264": errors.append("视频编码不是 H.264")
     if (info["width"], info["height"]) != (1080, 1920): errors.append("分辨率不是 1080x1920")
     if not 59.5 <= info["duration"] <= 180.5: errors.append("时长不在 60 秒到 3 分钟之间")
-    if info["video_bitrate"] < 2_500_000: errors.append("视频码率低于 2.5Mbps")
     if info["audio_codec"] != "aac" or info["audio_channels"] != 2: errors.append("音频不是 AAC 双声道")
     if info["size"] > 2 * 1024**3: errors.append("文件超过 2GB")
     return errors
