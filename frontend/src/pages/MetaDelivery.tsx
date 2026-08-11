@@ -120,13 +120,16 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    detect().catch(error=>{if(!cancelled)msg.error(error.message)})
    return()=>{cancelled=true}
  },[dramaId])
- const connectLocalSource=async()=>{if(!drama)return;setAction('connecting');try{
+ const showLocalWorkspaceHelp=()=>Modal.info({title:'本地助手未启动',okText:'知道了',content:<div className="local-workspace-help"><p>请在本机项目目录双击 <b>start-local-workspace.bat</b>。</p><p>看到“本地工作区已启动”后，回到这里再次点击“选择本地文件夹”。源视频不会上传服务器。</p></div>})
+ const connectLocalSource=async()=>{if(!drama)return;setAction('connecting');setLocalStatus('checking');try{
+   try{await localClient.health()}catch{setLocalStatus('offline');showLocalWorkspaceHelp();return}
+   setLocalStatus('ready')
    const selected=await localClient.select(drama)
    setLocalSource(selected);setLocalStatus('ready');setCheck(undefined)
    api.registerLocalSourceManifest(drama.id,{folder_name:selected.folder_name,file_count:selected.file_count,total_bytes:selected.total_bytes,filenames:selected.files.map(file=>file.relative_path)}).catch(()=>undefined)
    const[src,items]=await Promise.all([localClient.metaFactorySource(drama.id),localClient.metaPackages()]);setSource(src);setPackages(items)
    msg.success(`已连接“${selected.folder_name}”，共 ${selected.file_count} 个视频；文件未上传服务器`)
- }catch(e){const text=(e as Error).message;if(text.includes('未检测到本地工作区')||text.includes('未启动'))Modal.info({title:'请先启动剧枢本地工作区',content:<div className="local-workspace-help"><p>在本机项目目录双击 <b>start-local-workspace.bat</b>，看到“本地工作区已启动”后，再点击选择文件夹。</p><p>本地助手只把网页连接到电脑里的文件，不上传源视频。</p></div>});else if(!text.includes('取消选择'))msg.error(text)}finally{setAction(null)}}
+ }catch(e){const text=(e as Error).message;if(text.includes('未检测到本地工作区')||text.includes('未启动')){setLocalStatus('offline');showLocalWorkspaceHelp()}else if(!text.includes('取消选择'))msg.error(text)}finally{setAction(null)}}
  const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
  const rememberPackage=(item:MetaPackage)=>setPackages(old=>[item,...old.filter(row=>row.id!==item.id)])
  const waitForPackage=async(id:number)=>{

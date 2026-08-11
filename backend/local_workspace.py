@@ -113,13 +113,23 @@ def _pick_folder() -> Path | None:
         return None
     script = """
 Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$owner.ShowInTaskbar = $false
+$owner.TopMost = $true
+$owner.Width = 1
+$owner.Height = 1
+$owner.Opacity = 0
+$owner.Show()
+$owner.Activate()
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = '选择短剧源文件夹（视频不会上传）'
 $dialog.ShowNewFolderButton = $false
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
   Write-Output $dialog.SelectedPath
 }
+$owner.Close()
 """
     completed = subprocess.run(
         ["powershell", "-NoProfile", "-STA", "-Command", script],
