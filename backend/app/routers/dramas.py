@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -7,7 +9,7 @@ from sqlmodel import Session, select
 
 from ..config import get_settings
 from ..database import get_session
-from ..models import AppUser, Clip, Drama, GeneratedAsset
+from ..models import AppUser, Clip, Drama, FactoryJob, GeneratedAsset
 from ..schemas import DramaCreateRequest, DramaDetail, DramaUpdate, HighlightsPayload, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
 from ..services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix, read_highlights, scan_dramas_with_logs, write_highlights
 from ..services.uploads import UploadStore, validate_title
@@ -29,10 +31,31 @@ def get_drama_or_404(drama_id: int, session: Session) -> Drama:
     return drama
 
 
+def source_video_files(folder: Path) -> list[Path]:
+    nested = files_with_suffix(folder / "episodes", VIDEO_SUFFIXES)
+    return nested or files_with_suffix(folder, VIDEO_SUFFIXES)
+
+
+def source_storage_info(folder: Path, sources: list[Path]) -> tuple[str, str]:
+    settings = get_settings()
+    hostname = (urlparse(settings.public_ui_origin).hostname or "").casefold()
+    storage = "local" if hostname in {"", "localhost", "127.0.0.1", "::1"} else "server"
+    source_folder = sources[0].parent if sources else (folder / "episodes" if (folder / "episodes").is_dir() else folder)
+    if storage == "server":
+        try:
+            relative = source_folder.resolve().relative_to(settings.media_root.resolve())
+            return storage, (Path("media") / relative).as_posix()
+        except ValueError:
+            pass
+    return storage, str(source_folder.resolve())
+
+
 def to_detail(drama: Drama) -> DramaDetail:
     media_root = get_settings().media_root
     folder = Path(drama.file_dir)
     episodes = episode_files(folder)
+    source_files = source_video_files(folder)
+    source_storage, source_storage_path = source_storage_info(folder, source_files)
     stills = files_with_suffix(folder / "stills", IMAGE_SUFFIXES)
     data = drama.model_dump()
     data["episode_count"] = len(episodes)
@@ -40,6 +63,10 @@ def to_detail(drama: Drama) -> DramaDetail:
     return DramaDetail(
         **data,
         episodes=[path.name for path in episodes],
+        source_files=[{"name": path.name, "size_bytes": path.stat().st_size} for path in source_files],
+        source_size_bytes=sum(path.stat().st_size for path in source_files),
+        source_storage=source_storage,
+        source_storage_path=source_storage_path,
         stills=[DramaDetail.safe_relative(path, media_root) for path in stills],
         highlights=read_highlights(folder),
         generated_files=[],
@@ -184,6 +211,69 @@ def list_dramas(session: Session = Depends(get_session)):
 @router.get("/{drama_id}", response_model=DramaDetail)
 def get_drama(drama_id: int, session: Session = Depends(get_session)):
     return to_detail(get_drama_or_404(drama_id, session))
+
+
+@router.delete("/{drama_id}/source-files", response_model=DramaDetail)
+def delete_source_files(
+    drama_id: int,
+    filename: str | None = None,
+    session: Session = Depends(get_session),
+    _: AppUser = Depends(get_current_user),
+):
+    drama = get_drama_or_404(drama_id, session)
+    active_job = session.exec(
+        select(FactoryJob).where(
+            FactoryJob.drama_id == drama_id,
+            FactoryJob.status.in_(["queued", "processing"]),
+        )
+    ).first()
+    if active_job:
+        raise HTTPException(409, f"加工任务 #{active_job.id} 正在运行，请完成后再删除源文件")
+
+    folder = Path(drama.file_dir).resolve()
+    analysis_path = folder / "factory_analysis.json"
+    if analysis_path.is_file():
+        try:
+            analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+            if analysis.get("status") in {"queued", "processing"}:
+                raise HTTPException(409, "内容识别正在运行，请完成后再删除源文件")
+        except HTTPException:
+            raise
+        except (OSError, ValueError, TypeError):
+            pass
+
+    sources = source_video_files(folder)
+    if filename is not None:
+        if not filename or Path(filename).name != filename:
+            raise HTTPException(422, "源文件名不合法")
+        sources = [path for path in sources if path.name == filename]
+        if not sources:
+            raise HTTPException(404, "源文件不存在")
+    if not sources:
+        raise HTTPException(404, "当前剧目没有可删除的源文件")
+
+    allowed_parents = {folder, (folder / "episodes").resolve()}
+    for source in sources:
+        target = source.resolve()
+        if target.parent not in allowed_parents or target.suffix.lower() not in VIDEO_SUFFIXES:
+            raise HTTPException(422, "源文件路径超出剧目目录，已停止删除")
+    for source in sources:
+        source.unlink()
+
+    drama.episode_count = len(episode_files(folder))
+    session.add(drama)
+    session.commit()
+    session.refresh(drama)
+
+    if analysis_path.is_file():
+        try:
+            analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+            analysis["analysis_version"] = -1
+            analysis["current_step"] = "源文件已变更，原识别记录已保留；重新识别后更新"
+            analysis_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, ValueError, TypeError):
+            pass
+    return to_detail(drama)
 
 
 @router.get("/{drama_id}/generated/{filename:path}")

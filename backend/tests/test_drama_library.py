@@ -103,6 +103,59 @@ def test_direct_video_upload_and_manual_register(tmp_path: Path):
         assert "50GB" in oversized.json()["detail"]
 
 
+def test_source_storage_details_and_safe_source_deletion(tmp_path: Path):
+    media = tmp_path / "media"
+    drama_dir = media / "dramas" / "删除源文件测试"
+    episodes_dir = drama_dir / "episodes"
+    generated_dir = drama_dir / "generated"
+    episodes_dir.mkdir(parents=True)
+    generated_dir.mkdir()
+    (episodes_dir / "Episode1.mp4").write_bytes(b"first-video")
+    (episodes_dir / "Episode2.mp4").write_bytes(b"second-video")
+    (generated_dir / "keep.mp4").write_bytes(b"generated-video")
+    os.environ["MEDIA_ROOT"] = str(media)
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'source-delete.db'}"
+    os.environ["PUBLIC_UI_ORIGIN"] = "http://127.0.0.1:5174"
+
+    import app.config
+    app.config.get_settings.cache_clear()
+    import app.database
+    import app.routers.dramas
+    import app.main
+    importlib.reload(app.database)
+    importlib.reload(app.routers.dramas)
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login_test_user(client)
+        drama = client.post("/api/dramas/scan").json()["dramas"][0]
+        assert drama["source_storage"] == "local"
+        assert Path(drama["source_storage_path"]) == episodes_dir.resolve()
+        assert drama["source_size_bytes"] == len(b"first-video") + len(b"second-video")
+        assert [item["name"] for item in drama["source_files"]] == ["Episode1.mp4", "Episode2.mp4"]
+
+        from sqlmodel import Session
+        from app.models import FactoryJob
+        with Session(app.database.engine) as session:
+            job = FactoryJob(drama_id=drama["id"], status="processing")
+            session.add(job); session.commit(); session.refresh(job); job_id = job.id
+        blocked = client.delete(f"/api/dramas/{drama['id']}/source-files?filename=Episode1.mp4")
+        assert blocked.status_code == 409
+        with Session(app.database.engine) as session:
+            job = session.get(FactoryJob, job_id); job.status = "completed"; session.add(job); session.commit()
+
+        remaining = client.delete(f"/api/dramas/{drama['id']}/source-files?filename=Episode1.mp4")
+        assert remaining.status_code == 200
+        assert remaining.json()["episodes"] == ["Episode2.mp4"]
+        assert not (episodes_dir / "Episode1.mp4").exists()
+
+        cleared = client.delete(f"/api/dramas/{drama['id']}/source-files")
+        assert cleared.status_code == 200
+        assert cleared.json()["source_files"] == []
+        assert cleared.json()["source_size_bytes"] == 0
+        assert (generated_dir / "keep.mp4").read_bytes() == b"generated-video"
+
+
 def test_task_metadata_cover_upload_and_approved_asset_library(tmp_path: Path):
     media = tmp_path / "media"; os.environ["MEDIA_ROOT"] = str(media); os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'tasks.db'}"
     import app.config; app.config.get_settings.cache_clear()

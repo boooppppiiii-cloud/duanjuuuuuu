@@ -86,6 +86,11 @@ class GeneratedFile(BaseModel):
     created_at: datetime
 
 
+class SourceFileInfo(BaseModel):
+    name: str
+    size_bytes: int
+
+
 class DramaDetail(BaseModel):
     id: int
     title: str
@@ -105,6 +110,10 @@ class DramaDetail(BaseModel):
     cover_square_path: str
     cover_horizontal_path: str
     episodes: list[str]
+    source_files: list[SourceFileInfo]
+    source_size_bytes: int
+    source_storage: str
+    source_storage_path: str
     stills: list[str]
     highlights: list[Highlight]
     generated_files: list[GeneratedFile]

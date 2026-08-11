@@ -4,6 +4,7 @@ export type Drama = {
   is_ai_generated: boolean;is_dubbed_content:boolean; episode_count: number; episodes: string[]; stills: string[]; highlights: Highlight[]; file_dir:string
   language:string;promotion_episode_count:number;total_episode_count:number;generated_files:GeneratedFile[]
   cover_vertical_path:string;cover_square_path:string;cover_horizontal_path:string
+  source_files:{name:string;size_bytes:number}[];source_size_bytes:number;source_storage:'server'|'local';source_storage_path:string
 }
 export type GeneratedFile = { name:string;size:number;created_at:string }
 export type ScanLog = { path: string; status: string; message: string }
@@ -116,6 +117,7 @@ export const api = {
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),
   get: (id: string) => request<Drama>(`/api/dramas/${id}`),
   update: (id: number, body: object) => request<Drama>(`/api/dramas/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteDramaSources: (id:number,filename?:string) => request<Drama>(`/api/dramas/${id}/source-files${filename?`?filename=${encodeURIComponent(filename)}`:''}`,{method:'DELETE'}),
   highlights: (id: number, highlights: Highlight[]) => request<Drama>(`/api/dramas/${id}/highlights`, { method: 'PUT', body: JSON.stringify({ highlights }) }),
   clips: (dramaId?: number,refresh=false) => request<Clip[]>(`/api/clips${dramaId ? `?drama_id=${dramaId}` : ''}`,{cacheTtlMs:30_000,forceRefresh:refresh}),
   createClips: (dramaId: number, templateName = 'suspense_hook') => request<Clip[]>('/api/clips/batch', { method: 'POST', body: JSON.stringify({ drama_id: dramaId, template_name: templateName }) }),
