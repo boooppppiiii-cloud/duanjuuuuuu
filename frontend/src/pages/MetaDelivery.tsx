@@ -10,7 +10,7 @@ import { showLocalAssistantInstallPrompt } from '../components/LocalAssistantPro
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
 const defaults={locale:'en_US',genres:['Drama'],release_date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),ai_content:false,dubbed_content:false}
 type LocalWritable={write:(data:Uint8Array|Blob)=>Promise<void>;close:()=>Promise<void>;abort:()=>Promise<void>}
-type LocalFileHandle={createWritable:()=>Promise<LocalWritable>}
+type LocalFileHandle={createWritable:()=>Promise<LocalWritable>;getFile:()=>Promise<File>}
 type LocalDirectoryHandle={name:string;getDirectoryHandle:(name:string,options:{create:boolean})=>Promise<LocalDirectoryHandle>;getFileHandle:(name:string,options:{create:boolean})=>Promise<LocalFileHandle>}
 type DirectoryPickerWindow=Window&{showDirectoryPicker?:(options:{mode:'readwrite'})=>Promise<LocalDirectoryHandle>}
 type OutputDestination={kind:'browser';handle:LocalDirectoryHandle}|{kind:'server';token:string;name:string}|{kind:'download'}
@@ -63,9 +63,17 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      if(!filename)continue
      let folder=root
      for(const part of parts)folder=await folder.getDirectoryHandle(part,{create:true})
+     const handle=await folder.getFileHandle(filename,{create:true})
+     const existing=await handle.getFile().catch(()=>undefined)
+     if(existing?.size===entry.size){
+       written+=entry.size
+       const percent=Math.min(100,Math.round(written/Math.max(manifest.total_bytes,1)*100))
+       if(percent!==lastPercent){lastPercent=percent;setExportProgress({label:`已存在，跳过：${entry.path}`,percent})}
+       continue
+     }
+     setExportProgress({label:`正在保存：${entry.path}（请勿关闭或刷新页面）`,percent:Math.min(99,Math.round(written/Math.max(manifest.total_bytes,1)*100))})
      const response=await fetch(usingLocal?localClient.metaPackageFileUrl(item.id,entry.path):api.metaPackageFileUrl(item.id,entry.path))
      if(!response.ok)throw new Error(`读取生成文件失败：${entry.path}`)
-     const handle=await folder.getFileHandle(filename,{create:true})
      const writable=await handle.createWritable()
      try{
        if(response.body){
@@ -205,6 +213,8 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
     {title:'存档位置',dataIndex:'output_dir',render:(x:string)=><Typography.Text ellipsis={{tooltip:x}} copyable={Boolean(x)}>{x||'生成完成后显示'}</Typography.Text>},
     {title:'保存',width:220,render:(_,row)=>{const unavailable=unavailablePackageStatuses.has(row.status);return <Space><Button size="small" type="primary" icon={<FolderOpenOutlined/>} loading={action===`export-${row.id}`||action===`selecting-${row.id}`} disabled={unavailable||(building&&action!==`export-${row.id}`&&action!==`selecting-${row.id}`)} onClick={()=>saveExisting(row)}>{directFolderSave||localRuntime||usingLocal?'保存到本机':'下载 ZIP'}</Button>{(localRuntime||usingLocal)&&<Button size="small" disabled={unavailable||building} onClick={()=>openExisting(row)}>打开当前文件夹</Button>}</Space>}},
     {title:'下一步',width:150,render:()=> <Button type="primary" icon={<PlatformLogo platform="instagram" size={15}/>} href="https://www.instagram.com/sfs_tools" target="_blank">打开 SFS Tools</Button>},
-  ]}/>:<Alert type="info" showIcon message="选择电脑上的保存位置后，系统会自动创建完整的 Meta 合规文件夹"/>}</Card>
+  ]}/>:<Alert type="info" showIcon message="选择电脑上的保存位置后，系统会自动创建完整的 Meta 合规文件夹"/>}
+  {exportProgress&&action?.startsWith('export-')&&<div className="meta-build-status"><Typography.Text>{exportProgress.label}</Typography.Text><Progress percent={exportProgress.percent} status="active"/></div>}
+  </Card>
  </div>
 }
