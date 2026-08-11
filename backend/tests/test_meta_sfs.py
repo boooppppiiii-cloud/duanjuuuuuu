@@ -92,6 +92,34 @@ def test_quick_preflight_registers_files_without_synchronous_media_probe(monkeyp
     assert any("后台校验" in item for item in result["automatic_fixes"])
 
 
+def test_normalize_video_copies_already_compliant_streams(monkeypatch, tmp_path: Path):
+    commands = []
+    monkeypatch.setattr(meta_sfs, "_binary", lambda _: "ffmpeg")
+    monkeypatch.setattr(meta_sfs.subprocess, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stderr=""))
+
+    meta_sfs._normalize_video(tmp_path / "source.mp4", tmp_path / "target.mp4", compliant_video())
+
+    command = commands[0]
+    assert command[command.index("-c:v") + 1] == "copy"
+    assert command[command.index("-c:a") + 1] == "copy"
+
+
+def test_normalize_video_only_reencodes_noncompliant_audio(monkeypatch, tmp_path: Path):
+    commands = []
+    monkeypatch.setattr(meta_sfs, "_binary", lambda _: "ffmpeg")
+    monkeypatch.setattr(meta_sfs.subprocess, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stderr=""))
+
+    meta_sfs._normalize_video(
+        tmp_path / "source.mp4",
+        tmp_path / "target.mp4",
+        compliant_video(audio_codec="mp3"),
+    )
+
+    command = commands[0]
+    assert command[command.index("-c:v") + 1] == "copy"
+    assert command[command.index("-c:a") + 1] == "aac"
+
+
 def test_preflight_prefers_factory_meta_split_outputs(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video(duration=120.0))
     drama = make_drama(tmp_path)

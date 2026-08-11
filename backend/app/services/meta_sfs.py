@@ -230,18 +230,38 @@ def _render_cover(source: Path, target: Path, size: tuple[int, int]) -> None:
         ImageOps.fit(image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.42)).save(target, quality=94, subsampling=0)
 
 
-def _normalize_video(source: Path, target: Path, has_audio: bool) -> None:
+def _video_stream_copy_ready(info: dict) -> bool:
+    return (
+        info.get("video_codec") == "h264"
+        and (info.get("width"), info.get("height")) == (1080, 1920)
+        and int(info.get("video_bitrate") or 0) >= 2_500_000
+    )
+
+
+def _normalize_video(source: Path, target: Path, info: dict) -> None:
     ffmpeg = _binary("ffmpeg")
     command = [ffmpeg, "-y", "-i", str(source)]
+    has_audio = bool(info.get("has_audio"))
     if not has_audio:
         command += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
-    command += [
-        "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0", "-shortest",
-        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=25",
-        "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-b:v", "3M",
-        "-minrate", "3M", "-maxrate", "3M", "-bufsize", "6M", "-x264-params", "nal-hrd=cbr:force-cfr=1",
-        "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-movflags", "+faststart", str(target),
-    ]
+    if _video_stream_copy_ready(info):
+        command += [
+            "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0", "-shortest",
+            "-c:v", "copy",
+        ]
+        if has_audio and info.get("audio_codec") == "aac" and info.get("audio_channels") == 2:
+            command += ["-c:a", "copy"]
+        else:
+            command += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000"]
+        command += ["-movflags", "+faststart", str(target)]
+    else:
+        command += [
+            "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0", "-shortest",
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=25",
+            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-b:v", "3M",
+            "-minrate", "3M", "-maxrate", "3M", "-bufsize", "6M", "-x264-params", "nal-hrd=cbr:force-cfr=1",
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-movflags", "+faststart", str(target),
+        ]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-1200:] or "ffmpeg 转码失败")
@@ -281,7 +301,7 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
             name = f"{slug}_ep{index:03}_{total:03}.mp4"
             target = series_dir / name
             info = inspect_video(source)
-            _normalize_video(source, target, info["has_audio"])
+            _normalize_video(source, target, info)
             errors = _verify_output(target)
             if errors:
                 raise RuntimeError(f"{name} 转码后仍不合规：{'；'.join(errors)}")
