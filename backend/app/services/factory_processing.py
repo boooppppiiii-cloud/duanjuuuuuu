@@ -34,13 +34,22 @@ class TimelinePart:
 
 @dataclass(frozen=True)
 class MetaEpisodePart:
-    source: Path
-    source_episode: int
-    source_part: int
-    source_part_count: int
     sequence: int
-    start: float
-    end: float
+    parts: tuple[TimelinePart, ...]
+    source_episodes: tuple[int, ...]
+
+    @property
+    def duration(self) -> float:
+        return sum(part.duration for part in self.parts)
+
+
+@dataclass
+class _MetaEpisodeDraft:
+    parts: list[TimelinePart]
+
+    @property
+    def duration(self) -> float:
+        return sum(part.duration for part in self.parts)
 
 
 PROFILES = {
@@ -111,25 +120,127 @@ def balanced_lengths(total: float, maximum: float) -> list[float]:
     return values
 
 
-def build_meta_episode_plan(source_info: list[tuple[Path, float]], maximum: float) -> list[MetaEpisodePart]:
-    """Build one globally numbered Meta episode sequence across all source episodes."""
-    result: list[MetaEpisodePart] = []
-    sequence = 0
+def _split_meta_draft(draft: _MetaEpisodeDraft, duration: float) -> tuple[_MetaEpisodeDraft, _MetaEpisodeDraft]:
+    total = draft.duration
+    left_parts = slice_timeline(draft.parts, 0, duration)
+    right_parts = slice_timeline(draft.parts, duration, max(0.0, total - duration))
+    return (
+        _MetaEpisodeDraft(left_parts),
+        _MetaEpisodeDraft(right_parts),
+    )
+
+
+def build_meta_episode_plan(
+    source_info: list[tuple[Path, float]],
+    maximum: float,
+    minimum: float = 60.0,
+    operations: list[str] | None = None,
+) -> list[MetaEpisodePart]:
+    """Build globally numbered Meta episodes and guarantee every output is 60–180 seconds."""
+    if maximum < minimum:
+        raise ValueError("Meta 单集最大时长不能小于最小时长")
+
+    drafts: list[_MetaEpisodeDraft] = []
+    episode_by_name: dict[str, int] = {}
     for episode_index, (source, duration) in enumerate(source_info, start=1):
+        episode_by_name[source.name] = episode_index
         lengths = balanced_lengths(duration, maximum)
         offset = 0.0
-        for part_index, length in enumerate(lengths, start=1):
-            sequence += 1
-            result.append(MetaEpisodePart(
-                source=source,
-                source_episode=episode_index,
-                source_part=part_index,
-                source_part_count=len(lengths),
-                sequence=sequence,
-                start=offset,
-                end=offset + length,
+        for length in lengths:
+            drafts.append(_MetaEpisodeDraft(
+                parts=[TimelinePart(source, source.name, offset, offset + length)],
             ))
             offset += length
+        if len(lengths) > 1 and operations is not None:
+            operations.append(
+                f"原第 {episode_index} 集（{source.name}）时长 {duration:.1f} 秒，超过 {maximum:.0f} 秒，"
+                f"将均分为 {len(lengths)} 段"
+            )
+
+    if drafts and sum(draft.duration for draft in drafts) + 0.01 < minimum:
+        raise ValueError(f"整部剧总时长不足 {minimum:.0f} 秒，无法生成符合 Meta 要求的单集")
+
+    def draft_episode_label(draft: _MetaEpisodeDraft) -> str:
+        episodes = dict.fromkeys(episode_by_name[part.episode] for part in draft.parts)
+        return "、".join(str(episode) for episode in episodes)
+
+    index = 0
+    while index < len(drafts):
+        current = drafts[index]
+        if current.duration + 0.01 >= minimum:
+            index += 1
+            continue
+
+        if index + 1 < len(drafts):
+            following = drafts[index + 1]
+            before = current.duration
+            current_sources = draft_episode_label(current)
+            following_sources = draft_episode_label(following)
+            if current.duration + following.duration <= maximum + 0.01:
+                current.parts.extend(following.parts)
+                drafts.pop(index + 1)
+                if operations is not None:
+                    operations.append(
+                        f"原第 {current_sources} 集时长 {before:.1f} 秒，不足 {minimum:.0f} 秒，"
+                        f"已与原第 {following_sources} 集完整合并为新第 {index + 1} 集（{current.duration:.1f} 秒）；"
+                        "后续集数依次前移"
+                    )
+                continue
+
+            needed = minimum - current.duration
+            borrowed, remainder = _split_meta_draft(following, needed)
+            current.parts.extend(borrowed.parts)
+            drafts[index + 1] = remainder
+            if operations is not None:
+                operations.append(
+                    f"原第 {current_sources} 集时长 {before:.1f} 秒，不足 {minimum:.0f} 秒，"
+                    f"已从原第 {following_sources} 集片头补入 {needed:.1f} 秒，组成新第 {index + 1} 集"
+                    f"（{current.duration:.1f} 秒）；下一集剩余 {remainder.duration:.1f} 秒并顺延重排"
+                )
+            index += 1
+            continue
+
+        if index == 0:
+            raise ValueError(f"整部剧总时长不足 {minimum:.0f} 秒，无法生成符合 Meta 要求的单集")
+
+        previous = drafts[index - 1]
+        before = current.duration
+        current_sources = draft_episode_label(current)
+        previous_sources = draft_episode_label(previous)
+        if previous.duration + current.duration <= maximum + 0.01:
+            previous.parts.extend(current.parts)
+            drafts.pop(index)
+            if operations is not None:
+                operations.append(
+                    f"末尾原第 {current_sources} 集时长 {before:.1f} 秒，不足 {minimum:.0f} 秒，"
+                    f"已与原第 {previous_sources} 集合并为新的第 {index} 集（{previous.duration:.1f} 秒）"
+                )
+            index = max(0, index - 1)
+            continue
+
+        needed = minimum - current.duration
+        retained, borrowed = _split_meta_draft(previous, previous.duration - needed)
+        current.parts = [*borrowed.parts, *current.parts]
+        drafts[index - 1] = retained
+        if operations is not None:
+            operations.append(
+                f"末尾原第 {current_sources} 集时长 {before:.1f} 秒，不足 {minimum:.0f} 秒，"
+                f"已从原第 {previous_sources} 集末尾补入 {needed:.1f} 秒，"
+                f"调整后前一集 {retained.duration:.1f} 秒、末集 {current.duration:.1f} 秒"
+            )
+        index += 1
+
+    result = [
+        MetaEpisodePart(
+            sequence=sequence,
+            parts=tuple(draft.parts),
+            source_episodes=tuple(dict.fromkeys(episode_by_name[part.episode] for part in draft.parts)),
+        )
+        for sequence, draft in enumerate(drafts, start=1)
+    ]
+    invalid = [part for part in result if part.duration < minimum - 0.05 or part.duration > maximum + 0.05]
+    if invalid:
+        raise ValueError("Meta 单集时长整理失败，仍存在不符合 60–180 秒要求的文件")
     return result
 
 
@@ -394,21 +505,22 @@ class FactoryPipeline:
                     duration = probe_media(settings.ffprobe_binary, source)["duration"]
                     source_info.append((source, duration))
 
+                meta_plan: list[MetaEpisodePart] = []
                 if "meta_split" in modes:
-                    split_rows = [
-                        (index, source.name, duration, len(balanced_lengths(duration, float(job.max_duration_seconds))))
-                        for index, (source, duration) in enumerate(source_info, start=1)
-                        if duration > float(job.max_duration_seconds)
+                    meta_operations: list[str] = []
+                    meta_plan = build_meta_episode_plan(
+                        source_info,
+                        float(job.max_duration_seconds),
+                        minimum=60.0,
+                        operations=meta_operations,
+                    )
+                    job.warnings = [
+                        *job.warnings,
+                        *meta_operations,
+                        f"Meta 时长整理：{len(source_info)} 个有效原片将生成 {len(meta_plan)} 个投递文件，"
+                        "每集时长均为 60–180 秒",
                     ]
-                    for episode_index, filename, duration, output_count in split_rows:
-                        job.warnings = [
-                            *job.warnings,
-                            f"第 {episode_index} 集（{filename}）时长 {duration:.1f} 秒，超过 180 秒，将均分为 {output_count} 集",
-                        ]
-                    if split_rows:
-                        projected = sum(len(balanced_lengths(duration, float(job.max_duration_seconds))) for _, duration in source_info)
-                        job.warnings = [*job.warnings, f"Meta 切分：{len(source_info)} 个原片将生成 {projected} 个投递文件"]
-                    self._save(session, job, "已完成 Meta 超时剧集检查", 8)
+                    self._save(session, job, "已完成 Meta 超时拆分与短集合并检查", 8)
 
                 body_target: Path | None = None
                 body_duration = 0.0
@@ -549,23 +661,31 @@ class FactoryPipeline:
                 if "meta_split" in modes:
                     meta_dir.mkdir(parents=True, exist_ok=True)
                     meta_files: list[Path] = []
-                    plan = build_meta_episode_plan(source_info, float(job.max_duration_seconds))
-                    for part in plan:
+                    source_durations = {source.resolve(): duration for source, duration in source_info}
+                    for part in meta_plan:
+                        source_label = "、".join(str(episode) for episode in part.source_episodes)
                         self._save(
                             session,
                             job,
-                            f"生成 Meta 单集 {part.sequence}/{len(plan)} · 原片第 {part.source_episode} 集",
-                            72 + round(part.sequence / max(1, len(plan)) * 23),
+                            f"生成 Meta 单集 {part.sequence}/{len(meta_plan)} · 来源原片第 {source_label} 集",
+                            72 + round(part.sequence / max(1, len(meta_plan)) * 23),
                         )
-                        suffix = part.source.suffix.casefold() if part.source_part_count == 1 else ".mp4"
+                        only_part = part.parts[0] if len(part.parts) == 1 else None
+                        original_duration = source_durations.get(only_part.path.resolve(), 0.0) if only_part else 0.0
+                        direct_copy = bool(
+                            only_part
+                            and abs(only_part.start) <= 0.05
+                            and abs(only_part.end - original_duration) <= 0.05
+                        )
+                        suffix = only_part.path.suffix.casefold() if direct_copy and only_part else ".mp4"
                         filename = f"J{job.id:04d}_E{part.sequence:03d}{suffix}"
                         target = meta_dir / filename
-                        if part.source_part_count == 1:
-                            shutil.copy2(part.source, target)
-                            actual = part.end - part.start
+                        if direct_copy and only_part:
+                            shutil.copy2(only_part.path, target)
+                            actual = only_part.duration
                         else:
                             actual = render_timeline_slice(
-                                [TimelinePart(part.source, part.source.name, part.start, part.end)], target,
+                                list(part.parts), target,
                                 work / f"meta_{part.sequence:03d}", job.compression_profile,
                             )
                         meta_files.append(target)

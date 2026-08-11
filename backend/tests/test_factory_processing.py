@@ -25,14 +25,40 @@ def test_meta_split_uses_global_episode_numbers_after_a_source_is_split(tmp_path
     plan = build_meta_episode_plan(sources, 180)
 
     assert len(plan) == 5
-    assert [(part.source_episode, part.source_part, part.sequence) for part in plan] == [
-        (1, 1, 1),
-        (2, 1, 2),
-        (3, 1, 3),
-        (3, 2, 4),
-        (4, 1, 5),
-    ]
-    assert [(part.start, part.end) for part in plan[2:4]] == [(0, 120), (120, 240)]
+    assert [part.sequence for part in plan] == [1, 2, 3, 4, 5]
+    assert [part.source_episodes for part in plan] == [(1,), (2,), (3,), (3,), (4,)]
+    assert [(part.parts[0].start, part.parts[0].end) for part in plan[2:4]] == [(0, 120), (120, 240)]
+
+
+@pytest.mark.parametrize(
+    ("durations", "expected"),
+    [
+        ([50, 100, 120], [150, 120]),
+        ([50, 160], [60, 150]),
+        ([120, 40], [160]),
+        ([170, 40], [150, 60]),
+        ([20, 20, 50], [90]),
+    ],
+)
+def test_meta_short_episodes_are_merged_or_borrow_from_adjacent_episode(
+    tmp_path: Path,
+    durations: list[float],
+    expected: list[float],
+):
+    sources = [(tmp_path / f"Episode{index}.mp4", duration) for index, duration in enumerate(durations, start=1)]
+    operations: list[str] = []
+
+    plan = build_meta_episode_plan(sources, 180, operations=operations)
+
+    assert [part.duration for part in plan] == pytest.approx(expected)
+    assert all(60 <= part.duration <= 180 for part in plan)
+    assert operations
+    assert any("不足 60 秒" in operation for operation in operations)
+
+
+def test_meta_plan_rejects_a_whole_drama_shorter_than_one_minute(tmp_path: Path):
+    with pytest.raises(ValueError, match="总时长不足 60 秒"):
+        build_meta_episode_plan([(tmp_path / "Episode1.mp4", 59)], 180)
 
 
 def test_identical_reuploads_of_a_numbered_episode_are_ignored(tmp_path: Path):
