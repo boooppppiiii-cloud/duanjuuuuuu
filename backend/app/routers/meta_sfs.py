@@ -18,7 +18,8 @@ from ..database import get_session
 from ..config import get_settings
 from ..models import AppUser, Drama, FactoryJob, GeneratedAsset, MetaDeliveryPackage
 from ..schemas import MetaSFSRequest
-from ..services.meta_sfs import build_package, preflight
+from ..services.meta_sfs import delivery_sources, preflight
+from ..services.meta_package_processing import ACTIVE_STATUSES, meta_package_pipeline
 from ..services.drive_delivery import upload_meta_package
 from ..services.auth import get_current_user
 
@@ -27,6 +28,10 @@ _local_destinations: dict[str, tuple[Path, float]] = {}
 
 
 def _package_root(item: MetaDeliveryPackage) -> Path:
+    if item.status in ACTIVE_STATUSES:
+        raise HTTPException(409, "投递文件夹仍在生成中")
+    if item.status == "failed":
+        raise HTTPException(422, item.last_error or "投递文件夹生成失败")
     root = Path(item.output_dir).resolve()
     if not root.is_dir():
         raise HTTPException(404, "投递文件夹不存在或尚未生成完成")
@@ -53,6 +58,8 @@ def _delivery_for_user(session: Session, drama: Drama, user: AppUser) -> tuple[l
         paths = [Path(item.file_path).resolve() for item in assets]
         if paths and all(path.is_file() for path in paths):
             return paths, "factory_meta_split"
+    if os.getenv("JUSHU_LOCAL_WORKSPACE") == "1":
+        return delivery_sources(Path(drama.file_dir).resolve())
     return [], "factory_meta_split"
 
 
@@ -61,11 +68,12 @@ def factory_delivery_source(drama_id: int, session: Session = Depends(get_sessio
     drama = session.get(Drama, drama_id)
     if not drama:
         raise HTTPException(404, "剧目不存在")
-    paths, _ = _delivery_for_user(session, drama, user)
+    paths, source_mode = _delivery_for_user(session, drama, user)
     return {
         "ready": bool(paths),
         "episode_count": len(paths),
         "source_episode_count": drama.episode_count,
+        "source_mode": source_mode,
         "files": [path.name for path in paths],
     }
 
@@ -139,26 +147,49 @@ def select_local_directory(request: Request):
 
 
 @router.post("/preflight")
-def check_package(payload: MetaSFSRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+def check_package(payload: MetaSFSRequest, quick: bool = False, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = session.get(Drama, payload.drama_id)
     if not drama:
         raise HTTPException(404, "剧目不存在")
-    return preflight(drama, payload, _delivery_for_user(session, drama, user))
+    return preflight(drama, payload, _delivery_for_user(session, drama, user), not quick)
 
 
-@router.post("/build")
+@router.post("/build", response_model=MetaDeliveryPackage, status_code=202)
 def create_package(payload: MetaSFSRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     drama = session.get(Drama, payload.drama_id)
     if not drama:
         raise HTTPException(404, "剧目不存在")
-    try:
-        output_dir, report = build_package(drama, payload, output_parent=_take_local_destination(payload.local_destination_token), delivery=_delivery_for_user(session, drama, user))
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(500, f"Meta 投递包构建失败：{exc}") from exc
-    item = MetaDeliveryPackage(drama_id=drama.id, series_slug=report["series_slug"], output_dir=str(output_dir.resolve()), status="ready", validation_json=report, owner_user_id=user.id)
+    active = session.exec(select(MetaDeliveryPackage).where(
+        MetaDeliveryPackage.drama_id == drama.id,
+        MetaDeliveryPackage.owner_user_id == user.id,
+        MetaDeliveryPackage.status.in_(ACTIVE_STATUSES),
+    ).order_by(MetaDeliveryPackage.id.desc())).first()
+    if active:
+        raise HTTPException(409, f"该剧已有投递文件夹任务 #{active.id} 正在生成")
+    delivery = _delivery_for_user(session, drama, user)
+    # Keep the request short. Full ffprobe validation and conversion happen in
+    # the persisted job so the browser always gets a visible task immediately.
+    report = preflight(drama, payload, delivery, False)
+    if report["blockers"]:
+        raise HTTPException(422, "；".join(report["blockers"]))
+    output_parent = _take_local_destination(payload.local_destination_token)
+    request_data = payload.model_dump()
+    request_data["series_slug"] = report["series_slug"]
+    request_data["local_destination_token"] = ""
+    item = MetaDeliveryPackage(
+        drama_id=drama.id,
+        series_slug=report["series_slug"],
+        output_dir="",
+        status="queued",
+        validation_json={
+            "request": request_data,
+            "source_paths": [str(path) for path in delivery[0]],
+            "output_parent": str(output_parent) if output_parent else "",
+        },
+        owner_user_id=user.id,
+    )
     session.add(item); session.commit(); session.refresh(item)
+    meta_package_pipeline.start()
     return item
 
 
@@ -167,6 +198,8 @@ def list_packages(session: Session = Depends(get_session), user: AppUser = Depen
     items = session.exec(select(MetaDeliveryPackage).where(MetaDeliveryPackage.owner_user_id == user.id).order_by(MetaDeliveryPackage.created_at.desc())).all()
     changed = False
     for item in items:
+        if item.status in (*ACTIVE_STATUSES, "failed") or not item.output_dir:
+            continue
         available = Path(item.output_dir).is_dir()
         if not available and item.status != "missing":
             item.status = "missing"
@@ -181,6 +214,11 @@ def list_packages(session: Session = Depends(get_session), user: AppUser = Depen
         for item in items:
             session.refresh(item)
     return items
+
+
+@router.get("/packages/{package_id}", response_model=MetaDeliveryPackage)
+def get_package(package_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    return _owned_package(package_id, session, user)
 
 
 @router.get("/packages/{package_id}/files")

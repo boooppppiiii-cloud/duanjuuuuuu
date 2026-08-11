@@ -24,12 +24,14 @@ os.environ["CORS_ORIGINS"] = os.getenv(
 )
 os.environ["PUBLIC_API_ORIGIN"] = "http://127.0.0.1:17862"
 os.environ["PUBLIC_UI_ORIGIN"] = "http://127.0.0.1:5174"
+os.environ["JUSHU_LOCAL_WORKSPACE"] = "1"
 
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -37,9 +39,11 @@ from .app.config import get_settings
 from .app.database import create_db_and_tables, engine
 from .app.models import AppUser, Drama, UsageEvent
 from .app.routers.factory import router as factory_router
+from .app.routers.meta_sfs import router as meta_sfs_router
 from .app.services.auth import bind_current_user, reset_current_user
-from .app.services.drama_library import VIDEO_SUFFIXES, episode_files
+from .app.services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix
 from .app.services.factory_processing import resume_factory_jobs
+from .app.services.meta_package_processing import resume_meta_packages
 from .app.services.script_analysis import write_analysis
 
 
@@ -82,6 +86,7 @@ class WorkspaceView(BaseModel):
     file_count: int
     total_bytes: int
     files: list[WorkspaceFile]
+    covers: dict[str, str]
     ffmpeg_ready: bool
     updated_at: str
 
@@ -129,6 +134,43 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     return Path(value).resolve() if value else None
 
 
+def _discover_covers(folder: Path) -> dict[str, Path]:
+    """Find Meta-ready covers beside the selected videos without copying them."""
+    candidates: list[Path] = []
+    for candidate_folder in (folder / "covers", folder, folder / "stills"):
+        candidates.extend(files_with_suffix(candidate_folder, IMAGE_SUFFIXES))
+    specs = {
+        "vertical": (3 / 4, 1440, 1920, ("vertical", "portrait", "竖", "3x4", "3-4")),
+        "square": (1.0, 1200, 1200, ("square", "方", "1x1", "1-1")),
+        "horizontal": (16 / 9, 1920, 1080, ("horizontal", "landscape", "横", "16x9", "16-9", "background")),
+    }
+    matches: dict[str, list[tuple[int, int, Path]]] = {kind: [] for kind in specs}
+    for path in dict.fromkeys(candidates):
+        try:
+            with Image.open(path) as image:
+                if image.format not in {"JPEG", "PNG"}:
+                    continue
+                width, height = image.size
+        except Exception:
+            continue
+        name = path.stem.casefold()
+        for kind, (ratio, min_width, min_height, hints) in specs.items():
+            if width >= min_width and height >= min_height and abs(width / height - ratio) <= 0.01:
+                matches[kind].append((0 if any(hint in name for hint in hints) else 1, width * height, path.resolve()))
+    return {
+        kind: min(rows, key=lambda row: (row[0], row[1], row[2].name.casefold()))[2]
+        for kind, rows in matches.items()
+        if rows
+    }
+
+
+def _sync_local_covers(drama: Drama, folder: Path) -> None:
+    covers = _discover_covers(folder)
+    drama.cover_vertical_path = str(covers.get("vertical", ""))
+    drama.cover_square_path = str(covers.get("square", ""))
+    drama.cover_horizontal_path = str(covers.get("horizontal", ""))
+
+
 def _workspace_view(drama: Drama) -> WorkspaceView:
     folder = Path(drama.file_dir).resolve()
     if not folder.is_dir():
@@ -150,6 +192,11 @@ def _workspace_view(drama: Drama) -> WorkspaceView:
         file_count=len(files),
         total_bytes=sum(item.size_bytes for item in files),
         files=files,
+        covers={
+            "vertical": Path(drama.cover_vertical_path).name if drama.cover_vertical_path else "",
+            "square": Path(drama.cover_square_path).name if drama.cover_square_path else "",
+            "horizontal": Path(drama.cover_horizontal_path).name if drama.cover_horizontal_path else "",
+        },
         ffmpeg_ready=bool(shutil.which(get_settings().ffmpeg_binary) and shutil.which(get_settings().ffprobe_binary)),
         updated_at=datetime.utcnow().isoformat(),
     )
@@ -160,6 +207,7 @@ async def lifespan(_: FastAPI):
     create_db_and_tables()
     _local_user()
     resume_factory_jobs()
+    resume_meta_packages()
     yield
 
 
@@ -188,6 +236,7 @@ async def local_identity_and_private_network(request: Request, call_next):
 
 
 app.include_router(factory_router)
+app.include_router(meta_sfs_router)
 
 
 @app.get("/api/local/health")
@@ -230,6 +279,7 @@ def select_workspace(payload: WorkspaceBindRequest):
         drama.file_dir = str(folder)
         drama.source_note = "本地工作区（源视频不上传）"
         drama.episode_count = len(videos)
+        _sync_local_covers(drama, folder)
         session.add(drama)
         session.commit()
         session.refresh(drama)
@@ -242,6 +292,10 @@ def get_workspace(drama_id: int):
         drama = session.get(Drama, drama_id)
         if not drama:
             raise HTTPException(404, "本机尚未连接该剧目的源文件夹")
+        _sync_local_covers(drama, Path(drama.file_dir).resolve())
+        session.add(drama)
+        session.commit()
+        session.refresh(drama)
         return _workspace_view(drama)
 
 

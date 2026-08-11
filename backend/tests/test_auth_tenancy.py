@@ -24,6 +24,7 @@ def test_login_shared_drama_and_private_clips(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(main, "create_db_and_tables", lambda: None)
     monkeypatch.setattr(main, "initialize_auth", lambda: None)
     monkeypatch.setattr(main, "resume_factory_jobs", lambda: None)
+    monkeypatch.setattr(main, "resume_meta_packages", lambda: None)
     monkeypatch.setattr(main, "resume_factory_analyses", lambda: 0)
     monkeypatch.setattr(main, "start_translation_worker", lambda: None)
     monkeypatch.setattr(usage_service, "engine", engine)

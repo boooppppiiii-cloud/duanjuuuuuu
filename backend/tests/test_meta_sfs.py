@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from app.models import Drama
@@ -79,6 +80,16 @@ def test_preflight_blocks_noncompliant_duration(monkeypatch, tmp_path: Path):
 
     assert result["ready"] is False
     assert any("60 秒到 3 分钟" in item for item in result["blockers"])
+
+
+def test_quick_preflight_registers_files_without_synchronous_media_probe(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: (_ for _ in ()).throw(AssertionError("must run in background")))
+
+    result = meta_sfs.preflight(make_drama(tmp_path), request(), inspect_media=False)
+
+    assert result["ready"] is True
+    assert result["assets"][0]["target"] == "midnight-contract_ep001_001.mp4"
+    assert any("后台校验" in item for item in result["automatic_fixes"])
 
 
 def test_preflight_prefers_factory_meta_split_outputs(monkeypatch, tmp_path: Path):
@@ -161,3 +172,17 @@ def test_build_package_writes_to_selected_local_directory(monkeypatch, tmp_path:
 
     assert output.parent == selected
     assert next(output.rglob("*_series.csv")).is_file()
+
+
+def test_build_package_removes_partial_staging_directory_on_failure(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video())
+    monkeypatch.setattr(meta_sfs, "_normalize_video", lambda *_: (_ for _ in ()).throw(RuntimeError("conversion stopped")))
+    monkeypatch.setattr(meta_sfs, "get_settings", lambda: SimpleNamespace(media_root=tmp_path / "output"))
+    drama = make_drama(tmp_path); drama.description = "Task synopsis"; drama.genres = ["Drama"]; drama.total_episode_count = 1
+
+    with pytest.raises(RuntimeError, match="conversion stopped"):
+        meta_sfs.build_package(drama, request(include_thumbnails=False))
+
+    package_parent = tmp_path / "output" / "packages" / "meta_sfs"
+    assert package_parent.is_dir()
+    assert list(package_parent.iterdir()) == []

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from PIL import Image, ImageOps
 
@@ -109,7 +111,12 @@ def _cover_issue(path: Path, ratio: float, min_width: int, min_height: int, labe
     return ""
 
 
-def preflight(drama: Drama, payload: MetaSFSRequest, delivery: tuple[list[Path], str] | None = None) -> dict:
+def preflight(
+    drama: Drama,
+    payload: MetaSFSRequest,
+    delivery: tuple[list[Path], str] | None = None,
+    inspect_media: bool = True,
+) -> dict:
     drama_dir = Path(drama.file_dir)
     sources, source_mode = delivery or delivery_sources(drama_dir)
     expected_total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
@@ -140,6 +147,18 @@ def preflight(drama: Drama, payload: MetaSFSRequest, delivery: tuple[list[Path],
 
     assets = []
     for index, source in enumerate(sources, 1):
+        target = f"{slug}_ep{index:03}_{expected_total:03}.mp4"
+        if not inspect_media:
+            if not source.is_file():
+                blockers.append(f"第 {index} 集文件不存在或已移动")
+            assets.append({
+                "episode": index,
+                "source": str(source),
+                "target": target,
+                "info": {"size": source.stat().st_size if source.is_file() else 0},
+                "issues": ["将在后台校验媒体规格并自动标准化"],
+            })
+            continue
         try:
             info = inspect_video(source)
             issues = []
@@ -155,7 +174,7 @@ def preflight(drama: Drama, payload: MetaSFSRequest, delivery: tuple[list[Path],
             if info["audio_codec"] != "aac" or info["audio_channels"] != 2: issues.append("将自动转为 AAC 双声道")
             if issues and not any("时长" in item or "2GB" in item for item in issues):
                 fixable.append(f"第 {index} 集：" + "、".join(issues))
-            assets.append({"episode": index, "source": str(source), "target": f"{slug}_ep{index:03}_{expected_total:03}.mp4", "info": info, "issues": issues})
+            assets.append({"episode": index, "source": str(source), "target": target, "info": info, "issues": issues})
         except Exception as exc:
             blockers.append(f"第 {index} 集媒体信息读取失败：{exc}")
             assets.append({"episode": index, "source": str(source), "target": "", "info": {}, "issues": [str(exc)]})
@@ -183,6 +202,8 @@ def preflight(drama: Drama, payload: MetaSFSRequest, delivery: tuple[list[Path],
         if issue: blockers.append(issue)
     if vertical_cover and square_cover:
         fixable.append("封面文件名将按 Meta 规范自动统一")
+    if sources and not inspect_media:
+        fixable.append(f"已登记 {len(sources)} 个视频，媒体规格将在后台校验并自动标准化")
     return {
         "ready": not blockers,
         "series_slug": slug,
@@ -244,60 +265,66 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
         raise ValueError("；".join(check["blockers"]))
     settings = get_settings()
     slug = check["series_slug"]
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    package_root = (output_parent or settings.media_root / "packages" / "meta_sfs") / f"{slug}_{stamp}"
-    series_dir = package_root / slug
-    series_dir.mkdir(parents=True, exist_ok=False)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    package_parent = output_parent or settings.media_root / "packages" / "meta_sfs"
+    package_root = package_parent / f"{slug}_{stamp}"
+    staging_root = package_parent / f".{package_root.name}.building-{uuid4().hex[:8]}"
+    series_dir = staging_root / slug
+    try:
+        series_dir.mkdir(parents=True, exist_ok=False)
+        sources, source_mode = delivery or delivery_sources(Path(drama.file_dir))
+        total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
+        description = drama.description.strip() or payload.description.strip()
+        genres = drama.genres or payload.genres
+        output_checks = []
+        for index, source in enumerate(sources, 1):
+            name = f"{slug}_ep{index:03}_{total:03}.mp4"
+            target = series_dir / name
+            info = inspect_video(source)
+            _normalize_video(source, target, info["has_audio"])
+            errors = _verify_output(target)
+            if errors:
+                raise RuntimeError(f"{name} 转码后仍不合规：{'；'.join(errors)}")
+            output_checks.append({"file": name, "status": "passed", "info": inspect_video(target)})
+            for subtitle_ext in (".srt", ".vtt"):
+                subtitle = source.with_suffix(subtitle_ext)
+                if subtitle.exists():
+                    shutil.copy2(subtitle, series_dir / f"{slug}_ep{index:03}_{total:03}.{payload.locale}{subtitle_ext}")
+                    break
+            if payload.include_thumbnails:
+                thumb = series_dir / f"{slug}_ep{index:03}_{total:03}_thumbnail.jpg"
+                result = subprocess.run([_binary("ffmpeg"), "-y", "-ss", "1", "-i", str(target), "-frames:v", "1", "-q:v", "2", str(thumb)], capture_output=True, timeout=90)
+                if result.returncode != 0: raise RuntimeError(f"{name} 缩略图生成失败")
 
-    sources, source_mode = delivery or delivery_sources(Path(drama.file_dir))
-    total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
-    description = drama.description.strip() or payload.description.strip()
-    genres = drama.genres or payload.genres
-    output_checks = []
-    for index, source in enumerate(sources, 1):
-        name = f"{slug}_ep{index:03}_{total:03}.mp4"
-        target = series_dir / name
-        info = inspect_video(source)
-        _normalize_video(source, target, info["has_audio"])
-        errors = _verify_output(target)
-        if errors:
-            raise RuntimeError(f"{name} 转码后仍不合规：{'；'.join(errors)}")
-        output_checks.append({"file": name, "status": "passed", "info": inspect_video(target)})
-        for subtitle_ext in (".srt", ".vtt"):
-            subtitle = source.with_suffix(subtitle_ext)
-            if subtitle.exists():
-                shutil.copy2(subtitle, series_dir / f"{slug}_ep{index:03}_{total:03}.{payload.locale}{subtitle_ext}")
-                break
-        if payload.include_thumbnails:
-            thumb = series_dir / f"{slug}_ep{index:03}_{total:03}_thumbnail.jpg"
-            result = subprocess.run([_binary("ffmpeg"), "-y", "-ss", "1", "-i", str(target), "-frames:v", "1", "-q:v", "2", str(thumb)], capture_output=True, timeout=90)
-            if result.returncode != 0: raise RuntimeError(f"{name} 缩略图生成失败")
+        cover_sources = check["cover_sources"]
+        _render_cover(Path(cover_sources["vertical"]["path"]), series_dir / f"{slug}_cover.jpg", (1440, 1920))
+        _render_cover(Path(cover_sources["square"]["path"]), series_dir / f"{slug}_cover_square.jpg", (1200, 1200))
+        if cover_sources["horizontal"]["path"]:
+            _render_cover(Path(cover_sources["horizontal"]["path"]), series_dir / f"{slug}_background.jpg", (1920, 1080))
 
-    cover_sources = check["cover_sources"]
-    _render_cover(Path(cover_sources["vertical"]["path"]), series_dir / f"{slug}_cover.jpg", (1440, 1920))
-    _render_cover(Path(cover_sources["square"]["path"]), series_dir / f"{slug}_cover_square.jpg", (1200, 1200))
-    if cover_sources["horizontal"]["path"]:
-        _render_cover(Path(cover_sources["horizontal"]["path"]), series_dir / f"{slug}_background.jpg", (1920, 1080))
+        series_headers = ["Title", "Description", "Total Number of Episodes", "Locale", "Genre", "Release Date", "Cast List & IG Handles", "Tags", "Geogating", "AI Content", "Dubbed Content"]
+        with (series_dir / f"{slug}_series.csv").open("w", newline="", encoding="utf-8-sig") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(series_headers)
+            writer.writerow([drama.title, description, total, payload.locale, ",".join(genres), payload.release_date, ",".join(payload.cast_list), ",".join(payload.tags), ",".join(payload.geogating), "yes" if drama.is_ai_generated else "no", "yes" if drama.is_dubbed_content else "no"])
+        if payload.include_episode_csv:
+            with (series_dir / f"{slug}_episodes.csv").open("w", newline="", encoding="utf-8-sig") as stream:
+                writer = csv.writer(stream); writer.writerow(["Episode", "Description", "Tags"])
+                for index in range(1, total + 1): writer.writerow([index, f"{drama.title} Episode {index}", ",".join(payload.tags)])
 
-    series_headers = ["Title", "Description", "Total Number of Episodes", "Locale", "Genre", "Release Date", "Cast List & IG Handles", "Tags", "Geogating", "AI Content", "Dubbed Content"]
-    with (series_dir / f"{slug}_series.csv").open("w", newline="", encoding="utf-8-sig") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(series_headers)
-        writer.writerow([drama.title, description, total, payload.locale, ",".join(genres), payload.release_date, ",".join(payload.cast_list), ",".join(payload.tags), ",".join(payload.geogating), "yes" if drama.is_ai_generated else "no", "yes" if drama.is_dubbed_content else "no"])
-    if payload.include_episode_csv:
-        with (series_dir / f"{slug}_episodes.csv").open("w", newline="", encoding="utf-8-sig") as stream:
-            writer = csv.writer(stream); writer.writerow(["Episode", "Description", "Tags"])
-            for index in range(1, total + 1): writer.writerow([index, f"{drama.title} Episode {index}", ",".join(payload.tags)])
-
-    manifest = {
-        "spec": "Meta Shortform Series MVP Partner Onboarding Instructions v260626",
-        "status": "passed", "series_slug": slug, "episode_count": total,
-        "validated_at": datetime.now().isoformat(), "checks": output_checks,
-        "next_steps": ["上传整个包根目录到 Google Drive", "至少以 Viewer 权限共享给 Meta SFS 服务账号", "登录已获准的 Instagram 账号", "打开 https://www.instagram.com/sfs_tools 并提交 Google Drive 文件夹链接"],
-    }
-    (package_root / "validation-report.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    (package_root / "README-投递步骤.txt").write_text(
-        "Meta SFS 官方投递包\n\n1. 不要修改系列文件夹内的文件名。\n2. 将整个包根目录上传到 Google Drive。\n3. 共享给 sfs-viewer-drive-reader@sfs-content-viewer.iam.gserviceaccount.com（Viewer 或更高）。\n4. 登录已获准的 Instagram 账号。\n5. 打开 https://www.instagram.com/sfs_tools，粘贴 Google Drive 文件夹链接并主动提交。\n",
-        encoding="utf-8",
-    )
-    return package_root, manifest
+        manifest = {
+            "spec": "Meta Shortform Series MVP Partner Onboarding Instructions v260626",
+            "status": "passed", "series_slug": slug, "episode_count": total,
+            "validated_at": datetime.now().isoformat(), "checks": output_checks,
+            "next_steps": ["上传整个包根目录到 Google Drive", "至少以 Viewer 权限共享给 Meta SFS 服务账号", "登录已获准的 Instagram 账号", "打开 https://www.instagram.com/sfs_tools 并提交 Google Drive 文件夹链接"],
+        }
+        (staging_root / "validation-report.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        (staging_root / "README-投递步骤.txt").write_text(
+            "Meta SFS 官方投递包\n\n1. 不要修改系列文件夹内的文件名。\n2. 将整个包根目录上传到 Google Drive。\n3. 共享给 sfs-viewer-drive-reader@sfs-content-viewer.iam.gserviceaccount.com（Viewer 或更高）。\n4. 登录已获准的 Instagram 账号。\n5. 打开 https://www.instagram.com/sfs_tools，粘贴 Google Drive 文件夹链接并主动提交。\n",
+            encoding="utf-8",
+        )
+        os.replace(staging_root, package_root)
+        return package_root, manifest
+    except Exception:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise

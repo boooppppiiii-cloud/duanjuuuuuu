@@ -1,11 +1,11 @@
-import type { Drama,FactoryAnalysis,FactoryJob,FactoryOutputMode,GeneratedAsset } from './api'
+import type { Drama,FactoryAnalysis,FactoryJob,FactoryOutputMode,GeneratedAsset,MetaFactorySource,MetaPackage,MetaPackageFiles,MetaPreflight,MetaSFSInput } from './api'
 
 export const LOCAL_WORKSPACE_ORIGIN='http://127.0.0.1:17862'
 
 export type LocalWorkspaceFile={name:string;relative_path:string;size_bytes:number}
 export type LocalWorkspace={
   drama_id:number;title:string;folder_name:string;absolute_path:string;file_count:number;total_bytes:number
-  files:LocalWorkspaceFile[];ffmpeg_ready:boolean;updated_at:string
+  files:LocalWorkspaceFile[];covers:Record<'vertical'|'square'|'horizontal',string>;ffmpeg_ready:boolean;updated_at:string
 }
 export type LocalModelUsage={client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind:'model_call';provider:string;model:string;input_tokens:number;output_tokens:number;total_tokens:number;api_calls:number;details:Record<string,unknown>}
 
@@ -49,5 +49,16 @@ export const localWorkspace={
   videoUrl:(dramaId:number,episode:string)=>`${LOCAL_WORKSPACE_ORIGIN}/api/factory/${dramaId}/analysis/video/${encodeURIComponent(episode)}`,
   frameUrl:(dramaId:number,filename:string)=>`${LOCAL_WORKSPACE_ORIGIN}/api/factory/${dramaId}/analysis/frames/${encodeURIComponent(filename)}`,
   assetUrl:(assetId:number)=>`${LOCAL_WORKSPACE_ORIGIN}/api/factory/assets/${assetId}/download`,
+  metaFactorySource:(dramaId:number)=>localRequest<MetaFactorySource>(`/api/meta-sfs/source/${dramaId}`),
+  selectMetaOutputDirectory:()=>localRequest<{token:string;name:string}>('/api/meta-sfs/select-local-directory',{method:'POST',timeoutMs:310_000}),
+  metaPreflight:(body:MetaSFSInput)=>localRequest<MetaPreflight>('/api/meta-sfs/preflight?quick=true',{method:'POST',timeoutMs:30_000,body:JSON.stringify(body)}),
+  buildMetaPackage:(body:MetaSFSInput)=>localRequest<MetaPackage>('/api/meta-sfs/build',{method:'POST',timeoutMs:120_000,body:JSON.stringify(body)}),
+  metaPackages:()=>localRequest<MetaPackage[]>('/api/meta-sfs/packages'),
+  metaPackage:(id:number)=>localRequest<MetaPackage>(`/api/meta-sfs/packages/${id}`),
+  metaPackageFiles:(id:number)=>localRequest<MetaPackageFiles>(`/api/meta-sfs/packages/${id}/files`),
+  metaPackageFileUrl:(id:number,path:string)=>`${LOCAL_WORKSPACE_ORIGIN}/api/meta-sfs/packages/${id}/files/${path.split('/').map(encodeURIComponent).join('/')}`,
+  metaPackageArchiveUrl:(id:number)=>`${LOCAL_WORKSPACE_ORIGIN}/api/meta-sfs/packages/${id}/archive`,
+  openMetaPackageFolder:(id:number)=>localRequest<{opened:boolean;path:string}>(`/api/meta-sfs/packages/${id}/open-folder`,{method:'POST'}),
+  copyMetaPackageLocal:(id:number,token:string)=>localRequest<{path:string;folder_name:string}>(`/api/meta-sfs/packages/${id}/copy-local?token=${encodeURIComponent(token)}`,{method:'POST'}),
   modelUsage:()=>localRequest<LocalModelUsage[]>('/api/local/usage/model-events'),
 }
