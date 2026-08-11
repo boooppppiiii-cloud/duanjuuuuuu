@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import Drama, FactoryJob, HookAsset
 from app.schemas import FactoryProcessRequest
-from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, hook_clip_range, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
+from app.services.factory_processing import TimelinePart, balanced_lengths, build_hook_groups, build_meta_episode_plan, hook_clip_range, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
 
 
 def test_natural_order_and_balanced_four_minutes():
@@ -17,6 +17,21 @@ def test_natural_order_and_balanced_four_minutes():
     assert len(lengths) == 2
     assert lengths == [120, 120]
     assert max(lengths) <= 180
+
+
+def test_meta_split_uses_global_episode_numbers_after_a_source_is_split(tmp_path: Path):
+    sources = [(tmp_path / f"Episode{index}.mp4", duration) for index, duration in enumerate([120, 150, 240, 90], start=1)]
+    plan = build_meta_episode_plan(sources, 180)
+
+    assert len(plan) == 5
+    assert [(part.source_episode, part.source_part, part.sequence) for part in plan] == [
+        (1, 1, 1),
+        (2, 1, 2),
+        (3, 1, 3),
+        (3, 2, 4),
+        (4, 1, 5),
+    ]
+    assert [(part.start, part.end) for part in plan[2:4]] == [(0, 120), (120, 240)]
 
 
 def test_hook_clip_range_is_between_fifteen_and_thirty_seconds():

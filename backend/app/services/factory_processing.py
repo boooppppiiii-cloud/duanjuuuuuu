@@ -32,6 +32,17 @@ class TimelinePart:
         return max(0.0, self.end - self.start)
 
 
+@dataclass(frozen=True)
+class MetaEpisodePart:
+    source: Path
+    source_episode: int
+    source_part: int
+    source_part_count: int
+    sequence: int
+    start: float
+    end: float
+
+
 PROFILES = {
     "balanced": {"crf": "23", "preset": "veryfast", "audio": "128k"},
     "small": {"crf": "28", "preset": "fast", "audio": "96k"},
@@ -98,6 +109,28 @@ def balanced_lengths(total: float, maximum: float) -> list[float]:
     values = [each] * count
     values[-1] = total - sum(values[:-1])
     return values
+
+
+def build_meta_episode_plan(source_info: list[tuple[Path, float]], maximum: float) -> list[MetaEpisodePart]:
+    """Build one globally numbered Meta episode sequence across all source episodes."""
+    result: list[MetaEpisodePart] = []
+    sequence = 0
+    for episode_index, (source, duration) in enumerate(source_info, start=1):
+        lengths = balanced_lengths(duration, maximum)
+        offset = 0.0
+        for part_index, length in enumerate(lengths, start=1):
+            sequence += 1
+            result.append(MetaEpisodePart(
+                source=source,
+                source_episode=episode_index,
+                source_part=part_index,
+                source_part_count=len(lengths),
+                sequence=sequence,
+                start=offset,
+                end=offset + length,
+            ))
+            offset += length
+    return result
 
 
 def build_hook_groups(hooks: list[HookAsset], variant_count: int, hooks_per_variant: int) -> list[list[HookAsset]]:
@@ -500,34 +533,36 @@ class FactoryPipeline:
                 if "meta_split" in modes:
                     meta_dir.mkdir(parents=True, exist_ok=True)
                     meta_files: list[Path] = []
-                    sequence = 0
-                    total_sources = len(source_info)
-                    for episode_index, (source, duration) in enumerate(source_info, start=1):
-                        lengths = balanced_lengths(duration, float(job.max_duration_seconds))
-                        offset = 0.0
-                        for part_index, length in enumerate(lengths, start=1):
-                            sequence += 1
-                            self._save(session, job, f"生成 Meta 单集 {episode_index}/{total_sources} · 分段 {part_index}/{len(lengths)}", 72 + round(episode_index / total_sources * 23))
-                            suffix = source.suffix.casefold() if len(lengths) == 1 else ".mp4"
-                            filename = f"J{job.id:04d}_E{episode_index:03d}_P{part_index:02d}{suffix}"
-                            target = meta_dir / filename
-                            if len(lengths) == 1:
-                                shutil.copy2(source, target)
-                                actual = duration
-                            else:
-                                actual = render_timeline_slice(
-                                    [TimelinePart(source, source.name, offset, offset + length)], target,
-                                    work / f"meta_{episode_index:03d}_{part_index:02d}", job.compression_profile,
-                                )
-                            offset += length
-                            meta_files.append(target)
-                            session.add(GeneratedAsset(
-                                factory_job_id=job.id, drama_id=drama.id, kind="meta_episode", sequence=sequence,
-                                file_path=str(target.resolve()), filename=filename, duration=actual, size_bytes=target.stat().st_size,
-                                owner_user_id=job.owner_user_id,
-                            ))
+                    plan = build_meta_episode_plan(source_info, float(job.max_duration_seconds))
+                    for part in plan:
+                        self._save(
+                            session,
+                            job,
+                            f"生成 Meta 单集 {part.sequence}/{len(plan)} · 原片第 {part.source_episode} 集",
+                            72 + round(part.sequence / max(1, len(plan)) * 23),
+                        )
+                        suffix = part.source.suffix.casefold() if part.source_part_count == 1 else ".mp4"
+                        filename = f"J{job.id:04d}_E{part.sequence:03d}{suffix}"
+                        target = meta_dir / filename
+                        if part.source_part_count == 1:
+                            shutil.copy2(part.source, target)
+                            actual = part.end - part.start
+                        else:
+                            actual = render_timeline_slice(
+                                [TimelinePart(part.source, part.source.name, part.start, part.end)], target,
+                                work / f"meta_{part.sequence:03d}", job.compression_profile,
+                            )
+                        meta_files.append(target)
+                        session.add(GeneratedAsset(
+                            factory_job_id=job.id, drama_id=drama.id, kind="meta_episode", sequence=part.sequence,
+                            file_path=str(target.resolve()), filename=filename, duration=actual, size_bytes=target.stat().st_size,
+                            owner_user_id=job.owner_user_id,
+                        ))
                     session.commit()
                     job.meta_count = len(meta_files)
+                    drama.total_episode_count = max(1, len(meta_files))
+                    drama.promotion_episode_count = min(drama.promotion_episode_count, drama.total_episode_count)
+                    session.add(drama)
                     if not modes & {"clean_full", "hook_variants"}:
                         job.total_duration = sum(duration for _, duration in source_info)
                         job.removed_seconds = 0

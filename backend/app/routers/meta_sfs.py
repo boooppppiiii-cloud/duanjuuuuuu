@@ -21,7 +21,6 @@ from ..schemas import MetaSFSRequest
 from ..services.meta_sfs import build_package, preflight
 from ..services.drive_delivery import upload_meta_package
 from ..services.auth import get_current_user
-from ..services.drama_library import episode_files
 
 router = APIRouter(prefix="/api/meta-sfs", tags=["Meta SFS 官方投递"])
 _local_destinations: dict[str, tuple[Path, float]] = {}
@@ -54,7 +53,21 @@ def _delivery_for_user(session: Session, drama: Drama, user: AppUser) -> tuple[l
         paths = [Path(item.file_path).resolve() for item in assets]
         if paths and all(path.is_file() for path in paths):
             return paths, "factory_meta_split"
-    return episode_files(Path(drama.file_dir)), "source_episodes"
+    return [], "factory_meta_split"
+
+
+@router.get("/source/{drama_id}")
+def factory_delivery_source(drama_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    drama = session.get(Drama, drama_id)
+    if not drama:
+        raise HTTPException(404, "剧目不存在")
+    paths, _ = _delivery_for_user(session, drama, user)
+    return {
+        "ready": bool(paths),
+        "episode_count": len(paths),
+        "source_episode_count": drama.episode_count,
+        "files": [path.name for path in paths],
+    }
 
 
 def _package_file(root: Path, relative_path: str) -> Path:

@@ -121,7 +121,10 @@ def preflight(drama: Drama, payload: MetaSFSRequest, delivery: tuple[list[Path],
     if not SLUG_RE.fullmatch(slug):
         blockers.append("系列英文标识必须是 kebab-case，只能包含小写字母、数字和短横线")
     if not sources:
-        blockers.append("剧目目录中没有可投递的视频")
+        if source_mode == "factory_meta_split":
+            blockers.append("尚无可投递成品，请先在内容工厂选择“Meta 逐集切分”并完成生成")
+        else:
+            blockers.append("剧目目录中没有可投递的视频")
     elif source_mode != "factory_meta_split" and len(sources) != expected_total:
         blockers.append(f"剧目任务登记为 {expected_total} 集，但当前选择了 {len(sources)} 个视频；Meta 要求视频数量、文件名总集数与系列 CSV 完全一致")
     elif source_mode == "factory_meta_split":

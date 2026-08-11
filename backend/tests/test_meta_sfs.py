@@ -99,6 +99,16 @@ def test_preflight_prefers_factory_meta_split_outputs(monkeypatch, tmp_path: Pat
     assert result["assets"][1]["target"] == "midnight-contract_ep002_002.mp4"
 
 
+def test_preflight_requires_factory_outputs_when_delivery_route_has_none(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video())
+
+    result = meta_sfs.preflight(make_drama(tmp_path), request(), ([], "factory_meta_split"))
+
+    assert result["ready"] is False
+    assert result["episode_count"] == 0
+    assert any("内容工厂" in item and "Meta 逐集切分" in item for item in result["blockers"])
+
+
 def test_preflight_rejects_invalid_genre_and_date(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video())
     result = meta_sfs.preflight(make_drama(tmp_path), request(genres=["Urban Fantasy"], release_date="2026-06-26"))
