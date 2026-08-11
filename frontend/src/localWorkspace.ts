@@ -40,10 +40,15 @@ async function localRequest<T>(path:string,options:LocalRequestOptions={}):Promi
   }finally{window.clearTimeout(timeout)}
 }
 
+export type LocalHealth={status:string;ffmpeg_ready:boolean;workspace_root:string;version?:string;capabilities?:string[]}
+
 export const localWorkspace={
-  health:()=>localRequest<{status:string;ffmpeg_ready:boolean;workspace_root:string}>('/api/local/health',{timeoutMs:1800}),
-  requestAccess:()=>localRequest<{status:string;ffmpeg_ready:boolean;workspace_root:string}>('/api/local/health',{timeoutMs:15_000}),
+  health:()=>localRequest<LocalHealth>('/api/local/health',{timeoutMs:1800}),
+  requestAccess:()=>localRequest<LocalHealth>('/api/local/health',{timeoutMs:15_000}),
   get:(dramaId:number)=>localRequest<LocalWorkspace>(`/api/local/workspaces/${dramaId}`,{timeoutMs:2500}),
+  syncCover:(dramaId:number,kind:'vertical'|'square'|'horizontal',file:Blob)=>localRequest<LocalWorkspace>(`/api/local/workspaces/${dramaId}/covers/${kind}`,{
+    method:'PUT',timeoutMs:60_000,headers:{'Content-Type':file.type||'application/octet-stream'},body:file,
+  }),
   select:(drama:Drama)=>localRequest<LocalWorkspace>('/api/local/workspaces/select',{
     method:'POST',timeoutMs:310_000,body:JSON.stringify({
       drama_id:drama.id,title:drama.title,theater:drama.theater,description:drama.description,

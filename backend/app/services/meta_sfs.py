@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from PIL import Image, ImageOps
@@ -26,6 +27,12 @@ ALLOWED_GENRES = {
     "Thriller", "Western",
 }
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+ProgressCallback = Callable[[int, str], None]
+
+
+def _notify_progress(callback: ProgressCallback | None, progress: int, step: str) -> None:
+    if callback:
+        callback(max(0, min(100, int(progress))), step)
 
 
 def suggest_slug(title: str, drama_id: int) -> str:
@@ -116,6 +123,7 @@ def preflight(
     payload: MetaSFSRequest,
     delivery: tuple[list[Path], str] | None = None,
     inspect_media: bool = True,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict:
     drama_dir = Path(drama.file_dir)
     sources, source_mode = delivery or delivery_sources(drama_dir)
@@ -127,6 +135,8 @@ def preflight(
     fixable: list[str] = []
     if not SLUG_RE.fullmatch(slug):
         blockers.append("系列英文标识必须是 kebab-case，只能包含小写字母、数字和短横线")
+    if expected_total > 999:
+        blockers.append("Meta 文件名只支持三位总集数，单部剧最多 999 集")
     if not sources:
         if source_mode == "factory_meta_split":
             blockers.append("尚无可投递成品，请先在内容工厂选择“Meta 逐集切分”并完成生成")
@@ -147,6 +157,11 @@ def preflight(
 
     assets = []
     for index, source in enumerate(sources, 1):
+        _notify_progress(
+            progress_callback,
+            4 + round(index / max(len(sources), 1) * 21),
+            f"校验媒体规格 {index}/{len(sources)} · {source.name}",
+        )
         target = f"{slug}_ep{index:03}_{expected_total:03}.mp4"
         if not inspect_media:
             if not source.is_file():
@@ -168,8 +183,9 @@ def preflight(
             if info["size"] > 2 * 1024**3:
                 issues.append("文件超过 2GB")
                 blockers.append(f"第 {index} 集文件超过 2GB")
-            if not _video_dimensions_ready(info): issues.append("将自动转为竖版高清尺寸")
+            if not _video_dimensions_ready(info): issues.append("将自动转为 1080x1920 竖版")
             if info["video_codec"] != "h264": issues.append("将自动转为 H.264")
+            if not _video_bitrate_ready(info): issues.append("将自动提升到至少 2.5Mbps 视频码率")
             if info["audio_codec"] != "aac" or info["audio_channels"] != 2: issues.append("将自动转为 AAC 双声道")
             if issues and not any("时长" in item or "2GB" in item for item in issues):
                 fixable.append(f"第 {index} 集：" + "、".join(issues))
@@ -214,7 +230,7 @@ def preflight(
         "blockers": list(dict.fromkeys(blockers)),
         "automatic_fixes": list(dict.fromkeys(fixable)),
         "requirements": {
-            "video": "MP4/H.264 · 9:16 · 至少720x1280 · 60秒-3分钟 · AAC双声道 · 单文件≤2GB",
+            "video": "MP4/H.264 · 9:16 · 1080x1920 · 视频码率≥2.5Mbps · 60秒-3分钟 · AAC双声道 · 单文件≤2GB",
             "cover": "3:4，至少 1440x1920",
             "square_cover": "1:1，至少 1200x1200",
             "background": "可选；16:9，至少 1920x1080",
@@ -232,13 +248,18 @@ def _render_cover(source: Path, target: Path, size: tuple[int, int]) -> None:
 def _video_dimensions_ready(info: dict) -> bool:
     width = int(info.get("width") or 0)
     height = int(info.get("height") or 0)
-    return width >= 720 and height >= 1280 and abs(width / height - 9 / 16) <= 0.01
+    return width == 1080 and height == 1920
+
+
+def _video_bitrate_ready(info: dict) -> bool:
+    return int(info.get("video_bitrate") or 0) >= 2_500_000
 
 
 def _video_stream_copy_ready(info: dict) -> bool:
     return (
         info.get("video_codec") == "h264"
         and _video_dimensions_ready(info)
+        and _video_bitrate_ready(info)
     )
 
 
@@ -274,16 +295,25 @@ def _normalize_video(source: Path, target: Path, info: dict) -> None:
 def _verify_output(path: Path) -> list[str]:
     info = inspect_video(path)
     errors = []
+    if "mp4" not in info["format"]: errors.append("视频容器不是 MP4")
     if info["video_codec"] != "h264": errors.append("视频编码不是 H.264")
-    if not _video_dimensions_ready(info): errors.append("分辨率低于竖版 720x1280")
+    if not _video_dimensions_ready(info): errors.append("视频分辨率不是 1080x1920")
+    if not _video_bitrate_ready(info): errors.append("视频码率低于 2.5Mbps")
     if not 59.5 <= info["duration"] <= 180.5: errors.append("时长不在 60 秒到 3 分钟之间")
     if info["audio_codec"] != "aac" or info["audio_channels"] != 2: errors.append("音频不是 AAC 双声道")
     if info["size"] > 2 * 1024**3: errors.append("文件超过 2GB")
     return errors
 
 
-def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | None = None, delivery: tuple[list[Path], str] | None = None) -> tuple[Path, dict]:
-    check = preflight(drama, payload, delivery)
+def build_package(
+    drama: Drama,
+    payload: MetaSFSRequest,
+    output_parent: Path | None = None,
+    delivery: tuple[list[Path], str] | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> tuple[Path, dict]:
+    _notify_progress(progress_callback, 2, "读取剧目信息与本机素材")
+    check = preflight(drama, payload, delivery, progress_callback=progress_callback)
     if check["blockers"]:
         raise ValueError("；".join(check["blockers"]))
     settings = get_settings()
@@ -294,6 +324,7 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
     staging_root = package_parent / f".{package_root.name}.building-{uuid4().hex[:8]}"
     series_dir = staging_root / slug
     try:
+        _notify_progress(progress_callback, 27, "创建本机 Meta 标准目录")
         series_dir.mkdir(parents=True, exist_ok=False)
         sources, source_mode = delivery or delivery_sources(Path(drama.file_dir))
         total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
@@ -303,12 +334,22 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
         for index, source in enumerate(sources, 1):
             name = f"{slug}_ep{index:03}_{total:03}.mp4"
             target = series_dir / name
+            _notify_progress(
+                progress_callback,
+                28 + round((index - 1) / max(total, 1) * 55),
+                f"处理第 {index}/{total} 集 · {name}",
+            )
             info = inspect_video(source)
             _normalize_video(source, target, info)
             errors = _verify_output(target)
             if errors:
                 raise RuntimeError(f"{name} 转码后仍不合规：{'；'.join(errors)}")
             output_checks.append({"file": name, "status": "passed", "info": inspect_video(target)})
+            _notify_progress(
+                progress_callback,
+                28 + round(index / max(total, 1) * 55),
+                f"第 {index}/{total} 集已通过规范复核",
+            )
             for subtitle_ext in (".srt", ".vtt"):
                 subtitle = source.with_suffix(subtitle_ext)
                 if subtitle.exists():
@@ -319,12 +360,14 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
                 result = subprocess.run([_binary("ffmpeg"), "-y", "-ss", "1", "-i", str(target), "-frames:v", "1", "-q:v", "2", str(thumb)], capture_output=True, timeout=90)
                 if result.returncode != 0: raise RuntimeError(f"{name} 缩略图生成失败")
 
+        _notify_progress(progress_callback, 86, "生成并校验 Meta 封面")
         cover_sources = check["cover_sources"]
         _render_cover(Path(cover_sources["vertical"]["path"]), series_dir / f"{slug}_cover.jpg", (1440, 1920))
         _render_cover(Path(cover_sources["square"]["path"]), series_dir / f"{slug}_cover_square.jpg", (1200, 1200))
         if cover_sources["horizontal"]["path"]:
             _render_cover(Path(cover_sources["horizontal"]["path"]), series_dir / f"{slug}_background.jpg", (1920, 1080))
 
+        _notify_progress(progress_callback, 91, "写入系列 CSV 元数据")
         series_headers = ["Title", "Description", "Total Number of Episodes", "Locale", "Genre", "Release Date", "Cast List & IG Handles", "Tags", "Geogating", "AI Content", "Dubbed Content"]
         with (series_dir / f"{slug}_series.csv").open("w", newline="", encoding="utf-8-sig") as stream:
             writer = csv.writer(stream)
@@ -335,18 +378,27 @@ def build_package(drama: Drama, payload: MetaSFSRequest, output_parent: Path | N
                 writer = csv.writer(stream); writer.writerow(["Episode", "Description", "Tags"])
                 for index in range(1, total + 1): writer.writerow([index, f"{drama.title} Episode {index}", ",".join(payload.tags)])
 
+        _notify_progress(progress_callback, 96, "执行文件名、集数与目录结构终检")
+        expected_video_names = {f"{slug}_ep{index:03}_{total:03}.mp4" for index in range(1, total + 1)}
+        actual_video_names = {path.name for path in series_dir.glob("*.mp4")}
+        if actual_video_names != expected_video_names:
+            raise RuntimeError("Meta 文件名终检失败：视频集数或三位编号不一致")
+        expected_required = {
+            f"{slug}_series.csv",
+            f"{slug}_cover.jpg",
+            f"{slug}_cover_square.jpg",
+        }
+        if not expected_required.issubset({path.name for path in series_dir.iterdir() if path.is_file()}):
+            raise RuntimeError("Meta 目录终检失败：缺少系列 CSV 或必填封面")
+
         manifest = {
             "spec": "Meta Shortform Series MVP Partner Onboarding Instructions v260626",
             "status": "passed", "series_slug": slug, "episode_count": total,
             "validated_at": datetime.now().isoformat(), "checks": output_checks,
             "next_steps": ["上传整个包根目录到 Google Drive", "至少以 Viewer 权限共享给 Meta SFS 服务账号", "登录已获准的 Instagram 账号", "打开 https://www.instagram.com/sfs_tools 并提交 Google Drive 文件夹链接"],
         }
-        (staging_root / "validation-report.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        (staging_root / "README-投递步骤.txt").write_text(
-            "Meta SFS 官方投递包\n\n1. 不要修改系列文件夹内的文件名。\n2. 将整个包根目录上传到 Google Drive。\n3. 共享给 sfs-viewer-drive-reader@sfs-content-viewer.iam.gserviceaccount.com（Viewer 或更高）。\n4. 登录已获准的 Instagram 账号。\n5. 打开 https://www.instagram.com/sfs_tools，粘贴 Google Drive 文件夹链接并主动提交。\n",
-            encoding="utf-8",
-        )
         os.replace(staging_root, package_root)
+        _notify_progress(progress_callback, 99, "Meta 合规文件夹已写入本机")
         return package_root, manifest
     except Exception:
         shutil.rmtree(staging_root, ignore_errors=True)

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from app import database
@@ -50,9 +51,13 @@ def test_pipeline_completes_persisted_package_job(monkeypatch, tmp_path: Path):
     with Session(engine) as session:
         item = _queued_package(session, tmp_path); package_id = item.id
 
-    def fake_build(_drama, _payload, *, output_parent, delivery):
+    observed_progress = []
+
+    def fake_build(_drama, _payload, *, output_parent, delivery, progress_callback):
         assert delivery[1] == "factory_meta_split"
         assert delivery[0][0].name == "source.mp4"
+        progress_callback(52, "正在处理第 1 集")
+        observed_progress.append(52)
         output = output_parent / "meta-job-ready"; output.mkdir(parents=True)
         return output, {"status": "passed", "series_slug": "meta-job"}
 
@@ -64,6 +69,8 @@ def test_pipeline_completes_persisted_package_job(monkeypatch, tmp_path: Path):
         assert completed.status == "ready"
         assert Path(completed.output_dir).is_dir()
         assert completed.validation_json["status"] == "passed"
+        assert completed.validation_json["progress"] == 100
+        assert observed_progress == [52]
 
 
 def test_pipeline_keeps_failed_job_visible_with_error(monkeypatch, tmp_path: Path):
@@ -90,6 +97,8 @@ def test_build_endpoint_registers_job_before_background_generation(monkeypatch, 
     monkeypatch.setattr(meta_router, "_delivery_for_user", lambda *_: ([source], "factory_meta_split"))
     monkeypatch.setattr(meta_router, "preflight", lambda *_: {"series_slug": "queued-show", "blockers": []})
     monkeypatch.setattr(meta_router.meta_package_pipeline, "start", lambda: None)
+    monkeypatch.setenv("JUSHU_LOCAL_WORKSPACE", "1")
+    monkeypatch.setattr(meta_router, "_take_local_destination", lambda _: tmp_path / "selected")
 
     with Session(engine) as session:
         user = AppUser(email="queued@example.com", password_hash="test")
@@ -99,6 +108,7 @@ def test_build_endpoint_registers_job_before_background_generation(monkeypatch, 
             drama_id=drama.id,
             description="Synopsis",
             release_date="08/11/2026",
+            local_destination_token="test-destination",
         )
 
         item = meta_router.create_package(payload, session, user)
@@ -108,3 +118,19 @@ def test_build_endpoint_registers_job_before_background_generation(monkeypatch, 
         assert item.output_dir == ""
         assert listed[0].id == item.id
         assert listed[0].status == "queued"
+
+
+def test_server_build_endpoint_rejects_package_storage(monkeypatch, tmp_path: Path):
+    engine = _engine(tmp_path); SQLModel.metadata.create_all(engine)
+    monkeypatch.delenv("JUSHU_LOCAL_WORKSPACE", raising=False)
+    with Session(engine) as session:
+        user = AppUser(email="server@example.com", password_hash="test")
+        drama = Drama(title="Server show", file_dir=str(tmp_path / "drama"))
+        session.add(user); session.add(drama); session.commit(); session.refresh(user); session.refresh(drama)
+        payload = MetaSFSRequest(drama_id=drama.id, description="Synopsis", release_date="08/11/2026")
+
+        with pytest.raises(Exception) as raised:
+            meta_router.create_package(payload, session, user)
+
+        assert getattr(raised.value, "status_code", None) == 422
+        assert "服务器不会保存" in getattr(raised.value, "detail", "")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -45,6 +46,11 @@ class MetaPackagePipeline:
                 package_id = int(item.id)
                 item.status = "building"
                 item.last_error = ""
+                item.validation_json = {
+                    **dict(item.validation_json or {}),
+                    "progress": 1,
+                    "current_step": "本机任务已启动",
+                }
                 session.add(item)
                 session.commit()
                 session.refresh(item)
@@ -60,11 +66,26 @@ class MetaPackagePipeline:
                 source_paths = [Path(value).resolve() for value in build_state.get("source_paths") or []]
                 output_parent_value = str(build_state.get("output_parent") or "").strip()
                 output_parent = Path(output_parent_value).resolve() if output_parent_value else None
+
+                def update_progress(progress: int, current_step: str) -> None:
+                    with Session(database.engine) as progress_session:
+                        current = progress_session.get(MetaDeliveryPackage, package_id)
+                        if not current:
+                            return
+                        current.validation_json = {
+                            **dict(current.validation_json or {}),
+                            "progress": progress,
+                            "current_step": current_step,
+                        }
+                        progress_session.add(current)
+                        progress_session.commit()
+
                 output_dir, report = build_package(
                     drama,
                     payload,
                     output_parent=output_parent,
                     delivery=(source_paths, "factory_meta_split"),
+                    progress_callback=update_progress,
                 )
             except Exception as exc:
                 with Session(database.engine) as session:
@@ -72,6 +93,10 @@ class MetaPackagePipeline:
                     if failed:
                         failed.status = "failed"
                         failed.last_error = str(exc)[-2000:]
+                        failed.validation_json = {
+                            **dict(failed.validation_json or {}),
+                            "current_step": "生成失败",
+                        }
                         session.add(failed)
                         session.commit()
                 continue
@@ -80,7 +105,11 @@ class MetaPackagePipeline:
                 completed = session.get(MetaDeliveryPackage, package_id)
                 if completed:
                     completed.output_dir = str(output_dir.resolve())
-                    completed.validation_json = report
+                    completed.validation_json = {
+                        **report,
+                        "progress": 100,
+                        "current_step": "已完成并通过 Meta 规范终检",
+                    }
                     completed.status = "ready"
                     completed.last_error = ""
                     session.add(completed)
@@ -91,6 +120,8 @@ meta_package_pipeline = MetaPackagePipeline()
 
 
 def resume_meta_packages() -> None:
+    if os.getenv("JUSHU_LOCAL_WORKSPACE") != "1":
+        return
     with Session(database.engine) as session:
         interrupted = session.exec(
             select(MetaDeliveryPackage).where(MetaDeliveryPackage.status == "building")

@@ -156,6 +156,8 @@ def check_package(payload: MetaSFSRequest, quick: bool = False, session: Session
 
 @router.post("/build", response_model=MetaDeliveryPackage, status_code=202)
 def create_package(payload: MetaSFSRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    if os.getenv("JUSHU_LOCAL_WORKSPACE") != "1":
+        raise HTTPException(422, "Meta 官方投递只允许由用户电脑上的剧枢本地助手生成，服务器不会保存投递成品")
     drama = session.get(Drama, payload.drama_id)
     if not drama:
         raise HTTPException(404, "剧目不存在")
@@ -173,6 +175,8 @@ def create_package(payload: MetaSFSRequest, session: Session = Depends(get_sessi
     if report["blockers"]:
         raise HTTPException(422, "；".join(report["blockers"]))
     output_parent = _take_local_destination(payload.local_destination_token)
+    if output_parent is None:
+        raise HTTPException(422, "请先选择本机保存位置；Meta 投递成品不会保存到服务器或本地助手缓存目录")
     request_data = payload.model_dump()
     request_data["series_slug"] = report["series_slug"]
     request_data["local_destination_token"] = ""
@@ -185,6 +189,8 @@ def create_package(payload: MetaSFSRequest, session: Session = Depends(get_sessi
             "request": request_data,
             "source_paths": [str(path) for path in delivery[0]],
             "output_parent": str(output_parent) if output_parent else "",
+            "progress": 0,
+            "current_step": "等待本机生成",
         },
         owner_user_id=user.id,
     )

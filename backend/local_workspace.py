@@ -8,6 +8,7 @@ and analysis synchronization requests made by the browser.
 from __future__ import annotations
 
 import os
+from io import BytesIO
 from pathlib import Path
 import shutil
 import subprocess
@@ -49,6 +50,12 @@ from .app.services.script_analysis import write_analysis
 
 LOCAL_USER_EMAIL = "local-workspace@jushu.invalid"
 MACHINE_ID_FILE = APP_DIR / "machine-id"
+LOCAL_COVER_ROOT = APP_DIR / "covers"
+LOCAL_COVER_SPECS = {
+    "vertical": ("cover_vertical_path", 3 / 4, 1440, 1920, "竖版封面必须为 3:4，且至少 1440x1920"),
+    "square": ("cover_square_path", 1.0, 1200, 1200, "方形封面必须为 1:1，且至少 1200x1200"),
+    "horizontal": ("cover_horizontal_path", 16 / 9, 1920, 1080, "横版封面必须为 16:9，且至少 1920x1080"),
+}
 
 
 def _machine_id() -> str:
@@ -176,9 +183,14 @@ def _discover_covers(folder: Path) -> dict[str, Path]:
 
 def _sync_local_covers(drama: Drama, folder: Path) -> None:
     covers = _discover_covers(folder)
-    drama.cover_vertical_path = str(covers.get("vertical", ""))
-    drama.cover_square_path = str(covers.get("square", ""))
-    drama.cover_horizontal_path = str(covers.get("horizontal", ""))
+    for kind, field in (
+        ("vertical", "cover_vertical_path"),
+        ("square", "cover_square_path"),
+        ("horizontal", "cover_horizontal_path"),
+    ):
+        discovered = covers.get(kind)
+        current = Path(str(getattr(drama, field) or ""))
+        setattr(drama, field, str(discovered or (current if current.is_file() else "")))
 
 
 def _workspace_view(drama: Drama) -> WorkspaceView:
@@ -255,6 +267,8 @@ def health():
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
+        "version": "1.1.0",
+        "capabilities": ["meta_direct_local_v2", "meta_progress", "meta_cover_sync"],
     }
 
 
@@ -306,6 +320,50 @@ def get_workspace(drama_id: int):
         session.add(drama)
         session.commit()
         session.refresh(drama)
+        return _workspace_view(drama)
+
+
+@app.put("/api/local/workspaces/{drama_id}/covers/{kind}", response_model=WorkspaceView)
+async def sync_workspace_cover(drama_id: int, kind: str, request: Request):
+    spec = LOCAL_COVER_SPECS.get(kind)
+    if not spec:
+        raise HTTPException(404, "不支持的封面类型")
+    data = await request.body()
+    if not data:
+        raise HTTPException(422, "封面文件为空")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(413, "封面文件不能超过 25MB")
+    field, ratio, min_width, min_height, requirement = spec
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+            if image.format not in {"JPEG", "PNG"}:
+                raise ValueError("封面仅支持 JPEG 或 PNG")
+            width, height = image.size
+            if width < min_width or height < min_height or abs(width / height - ratio) > 0.01:
+                raise ValueError(f"{requirement}；当前为 {width}x{height}")
+            suffix = ".jpg" if image.format == "JPEG" else ".png"
+    except Exception as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    with Session(engine) as session:
+        drama = session.get(Drama, drama_id)
+        if not drama:
+            raise HTTPException(404, "请先连接该剧目的本地源文件夹")
+        target_dir = (LOCAL_COVER_ROOT / str(drama_id)).resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{kind}{suffix}"
+        temporary = target_dir / f".{kind}-{uuid.uuid4().hex}.tmp"
+        temporary.write_bytes(data)
+        os.replace(temporary, target)
+        previous_value = str(getattr(drama, field) or "")
+        previous = Path(previous_value).resolve() if previous_value else None
+        setattr(drama, field, str(target))
+        session.add(drama)
+        session.commit()
+        session.refresh(drama)
+        if previous and previous != target and previous.is_file() and target_dir in previous.parents:
+            previous.unlink(missing_ok=True)
         return _workspace_view(drama)
 
 
