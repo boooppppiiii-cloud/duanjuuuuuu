@@ -330,6 +330,19 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .factory-forecast small { color:#9aa099; font-size:8px; }
 .factory-job-stats { display:flex; flex-wrap:wrap; gap:7px; margin:10px 0; }
 .factory-job-stats span { padding:7px 9px; border-radius:8px; background:#f1f3ef; color:var(--muted); font-size:10px; }
+.factory-change-log { margin-top:10px; overflow:hidden; border:1px solid #d9e9d1; border-radius:12px; background:#f6fbf3; }
+.factory-change-log > .ant-collapse-item { border:0; }
+.factory-change-log .ant-collapse-header { min-height:58px; align-items:center !important; padding:10px 14px !important; }
+.factory-change-log .ant-collapse-content { border-top:1px solid #e4efdf; background:#fbfef9; }
+.factory-change-log .ant-collapse-content-box { padding:10px !important; }
+.factory-change-log-title { display:flex; align-items:center; gap:10px; color:#4f7d35; }
+.factory-change-log-title > .anticon { font-size:18px; }
+.factory-change-log-title span { display:flex; flex-direction:column; gap:2px; }
+.factory-change-log-title b { color:#294d1d; font-size:13px; }
+.factory-change-log-title small { color:#78906d; font-size:11px; font-weight:400; }
+.factory-change-log-list { display:grid; gap:7px; }
+.factory-change-log-list .ant-alert-success { border-color:#dcebd5; background:#f4faef; }
+.factory-change-log-list .ant-alert-message { color:#3d6130; font-size:12px; line-height:1.6; }
 .factory-process-grid .ant-alert+.ant-alert { margin-top:7px; }
 .release-tabs>.ant-tabs-nav { max-width:620px; }
 .publishing-inner>.ant-card:first-of-type { margin-top:0; }
