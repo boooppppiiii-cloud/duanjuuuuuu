@@ -1,5 +1,6 @@
 import importlib
 import io
+import json
 import os
 from pathlib import Path
 
@@ -144,10 +145,15 @@ def test_source_storage_details_and_safe_source_deletion(tmp_path: Path):
         with Session(app.database.engine) as session:
             job = session.get(FactoryJob, job_id); job.status = "completed"; session.add(job); session.commit()
 
+        # A stale persisted status must not block deletion when no analysis thread is active.
+        (drama_dir / "factory_analysis.json").write_text(
+            json.dumps({"status": "processing", "analysis_version": 1}), encoding="utf-8"
+        )
         remaining = client.delete(f"/api/dramas/{drama['id']}/source-files?filename=Episode1.mp4")
         assert remaining.status_code == 200
         assert remaining.json()["episodes"] == ["Episode2.mp4"]
         assert not (episodes_dir / "Episode1.mp4").exists()
+        assert json.loads((drama_dir / "factory_analysis.json").read_text(encoding="utf-8"))["analysis_version"] == -1
 
         cleared = client.delete(f"/api/dramas/{drama['id']}/source-files")
         assert cleared.status_code == 200

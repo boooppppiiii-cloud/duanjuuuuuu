@@ -1,5 +1,5 @@
 import { useEffect,useState } from 'react'
-import { Button,Card,Form,Image,Input,InputNumber,message,Modal,Popconfirm,Progress,Select,Space,Spin,Switch,Table,Tag,Typography,Upload } from 'antd'
+import { Button,Card,Form,Image,Input,InputNumber,message,Modal,Progress,Select,Space,Spin,Switch,Table,Tag,Typography,Upload } from 'antd'
 import { ArrowLeftOutlined,DatabaseOutlined,DeleteOutlined,ExperimentOutlined,FolderOpenOutlined,PictureOutlined,PlusOutlined,SaveOutlined } from '@ant-design/icons'
 import { useNavigate,useParams } from 'react-router-dom'
 import { api,Drama,EmotionWord,Highlight,HookSuggestion } from '../api'
@@ -34,6 +34,7 @@ export default function DramaDetail(){
  const[coverPreparing,setCoverPreparing]=useState<CoverKind>()
  const[coverProgress,setCoverProgress]=useState(0)
  const[deletingSource,setDeletingSource]=useState<string>()
+ const[pendingSourceDelete,setPendingSourceDelete]=useState<string>()
  const[cropReview,setCropReview]=useState<(PreparedCoverImage&{kind:CoverKind;previewUrl:string})>()
  const[form]=Form.useForm()
  const[msg,context]=message.useMessage()
@@ -52,7 +53,8 @@ export default function DramaDetail(){
  const prepareCover=async(kind:CoverKind,file:File)=>{setCoverPreparing(kind);try{const prepared=await prepareCoverImage(file,kind);setCropReview({...prepared,kind,previewUrl:URL.createObjectURL(prepared.file)})}catch(e){msg.error((e as Error).message)}finally{setCoverPreparing(undefined)}}
  const uploadCover=async(kind:CoverKind,file:File)=>{if(!drama)return false;setCoverUploading(kind);setCoverProgress(0);try{const updated=await api.uploadVideo(drama.title,'剧目任务封面（自动裁剪）',file,setCoverProgress,`cover_${kind}`);applyDrama(updated);msg.success(`${coverOptions.find(item=>item.kind===kind)?.title}已上传`);return true}catch(e){msg.error((e as Error).message);return false}finally{setCoverUploading(undefined);setCoverProgress(0)}}
  const confirmCrop=async()=>{if(cropReview&&await uploadCover(cropReview.kind,cropReview.file))setCropReview(undefined)}
- const deleteSource=async(filename?:string)=>{if(!drama)return;const key=filename??'*';setDeletingSource(key);try{const updated=await api.deleteDramaSources(drama.id,filename);applyDrama(updated);msg.success(filename?`已删除 ${filename}`:'源文件已全部删除')}catch(e){msg.error((e as Error).message)}finally{setDeletingSource(undefined)}}
+ const deleteSource=async(filename?:string)=>{if(!drama)return false;const key=filename??'*';setDeletingSource(key);try{const updated=await api.deleteDramaSources(drama.id,filename);applyDrama(updated);msg.success(filename?`已删除 ${filename}`:'源文件已全部删除');return true}catch(e){msg.error((e as Error).message);return false}finally{setDeletingSource(undefined)}}
+ const confirmSourceDelete=async()=>{if(!pendingSourceDelete)return;const filename=pendingSourceDelete==='*'?undefined:pendingSourceDelete;if(await deleteSource(filename))setPendingSourceDelete(undefined)}
  const saveHighlights=async()=>{if(!drama)return;try{setDrama(await api.highlights(drama.id,drama.highlights));msg.success('高能点已保存')}catch(e){msg.error((e as Error).message)}}
  const changeRow=(index:number,patch:Partial<Highlight>)=>setDrama(current=>current?({...current,highlights:current.highlights.map((item,row)=>row===index?{...item,...patch}:item)}):current)
  const analyze=async()=>{if(!drama)return;setAnalyzing(true);try{setSuggestions(await api.analyzeHooks(drama.id));msg.success('高能点建议已生成')}catch(e){msg.error((e as Error).message)}finally{setAnalyzing(false)}}
@@ -86,7 +88,7 @@ export default function DramaDetail(){
    <Button size="large" type="primary" htmlType="submit" icon={<SaveOutlined/>} loading={saving}>保存剧目资料</Button>
   </Form></Card>
 
-  <Card title="源文件存储" extra={(drama.source_files??[]).length>0&&<Popconfirm title="确认清空全部源文件？" description="封面和已生成成品会保留，源视频删除后无法恢复。" okText="确认清空" cancelText="取消" okButtonProps={{danger:true}} onConfirm={()=>deleteSource()}><Button danger icon={<DeleteOutlined/>} loading={deletingSource==='*'}>清空全部</Button></Popconfirm>}>
+  <Card title="源文件存储" extra={(drama.source_files??[]).length>0&&<Button danger icon={<DeleteOutlined/>} loading={deletingSource==='*'} disabled={Boolean(deletingSource)} onClick={()=>setPendingSourceDelete('*')}>清空全部</Button>}>
    <div className="drama-source-storage-summary">
     <div><span>保存位置</span><strong><DatabaseOutlined/><Tag color={drama.source_storage==='server'?'green':'blue'}>{drama.source_storage==='server'?'服务器':'本机'}</Tag></strong></div>
     <div><span>源文件</span><strong>{drama.source_files?.length??0} 个</strong></div>
@@ -96,9 +98,30 @@ export default function DramaDetail(){
    <Table rowKey="name" size="small" className="drama-source-table" dataSource={drama.source_files??[]} locale={{emptyText:'尚未上传源文件'}} pagination={(drama.source_files?.length??0)>8?{pageSize:8,showSizeChanger:false}:false} columns={[
     {title:'文件名',dataIndex:'name',ellipsis:true},
     {title:'大小',dataIndex:'size_bytes',width:110,render:(value:number)=>fileSize(value)},
-    {title:'操作',width:90,render:(_:unknown,row:{name:string})=><Popconfirm title={`删除 ${row.name}？`} description="删除后无法恢复，封面和已生成成品会保留。" okText="删除" cancelText="取消" okButtonProps={{danger:true}} onConfirm={()=>deleteSource(row.name)}><Button danger type="link" size="small" loading={deletingSource===row.name}>删除</Button></Popconfirm>},
+    {title:'操作',width:90,render:(_:unknown,row:{name:string})=><Button danger type="link" size="small" loading={deletingSource===row.name} disabled={Boolean(deletingSource)} onClick={()=>setPendingSourceDelete(row.name)}>删除</Button>},
    ]}/>
   </Card>
+
+  <Modal
+   centered
+   title={pendingSourceDelete==='*'?'清空全部源文件':'删除源文件'}
+   open={Boolean(pendingSourceDelete)}
+   okText={pendingSourceDelete==='*'?'确认清空':'确认删除'}
+   cancelText="取消"
+   okButtonProps={{danger:true}}
+   confirmLoading={Boolean(deletingSource)}
+   closable={!deletingSource}
+   maskClosable={!deletingSource}
+   onOk={()=>void confirmSourceDelete()}
+   onCancel={()=>!deletingSource&&setPendingSourceDelete(undefined)}
+  >
+   <Typography.Paragraph>
+    {pendingSourceDelete==='*'
+     ?`将删除这部剧的全部 ${drama.source_files?.length??0} 个源视频。`
+     :<>将删除 <Typography.Text strong>{pendingSourceDelete}</Typography.Text>。</>}
+   </Typography.Paragraph>
+   <Typography.Text type="secondary">封面和已生成成品会保留；源视频删除后无法恢复。</Typography.Text>
+  </Modal>
 
   <Card title="投递封面"><div className="drama-cover-list">{coverOptions.map(option=>{const path=coverPath(drama,option.kind);return <div className="drama-cover-row" key={option.kind}>
    <div className={`task-cover-preview is-${option.kind}`}>{path?<Image preview={false} src={`/api/dramas/${drama.id}/covers/${option.kind}?v=${encodeURIComponent(path)}`}/>:<PictureOutlined/>}</div>

@@ -12,6 +12,7 @@ from ..database import get_session
 from ..models import AppUser, Clip, Drama, FactoryJob, GeneratedAsset
 from ..schemas import DramaCreateRequest, DramaDetail, DramaUpdate, HighlightsPayload, ManualRegisterRequest, ScanResult, UploadInitRequest, UploadInitResult
 from ..services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix, read_highlights, scan_dramas_with_logs, write_highlights
+from ..services.script_analysis import factory_analysis_pipeline
 from ..services.uploads import UploadStore, validate_title
 from ..services.auth import get_current_user
 
@@ -232,15 +233,8 @@ def delete_source_files(
 
     folder = Path(drama.file_dir).resolve()
     analysis_path = folder / "factory_analysis.json"
-    if analysis_path.is_file():
-        try:
-            analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
-            if analysis.get("status") in {"queued", "processing"}:
-                raise HTTPException(409, "内容识别正在运行，请完成后再删除源文件")
-        except HTTPException:
-            raise
-        except (OSError, ValueError, TypeError):
-            pass
+    if factory_analysis_pipeline.is_active(drama_id):
+        raise HTTPException(409, "内容识别正在运行，请完成后再删除源文件")
 
     sources = source_video_files(folder)
     if filename is not None:
