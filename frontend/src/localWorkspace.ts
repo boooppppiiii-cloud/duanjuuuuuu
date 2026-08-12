@@ -42,9 +42,32 @@ async function localRequest<T>(path:string,options:LocalRequestOptions={}):Promi
 
 export type LocalHealth={status:string;ffmpeg_ready:boolean;workspace_root:string;version?:string;capabilities?:string[]}
 
+let cachedHealth:{value:LocalHealth;expiresAt:number}|undefined
+let healthRequest:Promise<LocalHealth>|undefined
+
+async function assistantHealth(force=false,timeoutMs=1800):Promise<LocalHealth>{
+  if(!force&&cachedHealth&&cachedHealth.expiresAt>Date.now())return cachedHealth.value
+  if(!force&&healthRequest)return healthRequest
+  const request=localRequest<LocalHealth>('/api/local/health',{timeoutMs}).then(value=>{
+    cachedHealth={value,expiresAt:Date.now()+30_000}
+    return value
+  }).finally(()=>{healthRequest=undefined})
+  if(!force)healthRequest=request
+  return request
+}
+
+export function localAssistantUnavailable(error:unknown){
+  const text=error instanceof Error?error.message:String(error??'')
+  return text.includes('未检测到本地工作区')||text.includes('未启动')||text.includes('响应超时')
+}
+
+export function localAssistantSupports(health:LocalHealth,capability:string){
+  return health.capabilities?.includes(capability)===true
+}
+
 export const localWorkspace={
-  health:()=>localRequest<LocalHealth>('/api/local/health',{timeoutMs:1800}),
-  requestAccess:()=>localRequest<LocalHealth>('/api/local/health',{timeoutMs:15_000}),
+  health:()=>assistantHealth(),
+  requestAccess:()=>assistantHealth(true,15_000),
   get:(dramaId:number)=>localRequest<LocalWorkspace>(`/api/local/workspaces/${dramaId}`,{timeoutMs:2500}),
   syncCover:(dramaId:number,kind:'vertical'|'square'|'horizontal',file:Blob)=>localRequest<LocalWorkspace>(`/api/local/workspaces/${dramaId}/covers/${kind}`,{
     method:'PUT',timeoutMs:60_000,headers:{'Content-Type':file.type||'application/octet-stream'},body:file,
