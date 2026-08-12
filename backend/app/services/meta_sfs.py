@@ -355,11 +355,6 @@ def build_package(
                 if subtitle.exists():
                     shutil.copy2(subtitle, series_dir / f"{slug}_ep{index:03}_{total:03}.{payload.locale}{subtitle_ext}")
                     break
-            if payload.include_thumbnails:
-                thumb = series_dir / f"{slug}_ep{index:03}_{total:03}_thumbnail.jpg"
-                result = subprocess.run([_binary("ffmpeg"), "-y", "-ss", "1", "-i", str(target), "-frames:v", "1", "-q:v", "2", str(thumb)], capture_output=True, timeout=90)
-                if result.returncode != 0: raise RuntimeError(f"{name} 缩略图生成失败")
-
         _notify_progress(progress_callback, 86, "生成并校验 Meta 封面")
         cover_sources = check["cover_sources"]
         _render_cover(Path(cover_sources["vertical"]["path"]), series_dir / f"{slug}_cover.jpg", (1440, 1920))

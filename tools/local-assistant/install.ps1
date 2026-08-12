@@ -198,7 +198,7 @@ $currentSessionId = (Get-Process -Id $PID).SessionId
 
 try {
     $health = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
-    if ($health.status -eq "ok" -and $health.version -eq "1.5.0" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v3" -and $health.capabilities -contains "legacy_server_import_v1" -and $health.capabilities -contains "factory_cancel_v1" -and $health.capabilities -contains "local_storage_manager_v1") { exit 0 }
+    if ($health.status -eq "ok" -and $health.version -eq "1.6.0" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v3" -and $health.capabilities -contains "legacy_server_import_v1" -and $health.capabilities -contains "factory_cancel_v1" -and $health.capabilities -contains "local_storage_manager_v1") { exit 0 }
 } catch { }
 
 if (Test-Path -LiteralPath $settingsFile) {
@@ -254,7 +254,7 @@ try {
         Start-Sleep -Seconds 1
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
-            if ($health.status -eq "ok" -and $health.version -eq "1.5.0" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v3" -and $health.capabilities -contains "legacy_server_import_v1" -and $health.capabilities -contains "factory_cancel_v1" -and $health.capabilities -contains "local_storage_manager_v1") { $ready = $true; break }
+            if ($health.status -eq "ok" -and $health.version -eq "1.6.0" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v3" -and $health.capabilities -contains "legacy_server_import_v1" -and $health.capabilities -contains "factory_cancel_v1" -and $health.capabilities -contains "local_storage_manager_v1") { $ready = $true; break }
         } catch { }
     }
     if (-not $ready) { throw "The Local Assistant was installed but did not start in time. Open the Jushu Local Assistant desktop shortcut and retry." }

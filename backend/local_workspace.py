@@ -364,7 +364,7 @@ def health():
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.5.0",
+        "version": "1.6.0",
         "picker_backend": "IFileOpenDialog",
         "picker_ready": picker.ready,
         "picker_reason": picker.reason,

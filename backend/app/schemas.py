@@ -542,7 +542,9 @@ class MetaSFSRequest(BaseModel):
     ai_content: bool = False
     dubbed_content: bool = False
     include_episode_csv: bool = True
-    include_thumbnails: bool = True
+    # Kept for compatibility with older web bundles. Episode thumbnails are
+    # intentionally no longer generated because Meta accepts video-only rows.
+    include_thumbnails: bool = False
     local_destination_token: str = ""
 
     @field_validator("locale")

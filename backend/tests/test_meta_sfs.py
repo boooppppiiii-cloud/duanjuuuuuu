@@ -27,7 +27,7 @@ def request(**overrides) -> MetaSFSRequest:
         "ai_content": False,
         "dubbed_content": False,
         "include_episode_csv": True,
-        "include_thumbnails": True,
+        "include_thumbnails": False,
     }
     values.update(overrides)
     return MetaSFSRequest(**values)
@@ -280,7 +280,9 @@ def test_build_package_writes_to_selected_local_directory(monkeypatch, tmp_path:
     drama = make_drama(tmp_path); drama.description = "Task synopsis"; drama.genres = ["Drama"]; drama.total_episode_count = 1
     selected = tmp_path / "selected-output"; selected.mkdir()
 
-    output, _ = meta_sfs.build_package(drama, request(include_thumbnails=False), output_parent=selected)
+    # Even an older caller requesting thumbnails must not recreate this
+    # retired optional output.
+    output, _ = meta_sfs.build_package(drama, request(include_thumbnails=True), output_parent=selected)
 
     assert output.parent == selected
     assert next(output.rglob("*_series.csv")).is_file()
@@ -290,6 +292,7 @@ def test_build_package_writes_to_selected_local_directory(monkeypatch, tmp_path:
     assert (series / "midnight-contract_cover.jpg").is_file()
     assert (series / "midnight-contract_cover_square.jpg").is_file()
     assert (series / "midnight-contract_series.csv").is_file()
+    assert not list(series.glob("*_thumbnail.jpg"))
     assert not (output / "validation-report.json").exists()
 
 
