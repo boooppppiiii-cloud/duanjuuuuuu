@@ -1,4 +1,4 @@
-import type { Drama,FactoryAnalysis,FactoryJob,FactoryOutputMode,GeneratedAsset,MetaFactorySource,MetaPackage,MetaPackageFiles,MetaPreflight,MetaSFSInput } from './api'
+import type { Drama,FactoryAnalysis,FactoryJob,FactoryOutputMode,GeneratedAsset,LegacyMetaSource,MetaFactorySource,MetaPackage,MetaPackageFiles,MetaPreflight,MetaSFSInput } from './api'
 
 export const LOCAL_WORKSPACE_ORIGIN='http://127.0.0.1:17862'
 
@@ -8,6 +8,7 @@ export type LocalWorkspace={
   files:LocalWorkspaceFile[];covers:Record<'vertical'|'square'|'horizontal',string>;ffmpeg_ready:boolean;updated_at:string
 }
 export type LocalModelUsage={client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind:'model_call';provider:string;model:string;input_tokens:number;output_tokens:number;total_tokens:number;api_calls:number;details:Record<string,unknown>}
+export type LegacyImportJob={id:string;drama_id:number;status:'queued'|'downloading'|'completed'|'failed';progress:number;current_step:string;bytes_downloaded:number;total_bytes:number;error_message:string;workspace?:LocalWorkspace|null;updated_at:string}
 
 type LocalRequestOptions=RequestInit&{timeoutMs?:number}
 type LoopbackRequestInit=RequestInit&{targetAddressSpace?:'loopback'|'local'}
@@ -111,6 +112,15 @@ export const localWorkspace={
       genres:drama.genres,language:drama.language,total_episode_count:drama.total_episode_count,
     }),
   }),
+  importLegacySource:(drama:Drama,source:LegacyMetaSource)=>localRequest<LegacyImportJob>('/api/local/workspaces/import-legacy',{
+    method:'POST',timeoutMs:30_000,body:JSON.stringify({
+      drama_id:drama.id,title:drama.title,theater:drama.theater,description:drama.description,
+      genres:drama.genres,language:drama.language,total_episode_count:source.episode_count,
+      factory_job_id:source.factory_job_id,
+      files:source.files.map(file=>({...file,url:new URL(file.url,window.location.origin).toString()})),
+    }),
+  }),
+  legacyImportJob:(jobId:string)=>localRequest<LegacyImportJob>(`/api/local/workspaces/import-legacy/${encodeURIComponent(jobId)}`),
   factoryAnalysis:(dramaId:number)=>localRequest<FactoryAnalysis>(`/api/factory/${dramaId}/analysis`),
   importFactoryAnalysis:(dramaId:number,body:FactoryAnalysis)=>localRequest<FactoryAnalysis>(`/api/local/workspaces/${dramaId}/analysis`,{method:'PUT',body:JSON.stringify(body)}),
   analyzeFactory:(dramaId:number)=>localRequest<FactoryAnalysis>(`/api/factory/${dramaId}/analyze`,{method:'POST'}),

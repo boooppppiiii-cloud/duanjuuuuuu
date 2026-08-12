@@ -2,7 +2,7 @@ import { Alert,Button,Card,Form,Input,List,Progress,Select,Space,Steps,Switch,Ta
 import { CheckCircleOutlined,EditOutlined,FolderOpenOutlined,SafetyCertificateOutlined } from '@ant-design/icons'
 import { useEffect,useMemo,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
-import { api,type Drama,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
+import { api,type Drama,type LegacyMetaSource,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
 import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,NATIVE_FOLDER_PICKER_CAPABILITY,type LocalWorkspace } from '../localWorkspace'
 import { LOCAL_ASSISTANT_DOWNLOAD_FILENAME,LOCAL_ASSISTANT_DOWNLOAD_URL,showLocalAssistantAccessPrompt,showLocalAssistantInstallPrompt } from '../components/LocalAssistantPrompt'
@@ -11,6 +11,7 @@ const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Dr
 const defaults={locale:'en_US',genres:['Drama'],release_date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),ai_content:false,dubbed_content:false}
 const activePackageStatuses=new Set(['queued','building'])
 const unavailablePackageStatuses=new Set(['queued','building','failed','missing'])
+const LEGACY_SERVER_IMPORT_CAPABILITY='legacy_server_import_v1'
 const formatSize=(bytes:number)=>bytes>=1024**3?`${(bytes/1024**3).toFixed(2)} GB`:bytes>=1024**2?`${(bytes/1024**2).toFixed(1)} MB`:`${Math.round(bytes/1024)} KB`
 const packageProgress=(item?:MetaPackage)=>Math.max(0,Math.min(100,Number(item?.validation_json?.progress??(item?.status==='ready'?100:0))))
 const packageStep=(item?:MetaPackage)=>String(item?.validation_json?.current_step|| (item?.status==='queued'?'等待本机处理':'正在生成'))
@@ -18,6 +19,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const[dramas,setDramas]=useState<Drama[]>([])
  const[check,setCheck]=useState<MetaPreflight>()
  const[source,setSource]=useState<MetaFactorySource>()
+ const[legacySource,setLegacySource]=useState<LegacyMetaSource>()
  const[packages,setPackages]=useState<MetaPackage[]>([])
  const[localSource,setLocalSource]=useState<LocalWorkspace>()
  const[localStatus,setLocalStatus]=useState<'checking'|'ready'|'offline'|'outdated'|'unavailable'|'error'|'none'>('checking')
@@ -25,6 +27,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const[detectVersion,setDetectVersion]=useState(0)
  const[action,setAction]=useState<string|null>(null)
  const[exportProgress,setExportProgress]=useState<{label:string;percent:number}|null>(null)
+ const[legacyProgress,setLegacyProgress]=useState<{label:string;percent:number}|null>(null)
  const[msg,ctx]=message.useMessage()
  const navigate=useNavigate()
  const[params]=useSearchParams()
@@ -64,10 +67,12 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    form.setFieldsValue({description:drama.description,genres:drama.genres,ai_content:drama.is_ai_generated,dubbed_content:drama.is_dubbed_content,locale:drama.language||'en_US'})
  },[drama?.id])
  useEffect(()=>{
-   setCheck(undefined);setSource(undefined);setLocalSource(undefined);setExportProgress(null);setLocalIssue('')
+   setCheck(undefined);setSource(undefined);setLegacySource(undefined);setLocalSource(undefined);setExportProgress(null);setLegacyProgress(null);setLocalIssue('')
    if(!dramaId||!drama){setPackages([]);setLocalStatus('none');return}
    let stopped=false
    const detect=async()=>{
+     try{const legacy=await api.legacyMetaSource(dramaId);if(!stopped)setLegacySource(legacy)}
+     catch(error){if(!stopped)setLocalIssue(`服务器旧成品读取失败：${(error as Error).message}`)}
      setLocalStatus('checking')
      let health
      try{health=await localClient.health()}catch(error){
@@ -106,6 +111,37 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  },[dramaId,detectVersion])
 
  const showLocalWorkspaceHelp=(mode:'install'|'update'='install')=>showLocalAssistantInstallPrompt({mode})
+ const importLegacySource=async()=>{
+   if(!drama||!legacySource?.ready)return
+   setAction('legacy-import');setLocalIssue('');setLegacyProgress({label:'正在连接本地助手',percent:0})
+   try{
+     const health=await localClient.requestAccess()
+     if(!localAssistantSupports(health,LEGACY_SERVER_IMPORT_CAPABILITY)){
+       setLocalStatus('outdated');setLocalIssue('使用服务器旧成品需要更新本地助手');showLocalWorkspaceHelp('update');return
+     }
+     const fresh=await api.legacyMetaSource(drama.id)
+     if(!fresh.ready)throw new Error('服务器旧成品已经移动或删除，无法继续迁移')
+     let job=await localClient.importLegacySource(drama,fresh)
+     while(job.status==='queued'||job.status==='downloading'){
+       setLegacyProgress({label:job.current_step,percent:job.progress})
+       await new Promise(resolve=>window.setTimeout(resolve,1000))
+       job=await localClient.legacyImportJob(job.id)
+     }
+     if(job.status==='failed')throw new Error(job.error_message||'服务器旧成品迁移失败')
+     let workspace=job.workspace??await localClient.get(drama.id)
+     setLegacyProgress({label:'正在同步剧目封面',percent:100})
+     workspace=await syncTaskCovers(drama,workspace)
+     setLocalSource(workspace);setLocalStatus('ready');setCheck(undefined)
+     const[delivery,items]=await Promise.all([localClient.metaFactorySource(drama.id),localClient.metaPackages()])
+     setSource(delivery);setPackages(items)
+     api.registerLocalSourceManifest(drama.id,{folder_name:workspace.folder_name,file_count:workspace.file_count,total_bytes:workspace.total_bytes,filenames:workspace.files.map(file=>file.relative_path)}).catch(()=>undefined)
+     msg.success(`服务器旧成品已迁移到这台电脑，共 ${workspace.file_count} 集，可以继续 Meta 官方投递`)
+   }catch(error){
+     const text=(error as Error).message;setLocalIssue(text)
+     if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalAssistantAccessPrompt()}
+     else msg.error(text)
+   }finally{setAction(null);window.setTimeout(()=>setLegacyProgress(null),1000)}
+ }
  const connectLocalSource=async()=>{
    if(!drama)return
    const fallbackStatus=localSource?'ready':'none'
@@ -202,6 +238,8 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
     <Form.Item name="drama_id" label="剧目任务" rules={[{required:true,message:'请选择剧目任务'}]}><Select showSearch optionFilterProp="label" options={dramas.map(item=>({value:item.id,label:`${item.title} · 全集 ${item.total_episode_count}`}))}/></Form.Item>
     {drama&&<Space wrap style={{marginBottom:12}}><Button type="primary" icon={<FolderOpenOutlined/>} loading={action==='connecting'||localStatus==='checking'} disabled={(building&&action!=='connecting')||localStatus==='outdated'||localStatus==='error'} onClick={connectLocalSource}>{localSource?'更换本地文件夹':'选择本地文件夹'}</Button>{localStatus==='offline'&&<><Button onClick={showLocalAssistantAccessPrompt}>允许本地访问</Button><Button onClick={()=>showLocalWorkspaceHelp()}>重新安装</Button></>}{localStatus==='outdated'&&<Button href={LOCAL_ASSISTANT_DOWNLOAD_URL} download={LOCAL_ASSISTANT_DOWNLOAD_FILENAME} onClick={()=>msg.success('已开始下载最新版本地助手')}>更新本地助手</Button>}{localStatus==='unavailable'&&<Button onClick={connectLocalSource}>重新连接助手</Button>}{localStatus==='error'&&<Button onClick={()=>setDetectVersion(value=>value+1)}>重新检测</Button>}</Space>}
     {localIssue&&<Alert type={localStatus==='offline'||localStatus==='outdated'||localStatus==='error'?'warning':'info'} showIcon message={localIssue} style={{marginBottom:12}}/>}
+    {!localSource&&legacySource?.ready&&<Alert type="info" showIcon message={`发现服务器旧成品：${legacySource.episode_count} 集 · ${formatSize(legacySource.total_bytes)}`} description={<Space wrap><span>这是旧版本保存在服务器的 Meta 单集，可迁移到当前电脑后继续加工；新的投递文件夹仍只生成在本机。</span><Button type="primary" loading={action==='legacy-import'} disabled={building&&action!=='legacy-import'} onClick={importLegacySource}>使用服务器旧成品</Button></Space>} style={{marginBottom:12}}/>}
+    {legacyProgress&&<div className="meta-build-status" style={{marginBottom:12}}><Space direction="vertical" size={6} style={{width:'100%'}}><Typography.Text>{legacyProgress.label}</Typography.Text><Progress percent={legacyProgress.percent} status={action==='legacy-import'?'active':'normal'}/></Space></div>}
     {localSource&&<Alert type="success" showIcon message={`本机文件夹：${localSource.folder_name}`} description={<Space direction="vertical" size={0}><Typography.Text ellipsis={{tooltip:localSource.absolute_path}}>{localSource.absolute_path}</Typography.Text><Typography.Text type="secondary">{localSource.file_count} 个视频 · {formatSize(localSource.total_bytes)} · 竖版封面 {localSource.covers.vertical?'已就绪':'缺少'} · 方形封面 {localSource.covers.square?'已就绪':'缺少'}</Typography.Text></Space>} style={{marginBottom:12}}/>}
     {drama&&<Space wrap className="meta-drama-tags"><Tag color={localSource?'green':'default'}>{localSource?'本机工作区':'尚未连接本机'}</Tag><Tag>源文件 {localSource?.file_count??0} 集</Tag><Tag color={source?.ready?'green':'default'}>可投递 {source?.episode_count??0} 集</Tag><Tag color={localSource?.covers.vertical?'green':'red'}>竖版封面</Tag><Tag color={localSource?.covers.square?'green':'red'}>方形封面</Tag>{Boolean(localSource?.covers.horizontal)&&<Tag color="green">横版封面</Tag>}<Button type="link" size="small" icon={<EditOutlined/>} onClick={()=>navigate(`/dramas/${drama.id}`)}>编辑剧目</Button></Space>}
     {drama&&(source?.ready?<Alert type="success" showIcon message={`已从本机读取 ${source.episode_count} 个${source.source_mode==='factory_meta_split'?'内容工厂 Meta 单集':'视频文件'}`} description={<Typography.Text ellipsis={{tooltip:source.files.join('、')}}>{source.files.join('、')}</Typography.Text>}/>:<Alert type="warning" showIcon message={localStatus==='offline'?'本地助手未连接':localStatus==='outdated'?'本地助手需要更新':'尚无本机可投递视频'} description={<Space><span>{localStatus==='offline'||localStatus==='outdated'?'处理本地助手后重新检测，或':'选择本地素材文件夹，或'}</span><Button type="link" onClick={()=>navigate(`/factory?drama=${drama.id}`)}>前往内容工厂生成 Meta 逐集切分</Button></Space>}/>) }
