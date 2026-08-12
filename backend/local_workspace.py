@@ -41,14 +41,15 @@ from sqlmodel import Session, select
 
 from .app.config import get_settings
 from .app.database import create_db_and_tables, engine
-from .app.models import AppUser, Drama, UsageEvent
+from .app.models import AppUser, Drama, FactoryJob, MetaDeliveryPackage, UsageEvent
 from .app.routers.factory import router as factory_router
 from .app.routers.meta_sfs import router as meta_sfs_router
 from .app.services.auth import bind_current_user, reset_current_user
 from .app.services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_files, files_with_suffix
 from .app.services.factory_processing import resume_factory_jobs
-from .app.services.meta_package_processing import resume_meta_packages
-from .app.services.script_analysis import write_analysis
+from .app.services.local_storage import LocalStorageEntry, list_local_storage, remove_storage_entry
+from .app.services.meta_package_processing import ACTIVE_STATUSES as META_ACTIVE_STATUSES, resume_meta_packages
+from .app.services.script_analysis import factory_analysis_pipeline, write_analysis
 from .app.services.windows_folder_picker import (
     FolderPickerBusy,
     FolderPickerCancelled,
@@ -358,12 +359,12 @@ app.include_router(meta_sfs_router)
 @app.get("/api/local/health")
 def health():
     picker = folder_picker_environment()
-    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "legacy_server_import_v1", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
+    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "legacy_server_import_v1", "factory_cancel_v1", "local_storage_manager_v1", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
     return {
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.4.1",
+        "version": "1.5.0",
         "picker_backend": "IFileOpenDialog",
         "picker_ready": picker.ready,
         "picker_reason": picker.reason,
@@ -428,7 +429,7 @@ def legacy_workspace_import(job_id: str):
 def get_workspace(drama_id: int):
     with Session(engine) as session:
         drama = session.get(Drama, drama_id)
-        if not drama:
+        if not drama or not Path(drama.file_dir).is_dir():
             raise HTTPException(404, "本机尚未连接该剧目的源文件夹")
         _sync_local_covers(drama, Path(drama.file_dir).resolve())
         session.add(drama)
@@ -526,6 +527,82 @@ def local_model_usage():
         "api_calls": row.api_calls,
         "details": {**row.details_json, "local_created_at": row.created_at.isoformat()},
     } for row in reversed(rows)]
+
+
+def _storage_snapshot(session: Session) -> dict:
+    settings = get_settings()
+    whisper_cache = Path(settings.whisper_cache_dir).expanduser()
+    if not whisper_cache.is_absolute():
+        whisper_cache = (Path.cwd() / whisper_cache).resolve()
+    dramas = session.exec(select(Drama).order_by(Drama.id)).all()
+    return list_local_storage(
+        dramas,
+        app_dir=APP_DIR,
+        legacy_root=LEGACY_IMPORT_ROOT,
+        cover_root=LOCAL_COVER_ROOT,
+        whisper_cache=whisper_cache,
+    )
+
+
+@app.get("/api/local/storage")
+def local_storage():
+    with Session(engine) as session:
+        return _storage_snapshot(session)
+
+
+@app.delete("/api/local/storage/{entry_id}")
+def delete_local_storage(entry_id: str):
+    with Session(engine) as session:
+        snapshot = _storage_snapshot(session)
+        raw = next((item for item in snapshot["items"] if item["id"] == entry_id), None)
+        if not raw:
+            raise HTTPException(404, "文件已不存在或已被清理")
+        entry = LocalStorageEntry(**raw)
+        if entry.id.startswith("legacy-staging:"):
+            with _legacy_import_lock:
+                importing = any(item.get("status") in {"queued", "downloading"} for item in _legacy_import_jobs.values())
+            if importing:
+                raise HTTPException(409, "旧素材正在迁移，请等待任务完成后再删除临时文件")
+        if entry.drama_id:
+            active_job = session.exec(select(FactoryJob).where(
+                FactoryJob.drama_id == entry.drama_id,
+                FactoryJob.status.in_(["queued", "processing", "cancel_requested"]),
+            )).first()
+            active_meta = session.exec(select(MetaDeliveryPackage).where(
+                MetaDeliveryPackage.drama_id == entry.drama_id,
+                MetaDeliveryPackage.status.in_(list(META_ACTIVE_STATUSES)),
+            )).first()
+            if active_job or active_meta or factory_analysis_pipeline.is_active(entry.drama_id):
+                raise HTTPException(409, "该剧目仍有处理任务运行，请先取消或等待任务完成")
+        elif entry.category == "model":
+            dramas = session.exec(select(Drama)).all()
+            if any(drama.id and factory_analysis_pipeline.is_active(int(drama.id)) for drama in dramas):
+                raise HTTPException(409, "内容识别正在使用语音模型，请等待任务完成")
+        try:
+            freed = remove_storage_entry(entry)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if entry.category == "cache" and entry.drama_id:
+            drama = session.get(Drama, entry.drama_id)
+            if drama:
+                root = Path(entry.path).resolve()
+                for field in ("cover_vertical_path", "cover_square_path", "cover_horizontal_path"):
+                    value = str(getattr(drama, field) or "")
+                    if value:
+                        path = Path(value).resolve()
+                        if path == root or root in path.parents:
+                            setattr(drama, field, "")
+                session.add(drama)
+                session.commit()
+        elif entry.category == "material" and entry.drama_id:
+            drama = session.get(Drama, entry.drama_id)
+            if drama:
+                drama.file_dir = str(APP_DIR / "disconnected" / f"drama-{entry.drama_id}-{uuid.uuid4().hex}")
+                drama.episode_count = 0
+                drama.source_note = "本机素材副本已删除，请重新选择源文件夹"
+                session.add(drama)
+                session.commit()
+        return {"deleted": True, "freed_bytes": freed, **_storage_snapshot(session)}
 
 
 def main() -> None:

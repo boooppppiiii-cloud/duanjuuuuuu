@@ -9,6 +9,8 @@ export type LocalWorkspace={
 }
 export type LocalModelUsage={client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind:'model_call';provider:string;model:string;input_tokens:number;output_tokens:number;total_tokens:number;api_calls:number;details:Record<string,unknown>}
 export type LegacyImportJob={id:string;drama_id:number;status:'queued'|'downloading'|'completed'|'failed';progress:number;current_step:string;bytes_downloaded:number;total_bytes:number;error_message:string;workspace?:LocalWorkspace|null;updated_at:string}
+export type LocalStorageItem={id:string;category:'processing'|'analysis'|'material'|'cache'|'model';name:string;description:string;path:string;size_bytes:number;file_count:number;drama_id?:number|null;drama_title?:string;warning?:string}
+export type LocalStorageSummary={workspace_root:string;total_bytes:number;item_count:number;items:LocalStorageItem[]}
 
 type LocalRequestOptions=RequestInit&{timeoutMs?:number}
 type LoopbackRequestInit=RequestInit&{targetAddressSpace?:'loopback'|'local'}
@@ -127,6 +129,7 @@ export const localWorkspace={
   reviewFactoryAnalysis:(dramaId:number,body:{episode:string;kind:'high_energy'|'sensitive';start:number;end:number;decision:'approved'|'rejected'|'pending';new_start?:number;new_end?:number})=>localRequest<FactoryAnalysis>(`/api/factory/${dramaId}/analysis/review`,{method:'PATCH',body:JSON.stringify(body)}),
   startFactoryProcessing:(dramaId:number,body:{max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:'balanced'|'small';output_modes:FactoryOutputMode[];hooks_per_variant:number;hook_ids:number[]})=>localRequest<FactoryJob>(`/api/factory/${dramaId}/process`,{method:'POST',body:JSON.stringify(body)}),
   factoryJobs:(dramaId:number)=>localRequest<FactoryJob[]>(`/api/factory/${dramaId}/jobs`),
+  cancelFactoryJob:(jobId:number)=>localRequest<FactoryJob>(`/api/factory/jobs/${jobId}/cancel`,{method:'POST'}),
   factoryAssets:(dramaId:number)=>localRequest<GeneratedAsset[]>(`/api/factory/${dramaId}/assets`),
   videoUrl:(dramaId:number,episode:string)=>`${LOCAL_WORKSPACE_ORIGIN}/api/factory/${dramaId}/analysis/video/${encodeURIComponent(episode)}`,
   frameUrl:(dramaId:number,filename:string)=>`${LOCAL_WORKSPACE_ORIGIN}/api/factory/${dramaId}/analysis/frames/${encodeURIComponent(filename)}`,
@@ -142,5 +145,7 @@ export const localWorkspace={
   metaPackageArchiveUrl:(id:number)=>`${LOCAL_WORKSPACE_ORIGIN}/api/meta-sfs/packages/${id}/archive`,
   openMetaPackageFolder:(id:number)=>localRequest<{opened:boolean;path:string}>(`/api/meta-sfs/packages/${id}/open-folder`,{method:'POST'}),
   copyMetaPackageLocal:(id:number,token:string)=>localRequest<{path:string;folder_name:string}>(`/api/meta-sfs/packages/${id}/copy-local?token=${encodeURIComponent(token)}`,{method:'POST'}),
+  storage:()=>localRequest<LocalStorageSummary>('/api/local/storage',{timeoutMs:30_000}),
+  deleteStorage:(id:string)=>localRequest<LocalStorageSummary&{freed_bytes:number}>(`/api/local/storage/${encodeURIComponent(id)}`,{method:'DELETE',timeoutMs:120_000}),
   modelUsage:()=>localRequest<LocalModelUsage[]>('/api/local/usage/model-events'),
 }

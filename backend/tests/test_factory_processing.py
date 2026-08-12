@@ -5,9 +5,9 @@ import pytest
 from pydantic import ValidationError
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.models import Drama, FactoryJob, HookAsset
+from app.models import AppUser, Drama, FactoryJob, HookAsset
 from app.schemas import FactoryProcessRequest
-from app.services.factory_processing import TimelinePart, _encode_piece, balanced_lengths, build_hook_groups, build_meta_episode_plan, hook_clip_range, meta_video_is_compliant, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
+from app.services.factory_processing import FactoryCancelled, FactoryPipeline, TimelinePart, _encode_piece, balanced_lengths, build_hook_groups, build_meta_episode_plan, hook_clip_range, meta_video_is_compliant, natural_key, read_sensitive_ranges, render_timeline_slice, resume_factory_jobs, safe_ranges, slice_timeline
 from app.services.drama_library import deduplicate_episode_copies
 
 
@@ -121,7 +121,7 @@ def test_render_timeline_reports_progress_across_all_parts(monkeypatch, tmp_path
     ]
     progress: list[float] = []
 
-    def fake_encode(_ffmpeg, _ffprobe, _part, output, _profile, callback=None):
+    def fake_encode(_ffmpeg, _ffprobe, _part, output, _profile, callback=None, *_):
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"video")
         if callback:
@@ -129,7 +129,7 @@ def test_render_timeline_reports_progress_across_all_parts(monkeypatch, tmp_path
             callback(1)
 
     monkeypatch.setattr(module, "_encode_piece", fake_encode)
-    monkeypatch.setattr(module, "_concat_files", lambda _ffmpeg, _pieces, output, _manifest: output.write_bytes(b"joined"))
+    monkeypatch.setattr(module, "_concat_files", lambda _ffmpeg, _pieces, output, _manifest, *_: output.write_bytes(b"joined"))
 
     duration = render_timeline_slice(parts, tmp_path / "output.mp4", tmp_path / "work", "balanced", progress.append)
 
@@ -199,3 +199,68 @@ def test_interrupted_job_is_requeued_on_server_start(monkeypatch, tmp_path: Path
         assert recovered.status == "queued"
         assert "等待恢复" in recovered.current_step
     assert called == [True]
+
+
+def test_cancel_request_terminates_active_media_process():
+    pipeline = FactoryPipeline()
+
+    class ActiveProcess:
+        terminated = False
+        def poll(self): return None
+        def terminate(self): self.terminated = True
+
+    process = ActiveProcess()
+    pipeline._begin_job(17)
+    pipeline._set_process(17, process)  # type: ignore[arg-type]
+    pipeline.request_cancel(17)
+
+    assert process.terminated is True
+    with pytest.raises(FactoryCancelled, match="已取消"):
+        pipeline._check_cancelled(17)
+    pipeline._finish_job(17)
+
+
+def test_cancel_requested_job_is_not_requeued_on_restart(monkeypatch, tmp_path: Path):
+    import app.services.factory_processing as module
+
+    test_engine = create_engine(f"sqlite:///{tmp_path / 'cancel-resume.db'}")
+    SQLModel.metadata.create_all(test_engine)
+    monkeypatch.setattr(module.database, "engine", test_engine)
+    with Session(test_engine) as session:
+        drama = Drama(title="取消恢复测试", file_dir=str(tmp_path / "drama"), source_note="test")
+        session.add(drama); session.commit(); session.refresh(drama)
+        job = FactoryJob(drama_id=drama.id, status="cancel_requested", current_step="正在取消")
+        session.add(job); session.commit(); session.refresh(job); job_id = job.id
+    called: list[bool] = []
+    monkeypatch.setattr(module.factory_pipeline, "process_queued", lambda: called.append(True))
+
+    resume_factory_jobs()
+
+    with Session(test_engine) as session:
+        recovered = session.get(FactoryJob, job_id)
+        assert recovered.status == "cancelled"
+        assert recovered.current_step == "已取消"
+    assert called == []
+
+
+def test_cancel_route_marks_processing_job_and_signals_pipeline(monkeypatch, tmp_path: Path):
+    import app.routers.factory as factory_router
+
+    test_engine = create_engine(f"sqlite:///{tmp_path / 'cancel-route.db'}")
+    SQLModel.metadata.create_all(test_engine)
+    called: list[int] = []
+    monkeypatch.setattr(factory_router.factory_pipeline, "request_cancel", called.append)
+    with Session(test_engine) as session:
+        drama = Drama(title="取消接口测试", file_dir=str(tmp_path / "drama"), source_note="test")
+        session.add(drama); session.commit(); session.refresh(drama)
+        job = FactoryJob(drama_id=drama.id, owner_user_id=7, status="processing", current_step="转码中")
+        session.add(job); session.commit(); session.refresh(job)
+
+        updated = factory_router.cancel_job(
+            int(job.id), session=session,
+            user=AppUser(id=7, email="owner@example.com", password_hash="test"),
+        )
+
+        assert updated.status == "cancel_requested"
+        assert updated.current_step == "正在取消并清理中间文件"
+        assert called == [job.id]

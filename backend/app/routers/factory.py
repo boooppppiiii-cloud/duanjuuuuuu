@@ -243,6 +243,34 @@ def get_job(job_id: int, session: Session = Depends(get_session), user: AppUser 
     return job
 
 
+@router.post("/jobs/{job_id}/cancel", response_model=FactoryJobView)
+def cancel_job(job_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    job = session.get(FactoryJob, job_id)
+    if not job or job.owner_user_id != user.id:
+        raise HTTPException(404, "加工任务不存在")
+    if job.status == "queued":
+        job.status = "cancelled"
+        job.current_step = "已取消"
+        job.completed_at = datetime.utcnow()
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        # Cover the small race in which the worker has already selected the
+        # queued row but has not committed its processing state yet.
+        factory_pipeline.request_cancel(job_id)
+        return job
+    if job.status in {"processing", "cancel_requested"}:
+        if job.status == "processing":
+            job.status = "cancel_requested"
+            job.current_step = "正在取消并清理中间文件"
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+        factory_pipeline.request_cancel(job_id)
+        return job
+    return job
+
+
 @router.get("/{drama_id}/assets", response_model=list[GeneratedAssetView])
 def list_assets(drama_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
     get_drama(drama_id, session)

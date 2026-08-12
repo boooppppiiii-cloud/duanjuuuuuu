@@ -59,6 +59,14 @@ PROFILES = {
 }
 
 
+class FactoryCancelled(RuntimeError):
+    """Raised cooperatively after an operator cancels a factory job."""
+
+
+CancelCheck = Callable[[], None]
+ProcessCallback = Callable[[subprocess.Popen | None], None]
+
+
 def natural_key(value: str) -> list[object]:
     return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", value)]
 
@@ -352,7 +360,13 @@ def sync_hook_assets(session: Session, drama: Drama) -> list[HookAsset]:
     return existing
 
 
-def _run_ffmpeg_with_progress(args: list[str], duration: float, on_progress: Callable[[float], None]) -> None:
+def _run_ffmpeg_with_progress(
+    args: list[str],
+    duration: float,
+    on_progress: Callable[[float], None],
+    cancel_check: CancelCheck | None = None,
+    process_callback: ProcessCallback | None = None,
+) -> None:
     command = [*args[:2], "-nostats", "-loglevel", "error", "-progress", "pipe:1", *args[2:]]
     process = subprocess.Popen(
         command,
@@ -362,24 +376,66 @@ def _run_ffmpeg_with_progress(args: list[str], duration: float, on_progress: Cal
         encoding="utf-8",
         errors="replace",
     )
-    assert process.stdout is not None
-    last_percent = -1
-    for line in process.stdout:
-        key, _, raw_value = line.strip().partition("=")
-        if key not in {"out_time_us", "out_time_ms"} or duration <= 0:
-            continue
-        try:
-            percent = min(99, max(0, int(float(raw_value) / 1_000_000 / duration * 100)))
-        except ValueError:
-            continue
-        if percent != last_percent:
-            last_percent = percent
-            on_progress(percent / 100)
-    stderr = process.stderr.read() if process.stderr else ""
-    return_code = process.wait()
+    if process_callback:
+        process_callback(process)
+    try:
+        assert process.stdout is not None
+        last_percent = -1
+        for line in process.stdout:
+            if cancel_check:
+                cancel_check()
+            key, _, raw_value = line.strip().partition("=")
+            if key not in {"out_time_us", "out_time_ms"} or duration <= 0:
+                continue
+            try:
+                percent = min(99, max(0, int(float(raw_value) / 1_000_000 / duration * 100)))
+            except ValueError:
+                continue
+            if percent != last_percent:
+                last_percent = percent
+                on_progress(percent / 100)
+        stderr = process.stderr.read() if process.stderr else ""
+        return_code = process.wait()
+    finally:
+        if process_callback:
+            process_callback(None)
+    if cancel_check:
+        cancel_check()
     if return_code:
         raise MediaCommandError(stderr[-2000:] or "媒体命令执行失败")
     on_progress(1.0)
+
+
+def _run_command_with_cancel(
+    command: list[str],
+    cancel_check: CancelCheck,
+    process_callback: ProcessCallback | None = None,
+) -> None:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if process_callback:
+        process_callback(process)
+    stdout = ""
+    stderr = ""
+    try:
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                cancel_check()
+    finally:
+        if process_callback:
+            process_callback(None)
+    cancel_check()
+    if process.returncode:
+        raise MediaCommandError((stderr or stdout)[-2000:] or "媒体命令执行失败")
 
 
 def _encode_piece(
@@ -389,6 +445,8 @@ def _encode_piece(
     output: Path,
     profile_name: str,
     on_progress: Callable[[float], None] | None = None,
+    cancel_check: CancelCheck | None = None,
+    process_callback: ProcessCallback | None = None,
 ) -> None:
     profile = PROFILES[profile_name]
     info = probe_media(ffprobe, part.path)
@@ -417,19 +475,32 @@ def _encode_piece(
         "-movflags", "+faststart", str(output),
     ]
     if on_progress:
-        _run_ffmpeg_with_progress(command, part.duration, on_progress)
+        _run_ffmpeg_with_progress(command, part.duration, on_progress, cancel_check, process_callback)
+    elif cancel_check:
+        _run_command_with_cancel(command, cancel_check, process_callback)
     else:
         run_command(command)
 
 
-def _concat_files(ffmpeg: str, pieces: list[Path], output: Path, concat_path: Path) -> None:
+def _concat_files(
+    ffmpeg: str,
+    pieces: list[Path],
+    output: Path,
+    concat_path: Path,
+    cancel_check: CancelCheck | None = None,
+    process_callback: ProcessCallback | None = None,
+) -> None:
     lines = []
     for item in pieces:
         escaped = item.resolve().as_posix().replace("'", "'\\''")
         lines.append(f"file '{escaped}'\n")
     concat_path.parent.mkdir(parents=True, exist_ok=True)
     concat_path.write_text("".join(lines), encoding="utf-8")
-    run_command([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path.resolve()), "-c", "copy", "-movflags", "+faststart", str(output.resolve())])
+    command = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path.resolve()), "-c", "copy", "-movflags", "+faststart", str(output.resolve())]
+    if cancel_check:
+        _run_command_with_cancel(command, cancel_check, process_callback)
+    else:
+        run_command(command)
 
 
 def render_timeline_slice(
@@ -438,6 +509,8 @@ def render_timeline_slice(
     work: Path,
     profile: str,
     on_progress: Callable[[float], None] | None = None,
+    cancel_check: CancelCheck | None = None,
+    process_callback: ProcessCallback | None = None,
 ) -> float:
     settings = get_settings()
     encoded: list[Path] = []
@@ -449,12 +522,17 @@ def render_timeline_slice(
             if on_progress and total_duration > 0:
                 on_progress(min(1.0, (before + length * ratio) / total_duration))
 
-        _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, part, piece, profile, report_piece if on_progress else None)
+        if cancel_check:
+            cancel_check()
+        _encode_piece(
+            settings.ffmpeg_binary, settings.ffprobe_binary, part, piece, profile,
+            report_piece if on_progress else None, cancel_check, process_callback,
+        )
         encoded.append(piece)
         completed_duration += part.duration
     if not encoded:
         raise ValueError("没有可输出的安全内容")
-    _concat_files(settings.ffmpeg_binary, encoded, output, work / "concat.txt")
+    _concat_files(settings.ffmpeg_binary, encoded, output, work / "concat.txt", cancel_check, process_callback)
     if on_progress:
         on_progress(1.0)
     return total_duration
@@ -476,8 +554,51 @@ def _utcnow() -> datetime:
 class FactoryPipeline:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._cancel_events: dict[int, threading.Event] = {}
+        self._active_processes: dict[int, subprocess.Popen] = {}
+
+    def request_cancel(self, job_id: int) -> None:
+        with self._state_lock:
+            event = self._cancel_events.setdefault(job_id, threading.Event())
+            event.set()
+            process = self._active_processes.get(job_id)
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+
+    def _begin_job(self, job_id: int) -> None:
+        with self._state_lock:
+            self._cancel_events.setdefault(job_id, threading.Event())
+
+    def _finish_job(self, job_id: int) -> None:
+        with self._state_lock:
+            self._active_processes.pop(job_id, None)
+            self._cancel_events.pop(job_id, None)
+
+    def _set_process(self, job_id: int, process: subprocess.Popen | None) -> None:
+        with self._state_lock:
+            if process is None:
+                self._active_processes.pop(job_id, None)
+            else:
+                self._active_processes[job_id] = process
+                event = self._cancel_events.setdefault(job_id, threading.Event())
+                if event.is_set() and process.poll() is None:
+                    try:
+                        process.terminate()
+                    except OSError:
+                        pass
+
+    def _check_cancelled(self, job_id: int) -> None:
+        with self._state_lock:
+            cancelled = self._cancel_events.get(job_id)
+            if cancelled and cancelled.is_set():
+                raise FactoryCancelled("用户已取消当前任务")
 
     def _save(self, session: Session, job: FactoryJob, step: str, progress: int) -> None:
+        self._check_cancelled(int(job.id))
         job.current_step = step
         job.progress = progress
         session.add(job)
@@ -500,13 +621,16 @@ class FactoryPipeline:
 
     def process_one(self, job_id: int) -> None:
         settings = get_settings()
+        self._begin_job(job_id)
         with Session(database.engine) as session:
             job = session.get(FactoryJob, job_id)
             if not job:
+                self._finish_job(job_id)
                 return
             drama = session.get(Drama, job.drama_id)
             work = Path(drama.file_dir) / ".factory" / f"job_{job.id:04d}" if drama else settings.media_root / ".factory" / str(job.id)
             try:
+                self._check_cancelled(job_id)
                 if not drama:
                     raise ValueError("剧目不存在")
                 sources = sorted(episode_files(Path(drama.file_dir)), key=lambda path: natural_key(path.name))
@@ -546,6 +670,7 @@ class FactoryPipeline:
 
                 source_info: list[tuple[Path, float]] = []
                 for source in sources:
+                    self._check_cancelled(job_id)
                     duration = probe_media(settings.ffprobe_binary, source)["duration"]
                     source_info.append((source, duration))
 
@@ -606,6 +731,8 @@ class FactoryPipeline:
                         work / "clean_full",
                         job.compression_profile,
                         report_clean,
+                        lambda: self._check_cancelled(job_id),
+                        lambda process: self._set_process(job_id, process),
                     )
                     if "clean_full" in modes:
                         clip = Clip(
@@ -645,6 +772,7 @@ class FactoryPipeline:
                     encoded_hooks: dict[int, Path] = {}
                     encoded_hook_ranges: dict[int, tuple[float, float]] = {}
                     for index, group in enumerate(groups, start=1):
+                        self._check_cancelled(job_id)
                         self._save(session, job, f"生成高能片头版本 {index}/{len(groups)}", 42 + round(index / max(1, len(groups)) * 28))
                         hook_files: list[Path] = []
                         hook_seconds = 0.0
@@ -662,8 +790,17 @@ class FactoryPipeline:
                                 probe_media(settings.ffprobe_binary, hook_source)["duration"],
                             )
                             if hook.id not in encoded_hooks:
+                                pending_hook = work / "hooks" / f"H{hook.id:04d}.mp4"
                                 hook_file = hooks_dir / f"H{hook.id:04d}.mp4"
-                                _encode_piece(settings.ffmpeg_binary, settings.ffprobe_binary, TimelinePart(hook_source, hook.episode, hook_start, hook_end), hook_file, job.compression_profile)
+                                _encode_piece(
+                                    settings.ffmpeg_binary, settings.ffprobe_binary,
+                                    TimelinePart(hook_source, hook.episode, hook_start, hook_end),
+                                    pending_hook, job.compression_profile,
+                                    cancel_check=lambda: self._check_cancelled(job_id),
+                                    process_callback=lambda process: self._set_process(job_id, process),
+                                )
+                                self._check_cancelled(job_id)
+                                pending_hook.replace(hook_file)
                                 encoded_hooks[hook.id] = hook_file
                                 encoded_hook_ranges[hook.id] = (hook_start, hook_end)
                                 hook.file_path = str(hook_file.resolve())
@@ -676,7 +813,12 @@ class FactoryPipeline:
                         suffix = "_".join(f"H{hook_id:04d}" for hook_id in hook_ids)
                         filename = f"J{job.id:04d}_hook_{index:03d}_{suffix}.mp4"
                         target = generated_dir / filename
-                        _concat_files(settings.ffmpeg_binary, [*hook_files, body_target], target, work / f"hook_{index:03d}.txt")
+                        _concat_files(
+                            settings.ffmpeg_binary, [*hook_files, body_target], target,
+                            work / f"hook_{index:03d}.txt",
+                            lambda: self._check_cancelled(job_id),
+                            lambda process: self._set_process(job_id, process),
+                        )
                         duration = hook_seconds + body_duration
                         first = valid_hooks[0]
                         first_start, first_end = encoded_hook_ranges[first.id]
@@ -707,6 +849,7 @@ class FactoryPipeline:
                     meta_files: list[Path] = []
                     source_durations = {source.resolve(): duration for source, duration in source_info}
                     for part in meta_plan:
+                        self._check_cancelled(job_id)
                         source_label = "、".join(str(episode) for episode in part.source_episodes)
                         self._save(
                             session,
@@ -727,11 +870,14 @@ class FactoryPipeline:
                         target = meta_dir / filename
                         if direct_copy and only_part:
                             shutil.copy2(only_part.path, target)
+                            self._check_cancelled(job_id)
                             actual = only_part.duration
                         else:
                             actual = render_timeline_slice(
                                 list(part.parts), target,
                                 work / f"meta_{part.sequence:03d}", "meta",
+                                cancel_check=lambda: self._check_cancelled(job_id),
+                                process_callback=lambda process: self._set_process(job_id, process),
                             )
                         from .meta_sfs import _verify_output
                         compliance_errors = _verify_output(target)
@@ -755,6 +901,7 @@ class FactoryPipeline:
                         job.removed_seconds = 0
                     _write_meta_manifest(Path(drama.file_dir), job.id, meta_files)
 
+                self._check_cancelled(job_id)
                 assets = session.exec(select(GeneratedAsset).where(GeneratedAsset.factory_job_id == job.id)).all()
                 job.output_bytes = sum(row.size_bytes for row in assets)
                 job.status = "completed"
@@ -783,15 +930,23 @@ class FactoryPipeline:
                             if clip:
                                 session.delete(clip)
                         session.delete(asset)
-                job.status = "failed"
-                job.current_step = "处理失败"
-                job.error_message = str(exc)[-2000:]
+                    for stale_file in generated_root.glob(f"J{job.id:04d}_*.mp4"):
+                        if stale_file.is_file():
+                            stale_file.unlink(missing_ok=True)
+                    stale_meta_dir = generated_root / "meta" / f"J{job.id:04d}"
+                    if stale_meta_dir.is_dir():
+                        shutil.rmtree(stale_meta_dir, ignore_errors=True)
+                was_cancelled = isinstance(exc, FactoryCancelled)
+                job.status = "cancelled" if was_cancelled else "failed"
+                job.current_step = "已取消" if was_cancelled else "处理失败"
+                job.error_message = "" if was_cancelled else str(exc)[-2000:]
                 job.completed_at = _utcnow()
                 session.add(job)
                 session.commit()
             finally:
                 if work.is_dir():
                     shutil.rmtree(work, ignore_errors=True)
+                self._finish_job(job_id)
 
 
 factory_pipeline = FactoryPipeline()
@@ -799,6 +954,12 @@ factory_pipeline = FactoryPipeline()
 
 def resume_factory_jobs() -> None:
     with Session(database.engine) as session:
+        cancelling = session.exec(select(FactoryJob).where(FactoryJob.status == "cancel_requested")).all()
+        for job in cancelling:
+            job.status = "cancelled"
+            job.current_step = "已取消"
+            job.completed_at = _utcnow()
+            session.add(job)
         interrupted = session.exec(select(FactoryJob).where(FactoryJob.status == "processing")).all()
         for job in interrupted:
             job.status = "queued"
