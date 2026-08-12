@@ -49,9 +49,8 @@ from .app.services.windows_folder_picker import (
     FolderPickerBusy,
     FolderPickerCancelled,
     FolderPickerError,
-    folder_picker_ready,
+    folder_picker_environment,
     pick_windows_folder,
-    windows_session_id,
 )
 
 
@@ -241,15 +240,22 @@ app.include_router(meta_sfs_router)
 
 @app.get("/api/local/health")
 def health():
+    picker = folder_picker_environment()
+    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "native_folder_picker_v1", "native_folder_picker_v2"]
     return {
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.2.0",
-        "picker_ready": folder_picker_ready(),
+        "version": "1.2.1",
+        "picker_ready": picker.ready,
+        "picker_reason": picker.reason,
         "windows_user": os.getenv("USERNAME", ""),
-        "session_id": windows_session_id(),
-        "capabilities": ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "native_folder_picker_v1"],
+        "session_id": picker.session_id,
+        "session_state": picker.session_state,
+        "interactive_user": picker.interactive_user,
+        "shell_session_id": picker.shell_session_id,
+        "active_console_session_id": picker.active_console_session_id,
+        "capabilities": capabilities,
     }
 
 

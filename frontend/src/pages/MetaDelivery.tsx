@@ -20,7 +20,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const[source,setSource]=useState<MetaFactorySource>()
  const[packages,setPackages]=useState<MetaPackage[]>([])
  const[localSource,setLocalSource]=useState<LocalWorkspace>()
- const[localStatus,setLocalStatus]=useState<'checking'|'ready'|'offline'|'outdated'|'error'|'none'>('checking')
+ const[localStatus,setLocalStatus]=useState<'checking'|'ready'|'offline'|'outdated'|'unavailable'|'error'|'none'>('checking')
  const[localIssue,setLocalIssue]=useState('')
  const[detectVersion,setDetectVersion]=useState(0)
  const[action,setAction]=useState<string|null>(null)
@@ -74,8 +74,12 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        if(!stopped){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?(error as Error).message:`本地助手响应异常：${(error as Error).message}`)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||health.picker_ready===false){
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)){
        if(!stopped){setLocalStatus('outdated');setPackages([]);setLocalIssue('当前本地助手版本过旧，需要更新后使用 Meta 官方投递')}
+       return
+     }
+     if(health.picker_ready===false){
+       if(!stopped){setLocalStatus('unavailable');setPackages([]);setLocalIssue('本地助手未运行在当前 Windows 用户桌面，请双击桌面快捷方式后重试')}
        return
      }
      if(!stopped)setLocalStatus('none')
@@ -104,7 +108,9 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const showLocalWorkspaceHelp=(mode:'install'|'update'='install')=>showLocalAssistantInstallPrompt({mode})
  const connectLocalSource=async()=>{
    if(!drama)return
-   setAction('connecting');setLocalStatus('checking')
+   const fallbackStatus=localSource?'ready':'none'
+   let connected=false
+   setAction('connecting');setLocalStatus('checking');setLocalIssue('')
    try{
      msg.loading({key:'local-access',content:'正在连接本地助手；若浏览器询问本地网络访问，请点“允许”',duration:0})
      let health
@@ -114,22 +120,30 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        else{setLocalStatus('error');setLocalIssue(`本地助手响应异常：${(error as Error).message}`);msg.error((error as Error).message)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||health.picker_ready===false){msg.destroy('local-access');setLocalStatus('outdated');showLocalWorkspaceHelp('update');return}
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)){msg.destroy('local-access');setLocalStatus('outdated');showLocalWorkspaceHelp('update');return}
+     if(health.picker_ready===false){msg.destroy('local-access');setLocalStatus('unavailable');setLocalIssue('本地助手未运行在当前 Windows 用户桌面，请双击桌面快捷方式后重试');msg.warning('请先启动当前用户桌面上的 Jushu Local Assistant');return}
      msg.destroy('local-access')
+     setLocalStatus(fallbackStatus)
      msg.loading({key:'folder-picker',content:'请在已打开的 Windows 窗口中选择源文件夹；若窗口不在前台，请查看任务栏',duration:0})
-     const selected=await syncTaskCovers(drama,await localClient.select(drama))
+     let selected=await localClient.select(drama)
      msg.destroy('folder-picker')
-     setLocalSource(selected);setLocalStatus('ready');setCheck(undefined)
+     setLocalSource(selected);setLocalStatus('ready');setCheck(undefined);connected=true
+     try{
+       selected=await syncTaskCovers(drama,selected)
+       setLocalSource(selected)
+     }catch(error){setLocalIssue(`封面同步失败：${(error as Error).message}`)}
      api.registerLocalSourceManifest(drama.id,{folder_name:selected.folder_name,file_count:selected.file_count,total_bytes:selected.total_bytes,filenames:selected.files.map(file=>file.relative_path)}).catch(()=>undefined)
-     const[delivery,items]=await Promise.all([localClient.metaFactorySource(drama.id),localClient.metaPackages()])
-     setSource(delivery);setPackages(items)
+     try{
+       const[delivery,items]=await Promise.all([localClient.metaFactorySource(drama.id),localClient.metaPackages()])
+       setSource(delivery);setPackages(items)
+     }catch(error){setLocalIssue(`本机成品读取失败：${(error as Error).message}`)}
      msg.success(`已连接“${selected.folder_name}”，视频只在这台电脑读取`)
    }catch(error){
      msg.destroy('local-access')
      msg.destroy('folder-picker')
      const text=(error as Error).message
      if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalAssistantAccessPrompt()}
-     else if(!text.includes('取消选择'))msg.error(text)
+     else{setLocalStatus(connected?'ready':fallbackStatus);if(!text.includes('取消选择'))msg.error(text)}
    }finally{setAction(null)}
  }
  const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
@@ -185,7 +199,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
   <Steps size="small" current={check?.ready?2:source?.ready?1:0} className="meta-steps" items={[{title:'选择本机素材或成品'},{title:'自动命名与严格校验'},{title:'直接生成到本机'}]}/>
   <Form form={form} layout="vertical" initialValues={defaults}><div className="split-workbench meta-workbench"><Card title="1. 选择本机素材或内容工厂成品">
     <Form.Item name="drama_id" label="剧目任务" rules={[{required:true,message:'请选择剧目任务'}]}><Select showSearch optionFilterProp="label" options={dramas.map(item=>({value:item.id,label:`${item.title} · 全集 ${item.total_episode_count}`}))}/></Form.Item>
-    {drama&&<Space wrap style={{marginBottom:12}}><Button type="primary" icon={<FolderOpenOutlined/>} loading={action==='connecting'||localStatus==='checking'} disabled={(building&&action!=='connecting')||localStatus==='outdated'||localStatus==='error'} onClick={connectLocalSource}>{localSource?'更换本地文件夹':'选择本地文件夹'}</Button>{localStatus==='offline'&&<><Button onClick={showLocalAssistantAccessPrompt}>允许本地访问</Button><Button onClick={()=>showLocalWorkspaceHelp()}>重新安装</Button></>}{localStatus==='outdated'&&<Button onClick={()=>showLocalWorkspaceHelp('update')}>更新本地助手</Button>}{localStatus==='error'&&<Button onClick={()=>setDetectVersion(value=>value+1)}>重新检测</Button>}</Space>}
+    {drama&&<Space wrap style={{marginBottom:12}}><Button type="primary" icon={<FolderOpenOutlined/>} loading={action==='connecting'||localStatus==='checking'} disabled={(building&&action!=='connecting')||localStatus==='outdated'||localStatus==='error'} onClick={connectLocalSource}>{localSource?'更换本地文件夹':'选择本地文件夹'}</Button>{localStatus==='offline'&&<><Button onClick={showLocalAssistantAccessPrompt}>允许本地访问</Button><Button onClick={()=>showLocalWorkspaceHelp()}>重新安装</Button></>}{localStatus==='outdated'&&<Button onClick={()=>showLocalWorkspaceHelp('update')}>更新本地助手</Button>}{localStatus==='unavailable'&&<Button onClick={connectLocalSource}>重新连接助手</Button>}{localStatus==='error'&&<Button onClick={()=>setDetectVersion(value=>value+1)}>重新检测</Button>}</Space>}
     {localIssue&&<Alert type={localStatus==='offline'||localStatus==='outdated'||localStatus==='error'?'warning':'info'} showIcon message={localIssue} style={{marginBottom:12}}/>}
     {localSource&&<Alert type="success" showIcon message={`本机文件夹：${localSource.folder_name}`} description={<Space direction="vertical" size={0}><Typography.Text ellipsis={{tooltip:localSource.absolute_path}}>{localSource.absolute_path}</Typography.Text><Typography.Text type="secondary">{localSource.file_count} 个视频 · {formatSize(localSource.total_bytes)} · 竖版封面 {localSource.covers.vertical?'已就绪':'缺少'} · 方形封面 {localSource.covers.square?'已就绪':'缺少'}</Typography.Text></Space>} style={{marginBottom:12}}/>}
     {drama&&<Space wrap className="meta-drama-tags"><Tag color={localSource?'green':'default'}>{localSource?'本机工作区':'尚未连接本机'}</Tag><Tag>源文件 {localSource?.file_count??0} 集</Tag><Tag color={source?.ready?'green':'default'}>可投递 {source?.episode_count??0} 集</Tag><Tag color={localSource?.covers.vertical?'green':'red'}>竖版封面</Tag><Tag color={localSource?.covers.square?'green':'red'}>方形封面</Tag>{Boolean(localSource?.covers.horizontal)&&<Tag color="green">横版封面</Tag>}<Button type="link" size="small" icon={<EditOutlined/>} onClick={()=>navigate(`/dramas/${drama.id}`)}>编辑剧目</Button></Space>}

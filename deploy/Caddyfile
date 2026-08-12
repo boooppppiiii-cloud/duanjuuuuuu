@@ -1,3 +1,7 @@
+http://43.159.41.222 {
+	redir https://app.duanju.chat{uri} 308
+}
+
 app.duanju.chat {
 	encode zstd gzip
 	reverse_proxy frontend:80

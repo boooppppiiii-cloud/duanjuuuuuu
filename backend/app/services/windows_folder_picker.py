@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from ctypes import wintypes
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -33,28 +34,132 @@ class FolderPickerError(RuntimeError):
 _picker_lock = threading.Lock()
 
 
-def folder_picker_ready() -> bool:
+@dataclass(frozen=True)
+class FolderPickerEnvironment:
+    ready: bool
+    reason: str
+    session_id: int
+    session_state: int
+    interactive_user: str
+    shell_session_id: int
+    active_console_session_id: int
+
+
+def _windows_libraries_available() -> bool:
     if sys.platform != "win32":
         return False
     try:
         ctypes.WinDLL("shell32", use_last_error=True)
         ctypes.WinDLL("ole32", use_last_error=True)
         ctypes.WinDLL("user32", use_last_error=True)
+        ctypes.WinDLL("wtsapi32", use_last_error=True)
         return True
     except Exception:
         return False
 
 
-def windows_session_id() -> int:
+def _session_id_for_pid(pid: int) -> int:
     if sys.platform != "win32":
         return -1
     session_id = wintypes.DWORD()
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
     kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
-    if not kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session_id)):
+    if not kernel32.ProcessIdToSessionId(pid, ctypes.byref(session_id)):
         return -1
     return int(session_id.value)
+
+
+def windows_session_id() -> int:
+    return _session_id_for_pid(os.getpid())
+
+
+def active_console_session_id() -> int:
+    if sys.platform != "win32":
+        return -1
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WTSGetActiveConsoleSessionId.restype = wintypes.DWORD
+    value = int(kernel32.WTSGetActiveConsoleSessionId())
+    return -1 if value == 0xFFFFFFFF else value
+
+
+def _query_wts_session(session_id: int) -> tuple[int, str]:
+    """Return the WTS connection state and signed-in user for one session."""
+    wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
+    query = wtsapi32.WTSQuerySessionInformationW
+    query.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+    query.restype = wintypes.BOOL
+    wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+    wtsapi32.WTSFreeMemory.restype = None
+
+    def raw(info_class: int) -> tuple[int, int]:
+        buffer = ctypes.c_void_p()
+        size = wintypes.DWORD()
+        if not query(None, session_id, info_class, ctypes.byref(buffer), ctypes.byref(size)) or not buffer.value:
+            raise OSError(ctypes.get_last_error(), "WTSQuerySessionInformationW failed")
+        return int(buffer.value), int(size.value)
+
+    state_pointer, state_size = raw(8)  # WTSConnectState
+    try:
+        if state_size < ctypes.sizeof(wintypes.DWORD):
+            raise OSError("WTSConnectState returned an incomplete result")
+        state = int(ctypes.cast(state_pointer, ctypes.POINTER(wintypes.DWORD)).contents.value)
+    finally:
+        wtsapi32.WTSFreeMemory(state_pointer)
+
+    user_pointer, user_size = raw(5)  # WTSUserName
+    try:
+        user = ctypes.wstring_at(user_pointer, max(0, user_size // ctypes.sizeof(ctypes.c_wchar))).rstrip("\x00")
+    finally:
+        wtsapi32.WTSFreeMemory(user_pointer)
+    return state, user
+
+
+def _shell_session_id() -> int:
+    if sys.platform != "win32":
+        return -1
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetShellWindow.restype = wintypes.HWND
+    shell_window = user32.GetShellWindow()
+    if not shell_window:
+        return -1
+    shell_pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    if not user32.GetWindowThreadProcessId(shell_window, ctypes.byref(shell_pid)) or not shell_pid.value:
+        return -1
+    return _session_id_for_pid(int(shell_pid.value))
+
+
+def folder_picker_environment() -> FolderPickerEnvironment:
+    if sys.platform != "win32":
+        return FolderPickerEnvironment(False, "not_windows", -1, -1, "", -1, -1)
+    session_id = windows_session_id()
+    console_session = active_console_session_id()
+    if not _windows_libraries_available():
+        return FolderPickerEnvironment(False, "windows_api_unavailable", session_id, -1, "", -1, console_session)
+    try:
+        state, user = _query_wts_session(session_id)
+        shell_session = _shell_session_id()
+    except Exception:
+        return FolderPickerEnvironment(False, "session_probe_failed", session_id, -1, "", -1, console_session)
+    if session_id <= 0:
+        reason = "non_interactive_session"
+    elif state != 0:  # WTSActive
+        reason = "session_not_active"
+    elif not user:
+        reason = "session_has_no_user"
+    elif shell_session != session_id:
+        reason = "shell_session_mismatch"
+    elif user.casefold() != os.getenv("USERNAME", "").strip().casefold():
+        reason = "desktop_user_mismatch"
+    else:
+        reason = "ready"
+    return FolderPickerEnvironment(reason == "ready", reason, session_id, state, user, shell_session, console_session)
+
+
+def folder_picker_ready() -> bool:
+    return folder_picker_environment().ready
 
 
 def _native_pick_folder(title: str) -> str | None:
@@ -175,6 +280,9 @@ def _parse_child_output(completed: subprocess.CompletedProcess[str]) -> Path:
 def pick_windows_folder(title: str, timeout: int = 300) -> Path:
     if sys.platform != "win32":
         raise FolderPickerError("当前环境不支持 Windows 文件夹选择器")
+    environment = folder_picker_environment()
+    if not environment.ready:
+        raise FolderPickerError(f"本地助手未运行在当前可交互的 Windows 桌面（{environment.reason}），请从当前用户桌面快捷方式重新启动")
     if not _picker_lock.acquire(blocking=False):
         raise FolderPickerBusy("文件夹选择窗口已经打开，请先完成或取消当前选择")
     try:
@@ -204,8 +312,9 @@ if __name__ == "__main__":
     parser.add_argument("--title", default="选择文件夹")
     args = parser.parse_args()
     if args.probe:
-        print(json.dumps({"ready": folder_picker_ready()}))
-        raise SystemExit(0 if folder_picker_ready() else 1)
+        ready = folder_picker_ready()
+        print(json.dumps({"ready": ready}))
+        raise SystemExit(0 if ready else 1)
     if not args.child:
         parser.error("--child or --probe is required")
     raise SystemExit(_child_main(args.title))

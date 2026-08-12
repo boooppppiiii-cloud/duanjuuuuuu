@@ -96,6 +96,14 @@ try {
     }
 
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+    try {
+        $existingHealth = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
+        if ($existingHealth.status -eq "ok" -and $existingHealth.windows_user -and -not $existingHealth.windows_user.Equals($env:USERNAME, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Port 17862 is occupied by a Local Assistant running as Windows user '$($existingHealth.windows_user)'. Sign in as that user and exit the old assistant, or restart Windows and run this installer from the current user before opening the old shortcut."
+        }
+    } catch {
+        if ($_.Exception.Message -like "Port 17862 is occupied*") { throw }
+    }
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
             $_.Name -in @("python.exe", "pythonw.exe") -and
@@ -103,6 +111,14 @@ try {
             ($_.SessionId -eq $currentSessionId -or ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)))
         } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $portReleased = -not (Get-NetTCPConnection -LocalPort 17862 -State Listen -ErrorAction SilentlyContinue)
+        if ($portReleased) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $portReleased) {
+        throw "Port 17862 is still in use. Close the old Jushu Local Assistant or restart Windows, then run this installer again from the current Windows user."
+    }
     if (Test-Path -LiteralPath $appRoot) { Remove-Item -LiteralPath $appRoot -Recurse -Force }
     New-Item -ItemType Directory -Path (Join-Path $appRoot "backend") -Force | Out-Null
     Copy-Item -Path (Join-Path $sourceBackend "*") -Destination (Join-Path $appRoot "backend") -Recurse -Force
@@ -182,7 +198,7 @@ $currentSessionId = (Get-Process -Id $PID).SessionId
 
 try {
     $health = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
-    if ($health.status -eq "ok" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.capabilities -contains "native_folder_picker_v1") { exit 0 }
+    if ($health.status -eq "ok" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v2") { exit 0 }
 } catch { }
 
 if (Test-Path -LiteralPath $settingsFile) {
@@ -238,7 +254,7 @@ try {
         Start-Sleep -Seconds 1
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
-            if ($health.status -eq "ok" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v1") { $ready = $true; break }
+            if ($health.status -eq "ok" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v2") { $ready = $true; break }
         } catch { }
     }
     if (-not $ready) { throw "The Local Assistant was installed but did not start in time. Open the Jushu Local Assistant desktop shortcut and retry." }
