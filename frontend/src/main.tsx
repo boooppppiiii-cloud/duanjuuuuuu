@@ -1,12 +1,30 @@
 import React from 'react'
-import ReactDOM from 'react-dom/client'
+import { createRoot, type Root } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
-import { ConfigProvider } from 'antd'
+import { ConfigProvider, unstableSetRender } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import App from './App'
 import './styles.css'
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+const antdRoots = new WeakMap<Element | DocumentFragment, Root>()
+
+// Ant Design 5 static modals need an explicit renderer when the app runs on React 19.
+unstableSetRender((node, container) => {
+  let root = antdRoots.get(container)
+  if (!root) {
+    root = createRoot(container)
+    antdRoots.set(container, root)
+  }
+  root.render(node)
+
+  return async () => {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+    root.unmount()
+    antdRoots.delete(container)
+  }
+})
+
+createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ConfigProvider
       locale={zhCN}

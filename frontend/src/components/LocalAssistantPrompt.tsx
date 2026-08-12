@@ -2,14 +2,16 @@ import { Button,Modal,Space } from 'antd'
 import { DownloadOutlined,ReloadOutlined } from '@ant-design/icons'
 
 export const LOCAL_ASSISTANT_DOWNLOAD_URL='/downloads/Jushu-Local-Assistant-Windows-v3.zip?v=20260812-modern-picker-v3'
+export const LOCAL_ASSISTANT_DOWNLOAD_FILENAME='Jushu-Local-Assistant-Windows-v3.zip'
 
 export function downloadLocalAssistantInstaller(){
   const link=document.createElement('a')
   link.href=LOCAL_ASSISTANT_DOWNLOAD_URL
-  link.download='Jushu-Local-Assistant-Windows-v3.zip'
+  link.download=LOCAL_ASSISTANT_DOWNLOAD_FILENAME
+  link.style.display='none'
   document.body.appendChild(link)
   link.click()
-  link.remove()
+  window.setTimeout(()=>link.remove(),0)
 }
 
 export function showLocalAssistantInstallPrompt({mode='install'}:{mode?:'install'|'update'}={}){
@@ -26,7 +28,7 @@ export function showLocalAssistantInstallPrompt({mode='install'}:{mode?:'install
         <span><b>3</b><small>回到网页重新检测</small></span>
       </div>
       <Space wrap>
-        <Button type="primary" icon={<DownloadOutlined/>} onClick={downloadLocalAssistantInstaller}>{updating?'下载最新版':'下载 Windows 本地助手'}</Button>
+        <Button type="primary" icon={<DownloadOutlined/>} href={LOCAL_ASSISTANT_DOWNLOAD_URL} download={LOCAL_ASSISTANT_DOWNLOAD_FILENAME}>{updating?'下载最新版':'下载 Windows 本地助手'}</Button>
         <Button icon={<ReloadOutlined/>} onClick={()=>window.location.reload()}>已经启动，重新检测</Button>
       </Space>
       <small className="local-assistant-note">首次安装需要联网下载视频处理组件；浏览器询问“本地网络访问”时请选择允许。</small>
@@ -49,7 +51,7 @@ export function showLocalAssistantAccessPrompt(){
       </div>
       <Space wrap>
         <Button href="http://127.0.0.1:17862/api/local/health" target="_blank">检查助手运行状态</Button>
-        <Button icon={<DownloadOutlined/>} onClick={downloadLocalAssistantInstaller}>确需重装时下载</Button>
+        <Button icon={<DownloadOutlined/>} href={LOCAL_ASSISTANT_DOWNLOAD_URL} download={LOCAL_ASSISTANT_DOWNLOAD_FILENAME}>确需重装时下载</Button>
       </Space>
       <small className="local-assistant-note">检查页面显示 status: ok，说明助手已经正常安装，只需处理浏览器权限。</small>
     </div>,
