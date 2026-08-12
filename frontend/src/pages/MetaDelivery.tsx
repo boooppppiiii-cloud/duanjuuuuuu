@@ -120,7 +120,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        else{setLocalStatus('error');setLocalIssue(`本地助手响应异常：${(error as Error).message}`);msg.error((error as Error).message)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)){msg.destroy('local-access');setLocalStatus('outdated');showLocalWorkspaceHelp('update');return}
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)){msg.destroy('local-access');setLocalStatus('outdated');setLocalIssue('当前本地助手仍使用旧式文件夹选择器，请安装新版后重试');showLocalWorkspaceHelp('update');return}
      if(health.picker_ready===false){msg.destroy('local-access');setLocalStatus('unavailable');setLocalIssue('本地助手未运行在当前 Windows 用户桌面，请双击桌面快捷方式后重试');msg.warning('请先启动当前用户桌面上的 Jushu Local Assistant');return}
      msg.destroy('local-access')
      setLocalStatus(fallbackStatus)
@@ -142,8 +142,8 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      msg.destroy('local-access')
      msg.destroy('folder-picker')
      const text=(error as Error).message
-     if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalAssistantAccessPrompt()}
-     else{setLocalStatus(connected?'ready':fallbackStatus);if(!text.includes('取消选择'))msg.error(text)}
+     if(localAssistantUnavailable(error)){setLocalStatus('offline');setLocalIssue(text);showLocalAssistantAccessPrompt()}
+     else{setLocalStatus(connected?'ready':fallbackStatus);if(text.includes('取消选择')){setLocalIssue('没有选择文件夹。请重新点击按钮，并在弹出的 Windows 窗口中完成选择。');msg.info('已取消选择文件夹')}else{setLocalIssue(text);msg.error(text)}}
    }finally{setAction(null)}
  }
  const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
@@ -183,7 +183,8 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    }catch(error){
      msg.destroy('folder-picker')
      if(queued)localClient.metaPackages().then(setPackages).catch(()=>undefined)
-     if(!cancelled(error))msg.error((error as Error).message)
+     if(cancelled(error))msg.info('已取消选择保存位置')
+     else msg.error((error as Error).message)
    }finally{
      window.setTimeout(()=>setExportProgress(null),800)
      setAction(null)

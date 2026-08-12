@@ -8,7 +8,9 @@ from app.services.windows_folder_picker import (
     FolderPickerEnvironment,
     FolderPickerCancelled,
     FolderPickerError,
+    _hresult_code,
     _parse_child_output,
+    _raise_for_hresult,
     folder_picker_environment,
 )
 
@@ -32,6 +34,27 @@ def test_picker_distinguishes_cancel_from_failure():
 
     with pytest.raises(FolderPickerError, match="COM failed"):
         _parse_child_output(completed('{"status":"error","message":"COM failed"}', returncode=2))
+
+
+@pytest.mark.parametrize("value", [0x800704C7, -2147023673])
+def test_hresult_cancel_is_never_reported_as_a_picker_failure(value):
+    with pytest.raises(FolderPickerCancelled):
+        _raise_for_hresult(value, "Showing the Windows folder picker")
+
+
+@pytest.mark.parametrize("value", [0, 1])
+def test_success_hresult_is_accepted(value):
+    _raise_for_hresult(value, "Windows operation")
+
+
+@pytest.mark.parametrize("value", [0x80004005, -2147467259])
+def test_non_cancel_hresult_keeps_the_exact_failure_code(value):
+    with pytest.raises(OSError, match="HRESULT 0x80004005"):
+        _raise_for_hresult(value, "Showing the Windows folder picker")
+
+
+def test_hresult_normalization_is_stable_for_signed_windows_values():
+    assert _hresult_code(-2147023673) == 0x800704C7
 
 
 def test_picker_reports_missing_child_output():

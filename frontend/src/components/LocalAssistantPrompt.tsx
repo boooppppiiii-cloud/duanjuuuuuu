@@ -1,12 +1,12 @@
 import { Button,Modal,Space } from 'antd'
 import { DownloadOutlined,ReloadOutlined } from '@ant-design/icons'
 
-export const LOCAL_ASSISTANT_DOWNLOAD_URL='/downloads/Jushu-Local-Assistant-Windows-v2.zip?v=20260812-native-picker-v2'
+export const LOCAL_ASSISTANT_DOWNLOAD_URL='/downloads/Jushu-Local-Assistant-Windows-v3.zip?v=20260812-modern-picker-v3'
 
 export function downloadLocalAssistantInstaller(){
   const link=document.createElement('a')
   link.href=LOCAL_ASSISTANT_DOWNLOAD_URL
-  link.download='Jushu-Local-Assistant-Windows-v2.zip'
+  link.download='Jushu-Local-Assistant-Windows-v3.zip'
   document.body.appendChild(link)
   link.click()
   link.remove()

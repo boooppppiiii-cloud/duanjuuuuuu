@@ -17,6 +17,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import uuid
 
 
 class FolderPickerCancelled(Exception):
@@ -162,83 +163,141 @@ def folder_picker_ready() -> bool:
     return folder_picker_environment().ready
 
 
+_HRESULT_CANCELLED = 0x800704C7
+
+
+def _hresult_code(value: int) -> int:
+    """Normalize signed/unsigned HRESULT representations to 32 bits."""
+    return int(value) & 0xFFFFFFFF
+
+
+def _raise_for_hresult(value: int, operation: str) -> None:
+    """Raise a cancellation or a diagnostic error for a failed HRESULT."""
+    code = _hresult_code(value)
+    if code == _HRESULT_CANCELLED:
+        raise FolderPickerCancelled()
+    if code & 0x80000000:
+        raise OSError(f"{operation} failed (HRESULT 0x{code:08X})")
+
+
 def _native_pick_folder(title: str) -> str | None:
     if sys.platform != "win32":
         raise RuntimeError("Windows native folder picker is unavailable")
 
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     ole32 = ctypes.WinDLL("ole32", use_last_error=True)
     user32 = ctypes.WinDLL("user32", use_last_error=True)
 
-    class BrowseInfo(ctypes.Structure):
+    class Guid(ctypes.Structure):
         _fields_ = [
-            ("hwndOwner", wintypes.HWND),
-            ("pidlRoot", ctypes.c_void_p),
-            ("pszDisplayName", wintypes.LPWSTR),
-            ("lpszTitle", wintypes.LPCWSTR),
-            ("ulFlags", wintypes.UINT),
-            ("lpfn", ctypes.c_void_p),
-            ("lParam", wintypes.LPARAM),
-            ("iImage", ctypes.c_int),
+            ("Data1", ctypes.c_uint32),
+            ("Data2", ctypes.c_uint16),
+            ("Data3", ctypes.c_uint16),
+            ("Data4", ctypes.c_ubyte * 8),
         ]
 
-    shell32.SHBrowseForFolderW.argtypes = [ctypes.POINTER(BrowseInfo)]
-    shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
-    shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
-    shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
+        @classmethod
+        def parse(cls, value: str) -> "Guid":
+            raw = uuid.UUID(value).bytes_le
+            return cls.from_buffer_copy(raw)
+
+    def com_method(interface: ctypes.c_void_p, index: int, restype, *argtypes):
+        if not interface.value:
+            raise OSError("Windows returned an empty COM interface")
+        vtable = ctypes.cast(
+            interface,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)),
+        ).contents
+        return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtable[index])
+
     ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
     ole32.CoInitializeEx.restype = ctypes.c_long
     ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    ole32.CoCreateInstance.argtypes = [
+        ctypes.POINTER(Guid),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(Guid),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    ole32.CoCreateInstance.restype = ctypes.c_long
     ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
     user32.GetForegroundWindow.restype = wintypes.HWND
-    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-    user32.SetForegroundWindow.restype = wintypes.BOOL
-    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
-    user32.SetWindowPos.restype = wintypes.BOOL
 
-    callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HWND, wintypes.UINT, wintypes.LPARAM, wintypes.LPARAM)
+    # FileOpenDialog has provided the supported Windows folder picker since
+    # Vista. Unlike SHBrowseForFolderW it reports an explicit cancellation
+    # HRESULT, so a startup/display failure can never be mistaken for a user
+    # pressing Cancel.
+    clsid_file_open_dialog = Guid.parse("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")
+    iid_file_open_dialog = Guid.parse("D57C7288-D4AD-4768-BE02-9D969532D960")
 
-    def show_picker(hwnd: int, message: int, _lparam: int, _data: int) -> int:
-        if message == 1:  # BFFM_INITIALIZED
-            # The helper is hidden in the tray/startup flow. Explicitly raise
-            # its dialog so users do not mistake a window behind the browser
-            # for an unresponsive button.
-            user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
-            user32.SetForegroundWindow(hwnd)
-        return 0
-
-    callback = callback_type(show_picker)
-
-    # COINIT_APARTMENTTHREADED. A fresh child process guarantees a clean STA.
-    result = ole32.CoInitializeEx(None, 0x2)
-    initialized = result in (0, 1)
-    if result not in (0, 1, -2147417850):  # S_OK, S_FALSE, RPC_E_CHANGED_MODE
-        raise OSError(f"Windows COM initialization failed (0x{result & 0xFFFFFFFF:08X})")
-
-    pidl = None
+    # COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE. The picker always runs
+    # in a fresh child process, therefore any failure to create an STA is real.
+    init_result = ole32.CoInitializeEx(None, 0x2 | 0x4)
+    _raise_for_hresult(init_result, "Windows COM initialization")
+    initialized = True
+    dialog = ctypes.c_void_p()
+    shell_item = ctypes.c_void_p()
+    path_pointer = ctypes.c_void_p()
     try:
-        display_name = ctypes.create_unicode_buffer(32768)
-        browse = BrowseInfo(
-            hwndOwner=user32.GetForegroundWindow(),
-            pidlRoot=None,
-            pszDisplayName=ctypes.cast(display_name, wintypes.LPWSTR),
-            lpszTitle=title,
-            # Filesystem folders only + new-style resizable dialog + edit box.
-            ulFlags=0x0001 | 0x0040 | 0x0010,
-            lpfn=ctypes.cast(callback, ctypes.c_void_p),
-            lParam=0,
-            iImage=0,
+        create_result = ole32.CoCreateInstance(
+            ctypes.byref(clsid_file_open_dialog),
+            None,
+            0x1,  # CLSCTX_INPROC_SERVER
+            ctypes.byref(iid_file_open_dialog),
+            ctypes.byref(dialog),
         )
-        pidl = shell32.SHBrowseForFolderW(ctypes.byref(browse))
-        if not pidl:
+        _raise_for_hresult(create_result, "Creating the Windows folder picker")
+
+        get_options = com_method(dialog, 10, ctypes.c_long, ctypes.POINTER(wintypes.DWORD))
+        set_options = com_method(dialog, 9, ctypes.c_long, wintypes.DWORD)
+        set_title = com_method(dialog, 17, ctypes.c_long, wintypes.LPCWSTR)
+        show = com_method(dialog, 3, ctypes.c_long, wintypes.HWND)
+        get_result = com_method(dialog, 20, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p))
+
+        options = wintypes.DWORD()
+        _raise_for_hresult(get_options(dialog, ctypes.byref(options)), "Reading folder picker options")
+        # FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
+        # FOS_NOCHANGEDIR. Preserve Windows' default flags as well.
+        desired_options = options.value | 0x20 | 0x40 | 0x800 | 0x8
+        _raise_for_hresult(set_options(dialog, desired_options), "Configuring the Windows folder picker")
+        _raise_for_hresult(set_title(dialog, title), "Setting the folder picker title")
+
+        try:
+            _raise_for_hresult(show(dialog, user32.GetForegroundWindow()), "Showing the Windows folder picker")
+        except FolderPickerCancelled:
             return None
-        selected = ctypes.create_unicode_buffer(32768)
-        if not shell32.SHGetPathFromIDListW(pidl, selected):
-            raise OSError("Windows returned a folder that could not be resolved")
-        return selected.value
+
+        _raise_for_hresult(get_result(dialog, ctypes.byref(shell_item)), "Reading the selected folder")
+        get_display_name = com_method(
+            shell_item,
+            5,
+            ctypes.c_long,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        # SIGDN_FILESYSPATH. FORCEFILESYSTEM ensures the selected item can be
+        # represented by a normal path on this computer.
+        _raise_for_hresult(
+            get_display_name(shell_item, 0x80058000, ctypes.byref(path_pointer)),
+            "Resolving the selected folder",
+        )
+        if not path_pointer.value:
+            raise OSError("Windows returned an empty folder path")
+        selected = ctypes.wstring_at(path_pointer.value).strip()
+        if not selected:
+            raise OSError("Windows returned an empty folder path")
+        return selected
     finally:
-        if pidl:
-            ole32.CoTaskMemFree(pidl)
+        if path_pointer.value:
+            ole32.CoTaskMemFree(path_pointer.value)
+        if shell_item.value:
+            release_shell_item = com_method(shell_item, 2, wintypes.ULONG)
+            release_shell_item(shell_item)
+        if dialog.value:
+            release_dialog = com_method(dialog, 2, wintypes.ULONG)
+            release_dialog(dialog)
         if initialized:
             ole32.CoUninitialize()
 

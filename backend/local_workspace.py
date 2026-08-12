@@ -241,12 +241,13 @@ app.include_router(meta_sfs_router)
 @app.get("/api/local/health")
 def health():
     picker = folder_picker_environment()
-    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "native_folder_picker_v1", "native_folder_picker_v2"]
+    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
     return {
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.2.1",
+        "version": "1.3.0",
+        "picker_backend": "IFileOpenDialog",
         "picker_ready": picker.ready,
         "picker_reason": picker.reason,
         "windows_user": os.getenv("USERNAME", ""),

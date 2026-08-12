@@ -10,7 +10,7 @@ export type LocalWorkspace={
 export type LocalModelUsage={client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind:'model_call';provider:string;model:string;input_tokens:number;output_tokens:number;total_tokens:number;api_calls:number;details:Record<string,unknown>}
 
 type LocalRequestOptions=RequestInit&{timeoutMs?:number}
-type LoopbackRequestInit=RequestInit&{targetAddressSpace?:'loopback'}
+type LoopbackRequestInit=RequestInit&{targetAddressSpace?:'loopback'|'local'}
 
 export class LocalAssistantAccessError extends Error{
   readonly code:'browser_access_blocked'|'timeout'
@@ -21,33 +21,60 @@ async function localError(response:Response){
   try{const payload=await response.json();return typeof payload?.detail==='string'?payload.detail:'本地工作区请求失败'}catch{return '本地工作区请求失败'}
 }
 
+async function localNetworkPermissionState():Promise<PermissionState|'unsupported'> {
+  if(!navigator.permissions?.query)return 'unsupported'
+  try{return (await navigator.permissions.query({name:'local-network-access' as PermissionName})).state}
+  catch{return 'unsupported'}
+}
+
 async function localRequest<T>(path:string,options:LocalRequestOptions={}):Promise<T>{
   const controller=new AbortController();const timeout=window.setTimeout(()=>controller.abort(),options.timeoutMs??10_000)
   try{
-    const request=new Request(`${LOCAL_WORKSPACE_ORIGIN}${path}`,{
+    const headers=new Headers(options.headers)
+    if(options.body!=null&&!headers.has('Content-Type'))headers.set('Content-Type','application/json')
+    const baseInit:RequestInit={
       ...options,
       signal:controller.signal,
-      headers:{'Content-Type':'application/json',...(options.headers||{})},
+      headers,
       cache:'no-store',
       credentials:'omit',
       mode:'cors',
-      // Chrome/Edge 142+ requires an explicit loopback request so it can
-      // present the one-time "local network access" permission prompt.
-      targetAddressSpace:'loopback',
-    } as LoopbackRequestInit)
+    }
+    let request:Request
+    try{
+      // Current Chrome/Edge use "loopback" for 127.0.0.1. Some earlier
+      // Chromium builds only accepted "local", while browsers without LNA
+      // support may reject the experimental field at construction time.
+      request=new Request(`${LOCAL_WORKSPACE_ORIGIN}${path}`,{...baseInit,targetAddressSpace:'loopback'} as LoopbackRequestInit)
+    }catch(error){
+      if(!(error instanceof TypeError))throw error
+      try{request=new Request(`${LOCAL_WORKSPACE_ORIGIN}${path}`,{...baseInit,targetAddressSpace:'local'} as LoopbackRequestInit)}
+      catch(fallbackError){
+        if(!(fallbackError instanceof TypeError))throw fallbackError
+        request=new Request(`${LOCAL_WORKSPACE_ORIGIN}${path}`,baseInit)
+      }
+    }
     const response=await fetch(request)
     if(!response.ok)throw new Error(await localError(response))
     return await response.json() as T
   }catch(error){
     if((error as Error).name==='AbortError')throw new LocalAssistantAccessError('timeout','本地助手响应超时，请确认桌面快捷方式已启动')
-    if(error instanceof TypeError)throw new LocalAssistantAccessError('browser_access_blocked','浏览器未能访问本地助手。请允许本站的“本地网络访问”权限后重试')
+    if(error instanceof TypeError){
+      const permission=await localNetworkPermissionState()
+      const detail=permission==='denied'
+        ?'浏览器已阻止本站访问本地助手。请点击地址栏左侧的网站图标，将“本地网络访问”改为允许后重试'
+        :permission==='granted'
+          ?'浏览器已允许本地访问，但助手没有响应。请双击桌面的“Jushu Local Assistant”后重试'
+          :'网页未能连接本地助手。请允许本站的“本地网络访问”，并确认桌面助手已经启动'
+      throw new LocalAssistantAccessError('browser_access_blocked',detail)
+    }
     throw error
   }finally{window.clearTimeout(timeout)}
 }
 
-export type LocalHealth={status:string;ffmpeg_ready:boolean;workspace_root:string;version?:string;capabilities?:string[];picker_ready?:boolean;picker_reason?:string;windows_user?:string;session_id?:number;session_state?:number;interactive_user?:string;shell_session_id?:number;active_console_session_id?:number}
+export type LocalHealth={status:string;ffmpeg_ready:boolean;workspace_root:string;version?:string;capabilities?:string[];picker_backend?:string;picker_ready?:boolean;picker_reason?:string;windows_user?:string;session_id?:number;session_state?:number;interactive_user?:string;shell_session_id?:number;active_console_session_id?:number}
 
-export const NATIVE_FOLDER_PICKER_CAPABILITY='native_folder_picker_v2'
+export const NATIVE_FOLDER_PICKER_CAPABILITY='native_folder_picker_v3'
 
 let cachedHealth:{value:LocalHealth;expiresAt:number}|undefined
 let healthRequest:Promise<LocalHealth>|undefined
