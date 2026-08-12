@@ -182,7 +182,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      else{setLocalStatus(connected?'ready':fallbackStatus);if(text.includes('取消选择')){setLocalIssue('没有选择文件夹。请重新点击按钮，并在弹出的 Windows 窗口中完成选择。');msg.info('已取消选择文件夹')}else{setLocalIssue(text);msg.error(text)}}
    }finally{setAction(null)}
  }
- const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
+ const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:true})
  const rememberPackage=(item:MetaPackage)=>setPackages(old=>[item,...old.filter(row=>row.id!==item.id)])
  const waitForPackage=async(id:number)=>{
    while(true){
