@@ -22,6 +22,7 @@ from ..services.meta_sfs import delivery_sources, preflight
 from ..services.meta_package_processing import ACTIVE_STATUSES, meta_package_pipeline
 from ..services.drive_delivery import upload_meta_package
 from ..services.auth import get_current_user
+from ..services.windows_folder_picker import FolderPickerBusy, FolderPickerCancelled, FolderPickerError, pick_windows_folder
 
 router = APIRouter(prefix="/api/meta-sfs", tags=["Meta SFS 官方投递"])
 _local_destinations: dict[str, tuple[Path, float]] = {}
@@ -125,22 +126,14 @@ def select_local_directory(request: Request):
     host = request.client.host if request.client else ""
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(403, "只有本地运行时可以调用系统文件夹选择器")
-    if sys.platform != "win32":
-        raise HTTPException(422, "当前环境不支持系统文件夹选择器，请使用 Chrome 或 Edge")
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(parent=root, title="选择 Meta 合规文件夹保存位置", mustexist=True)
-        root.destroy()
-    except Exception as exc:
-        raise HTTPException(422, f"无法打开文件夹选择器：{exc}") from exc
-    if not selected:
-        raise HTTPException(409, "已取消选择保存位置")
-    path = Path(selected).resolve()
+        path = pick_windows_folder("选择 Meta 合规文件夹保存位置")
+    except FolderPickerCancelled as exc:
+        raise HTTPException(409, "已取消选择保存位置") from exc
+    except FolderPickerBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except FolderPickerError as exc:
+        raise HTTPException(422, str(exc)) from exc
     token = secrets.token_urlsafe(24)
     _local_destinations[token] = (path, time.monotonic() + 15 * 60)
     return {"token": token, "name": path.name or str(path)}

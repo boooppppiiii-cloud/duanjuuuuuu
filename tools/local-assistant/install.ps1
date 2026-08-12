@@ -56,6 +56,18 @@ try {
         throw "The current Windows user directory is unavailable."
     }
 
+    $currentSessionId = (Get-Process -Id $PID).SessionId
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $interactiveShell = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $currentSessionId } | Select-Object -First 1
+    if ($interactiveShell) {
+        $shellOwner = Invoke-CimMethod -InputObject $interactiveShell -MethodName GetOwner -ErrorAction SilentlyContinue
+        $shellIdentity = if ($shellOwner -and $shellOwner.User) { ("{0}\{1}" -f $shellOwner.Domain, $shellOwner.User).TrimStart('\') } else { "" }
+        if ($shellIdentity -and -not $currentIdentity.Equals($shellIdentity, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "This installer is running as $currentIdentity, but the desktop belongs to $shellIdentity. Close it and double-click the installer normally from the user who runs the Jushu web app; do not use a different administrator account."
+        }
+    }
+
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 
@@ -85,7 +97,11 @@ try {
 
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -in @("python.exe", "pythonw.exe") -and $_.CommandLine -match "backend\.local_workspace" } |
+        Where-Object {
+            $_.Name -in @("python.exe", "pythonw.exe") -and
+            $_.CommandLine -match "backend\.local_workspace" -and
+            ($_.SessionId -eq $currentSessionId -or ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)))
+        } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $appRoot) { Remove-Item -LiteralPath $appRoot -Recurse -Force }
     New-Item -ItemType Directory -Path (Join-Path $appRoot "backend") -Force | Out-Null
@@ -105,10 +121,19 @@ try {
         & $python -m venv $venvRoot
         if ($LASTEXITCODE -ne 0) { throw "Creating the local Python environment failed." }
     }
-    & $venvPython -m pip install --disable-pip-version-check --upgrade pip wheel
-    if ($LASTEXITCODE -ne 0) { throw "Updating the package installer failed." }
-    & $venvPython -m pip install --disable-pip-version-check -r (Join-Path $appRoot "backend\requirements-local-assistant.txt")
-    if ($LASTEXITCODE -ne 0) { throw "Installing Local Assistant dependencies failed." }
+    $dependenciesReady = $false
+    try {
+        & $venvPython -c "import fastapi, uvicorn, sqlmodel, pydantic_settings, multipart, httpx, faster_whisper, google.genai, PIL, googleapiclient, google.auth"
+        $dependenciesReady = $LASTEXITCODE -eq 0
+    } catch { $dependenciesReady = $false }
+    if (-not $dependenciesReady) {
+        & $venvPython -m pip install --disable-pip-version-check --upgrade pip wheel
+        if ($LASTEXITCODE -ne 0) { throw "Updating the package installer failed." }
+        & $venvPython -m pip install --disable-pip-version-check -r (Join-Path $appRoot "backend\requirements-local-assistant.txt")
+        if ($LASTEXITCODE -ne 0) { throw "Installing Local Assistant dependencies failed." }
+    } else {
+        Write-InstallLog "Existing local video components are ready; dependency download skipped"
+    }
 
     Write-Step "Preparing the private FFmpeg video tools"
     $ffmpeg = Join-Path $ffmpegRoot "bin\ffmpeg.exe"
@@ -150,10 +175,14 @@ $installRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $appRoot = Join-Path $installRoot "app"
 $settingsFile = Join-Path $installRoot "settings.env"
 $python = Join-Path $installRoot ".venv\Scripts\python.exe"
+$logRoot = Join-Path $installRoot "logs"
+$stdoutLog = Join-Path $logRoot "assistant.out.log"
+$stderrLog = Join-Path $logRoot "assistant.err.log"
+$currentSessionId = (Get-Process -Id $PID).SessionId
 
 try {
-    Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2 | Out-Null
-    exit 0
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
+    if ($health.status -eq "ok" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.capabilities -contains "native_folder_picker_v1") { exit 0 }
 } catch { }
 
 if (Test-Path -LiteralPath $settingsFile) {
@@ -164,7 +193,14 @@ if (Test-Path -LiteralPath $settingsFile) {
     }
 }
 Set-Location -LiteralPath $appRoot
-& $python -m backend.local_workspace
+New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+try {
+    $process = Start-Process -FilePath $python -ArgumentList @("-m", "backend.local_workspace") -WorkingDirectory $appRoot -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -Wait -PassThru
+    if ($process.ExitCode -ne 0) { throw "Local Assistant exited with code $($process.ExitCode). See $stderrLog" }
+} catch {
+    Add-Content -LiteralPath $stderrLog -Value ((Get-Date -Format "s") + " launcher error: " + $_.Exception.Message)
+    throw
+}
 '@ | Set-Content -LiteralPath $launcherFile -Encoding UTF8
 
     Write-Step "Creating startup shortcuts"
@@ -202,7 +238,7 @@ Set-Location -LiteralPath $appRoot
         Start-Sleep -Seconds 1
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:17862/api/local/health" -TimeoutSec 2
-            if ($health.status -eq "ok" -and $health.capabilities -contains "meta_direct_local_v2") { $ready = $true; break }
+            if ($health.status -eq "ok" -and $health.windows_user -eq $env:USERNAME -and $health.session_id -eq $currentSessionId -and $health.picker_ready -eq $true -and $health.capabilities -contains "native_folder_picker_v1") { $ready = $true; break }
         } catch { }
     }
     if (-not $ready) { throw "The Local Assistant was installed but did not start in time. Open the Jushu Local Assistant desktop shortcut and retry." }

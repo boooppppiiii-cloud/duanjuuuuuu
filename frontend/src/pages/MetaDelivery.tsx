@@ -4,7 +4,7 @@ import { useEffect,useMemo,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Drama,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
-import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,type LocalWorkspace } from '../localWorkspace'
+import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,NATIVE_FOLDER_PICKER_CAPABILITY,type LocalWorkspace } from '../localWorkspace'
 import { showLocalAssistantAccessPrompt,showLocalAssistantInstallPrompt } from '../components/LocalAssistantPrompt'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
@@ -74,7 +74,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        if(!stopped){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?(error as Error).message:`本地助手响应异常：${(error as Error).message}`)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')){
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||health.picker_ready===false){
        if(!stopped){setLocalStatus('outdated');setPackages([]);setLocalIssue('当前本地助手版本过旧，需要更新后使用 Meta 官方投递')}
        return
      }
@@ -114,9 +114,11 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        else{setLocalStatus('error');setLocalIssue(`本地助手响应异常：${(error as Error).message}`);msg.error((error as Error).message)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')){msg.destroy('local-access');setLocalStatus('outdated');showLocalWorkspaceHelp('update');return}
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||health.picker_ready===false){msg.destroy('local-access');setLocalStatus('outdated');showLocalWorkspaceHelp('update');return}
      msg.destroy('local-access')
+     msg.loading({key:'folder-picker',content:'请在已打开的 Windows 窗口中选择源文件夹；若窗口不在前台，请查看任务栏',duration:0})
      const selected=await syncTaskCovers(drama,await localClient.select(drama))
+     msg.destroy('folder-picker')
      setLocalSource(selected);setLocalStatus('ready');setCheck(undefined)
      api.registerLocalSourceManifest(drama.id,{folder_name:selected.folder_name,file_count:selected.file_count,total_bytes:selected.total_bytes,filenames:selected.files.map(file=>file.relative_path)}).catch(()=>undefined)
      const[delivery,items]=await Promise.all([localClient.metaFactorySource(drama.id),localClient.metaPackages()])
@@ -124,6 +126,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      msg.success(`已连接“${selected.folder_name}”，视频只在这台电脑读取`)
    }catch(error){
      msg.destroy('local-access')
+     msg.destroy('folder-picker')
      const text=(error as Error).message
      if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalAssistantAccessPrompt()}
      else if(!text.includes('取消选择'))msg.error(text)
@@ -148,7 +151,9 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      if(!localSource||!source?.ready)throw new Error('请先连接本地文件夹，并在内容工厂完成 Meta 逐集切分')
      const values=await form.validateFields()
      setAction('selecting');setCheck(undefined);setExportProgress({label:'请选择这台电脑上的保存位置',percent:0})
+     msg.loading({key:'folder-picker',content:'请在已打开的 Windows 窗口中选择保存位置；若窗口不在前台，请查看任务栏',duration:0})
      const destination=await localClient.selectMetaOutputDirectory()
+     msg.destroy('folder-picker')
      setAction('build');setExportProgress({label:'正在本机校验素材与 Meta 必填信息',percent:1})
      const result=await localClient.metaPreflight(body(values));setCheck(result)
      if(!result.ready){msg.warning(`发现 ${result.blockers.length} 个必须处理的问题`);return}
@@ -162,6 +167,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      msg.success(`Meta 合规文件夹已直接生成到 ${completed.output_dir}`)
      setPackages(await localClient.metaPackages())
    }catch(error){
+     msg.destroy('folder-picker')
      if(queued)localClient.metaPackages().then(setPackages).catch(()=>undefined)
      if(!cancelled(error))msg.error((error as Error).message)
    }finally{

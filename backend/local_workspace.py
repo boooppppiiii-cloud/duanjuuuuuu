@@ -11,7 +11,6 @@ import os
 from io import BytesIO
 from pathlib import Path
 import shutil
-import subprocess
 import uuid
 
 
@@ -46,6 +45,14 @@ from .app.services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_
 from .app.services.factory_processing import resume_factory_jobs
 from .app.services.meta_package_processing import resume_meta_packages
 from .app.services.script_analysis import write_analysis
+from .app.services.windows_folder_picker import (
+    FolderPickerBusy,
+    FolderPickerCancelled,
+    FolderPickerError,
+    folder_picker_ready,
+    pick_windows_folder,
+    windows_session_id,
+)
 
 
 LOCAL_USER_EMAIL = "local-workspace@jushu.invalid"
@@ -116,39 +123,10 @@ def _local_user() -> AppUser:
 
 
 def _pick_folder() -> Path | None:
-    if os.name != "nt":
+    try:
+        return pick_windows_folder("选择短剧源文件夹（视频不会上传）")
+    except FolderPickerCancelled:
         return None
-    script = """
-Add-Type -AssemblyName System.Windows.Forms
-$owner = New-Object System.Windows.Forms.Form
-$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-$owner.ShowInTaskbar = $false
-$owner.TopMost = $true
-$owner.Width = 1
-$owner.Height = 1
-$owner.Opacity = 0
-$owner.Show()
-$owner.Activate()
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '选择短剧源文件夹（视频不会上传）'
-$dialog.ShowNewFolderButton = $false
-if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-  Write-Output $dialog.SelectedPath
-}
-$owner.Close()
-"""
-    completed = subprocess.run(
-        ["powershell", "-NoProfile", "-STA", "-Command", script],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=300,
-        check=False,
-    )
-    value = completed.stdout.strip()
-    return Path(value).resolve() if value else None
 
 
 def _discover_covers(folder: Path) -> dict[str, Path]:
@@ -267,14 +245,22 @@ def health():
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.1.0",
-        "capabilities": ["meta_direct_local_v2", "meta_progress", "meta_cover_sync"],
+        "version": "1.2.0",
+        "picker_ready": folder_picker_ready(),
+        "windows_user": os.getenv("USERNAME", ""),
+        "session_id": windows_session_id(),
+        "capabilities": ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "native_folder_picker_v1"],
     }
 
 
 @app.post("/api/local/workspaces/select", response_model=WorkspaceView)
 def select_workspace(payload: WorkspaceBindRequest):
-    folder = Path(payload.absolute_path).expanduser().resolve() if payload.absolute_path else _pick_folder()
+    try:
+        folder = Path(payload.absolute_path).expanduser().resolve() if payload.absolute_path else _pick_folder()
+    except FolderPickerBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except FolderPickerError as exc:
+        raise HTTPException(422, str(exc)) from exc
     if folder is None:
         raise HTTPException(409, "已取消选择文件夹")
     if not folder.is_dir():

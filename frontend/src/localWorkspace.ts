@@ -45,7 +45,9 @@ async function localRequest<T>(path:string,options:LocalRequestOptions={}):Promi
   }finally{window.clearTimeout(timeout)}
 }
 
-export type LocalHealth={status:string;ffmpeg_ready:boolean;workspace_root:string;version?:string;capabilities?:string[]}
+export type LocalHealth={status:string;ffmpeg_ready:boolean;workspace_root:string;version?:string;capabilities?:string[];picker_ready?:boolean;windows_user?:string;session_id?:number}
+
+export const NATIVE_FOLDER_PICKER_CAPABILITY='native_folder_picker_v1'
 
 let cachedHealth:{value:LocalHealth;expiresAt:number}|undefined
 let healthRequest:Promise<LocalHealth>|undefined
