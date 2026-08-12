@@ -12,25 +12,46 @@ export function downloadLocalAssistantInstaller(){
   link.remove()
 }
 
-export function showLocalAssistantInstallPrompt({autoDownload=false,mode='install'}:{autoDownload?:boolean;mode?:'install'|'update'}={}){
-  if(autoDownload)downloadLocalAssistantInstaller()
+export function showLocalAssistantInstallPrompt({mode='install'}:{mode?:'install'|'update'}={}){
   const updating=mode==='update'
   Modal.info({
     title:updating?'需要更新剧枢本地助手':'需要安装剧枢本地助手',
     width:520,
     okText:'关闭',
     content:<div className="local-assistant-prompt">
-      <p>{autoDownload?'安装包已开始下载。':updating?'当前助手版本不支持此功能，请安装最新版。':'本地助手用于读取当前使用者自己电脑里的视频文件夹。'}源视频不会上传服务器。</p>
+      <p>{updating?'当前助手版本不支持此功能，请安装最新版。':'本地助手用于读取当前使用者自己电脑里的视频文件夹。'}源视频不会上传服务器。</p>
       <div className="local-assistant-steps">
         <span><b>1</b><small>下载安装包并解压</small></span>
         <span><b>2</b><small>双击安装并自动启动</small></span>
         <span><b>3</b><small>回到网页重新检测</small></span>
       </div>
       <Space wrap>
-        <Button type="primary" icon={<DownloadOutlined/>} onClick={downloadLocalAssistantInstaller}>{autoDownload?'没有下载？重新下载':updating?'下载最新版':'下载 Windows 本地助手'}</Button>
+        <Button type="primary" icon={<DownloadOutlined/>} onClick={downloadLocalAssistantInstaller}>{updating?'下载最新版':'下载 Windows 本地助手'}</Button>
         <Button icon={<ReloadOutlined/>} onClick={()=>window.location.reload()}>已经启动，重新检测</Button>
       </Space>
       <small className="local-assistant-note">首次安装需要联网下载视频处理组件；浏览器询问“本地网络访问”时请选择允许。</small>
+    </div>,
+  })
+}
+
+export function showLocalAssistantAccessPrompt(){
+  Modal.warning({
+    title:'请允许浏览器访问本地助手',
+    width:540,
+    okText:'我已允许，重新检测',
+    onOk:()=>window.location.reload(),
+    content:<div className="local-assistant-prompt">
+      <p>网页当前没有连通本地助手。这通常是浏览器尚未允许“本地网络访问”，不代表安装失败。</p>
+      <div className="local-assistant-steps">
+        <span><b>1</b><small>点击地址栏左侧的网站图标</small></span>
+        <span><b>2</b><small>将“本地网络访问”设为允许</small></span>
+        <span><b>3</b><small>回到页面重新检测</small></span>
+      </div>
+      <Space wrap>
+        <Button href="http://127.0.0.1:17862/api/local/health" target="_blank">检查助手运行状态</Button>
+        <Button icon={<DownloadOutlined/>} onClick={downloadLocalAssistantInstaller}>确需重装时下载</Button>
+      </Space>
+      <small className="local-assistant-note">检查页面显示 status: ok，说明助手已经正常安装，只需处理浏览器权限。</small>
     </div>,
   })
 }

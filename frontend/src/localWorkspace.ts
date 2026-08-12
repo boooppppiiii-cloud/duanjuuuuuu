@@ -12,6 +12,11 @@ export type LocalModelUsage={client_event_id:string;feature:string;success:boole
 type LocalRequestOptions=RequestInit&{timeoutMs?:number}
 type LoopbackRequestInit=RequestInit&{targetAddressSpace?:'loopback'}
 
+export class LocalAssistantAccessError extends Error{
+  readonly code:'browser_access_blocked'|'timeout'
+  constructor(code:'browser_access_blocked'|'timeout',message:string){super(message);this.name='LocalAssistantAccessError';this.code=code}
+}
+
 async function localError(response:Response){
   try{const payload=await response.json();return typeof payload?.detail==='string'?payload.detail:'本地工作区请求失败'}catch{return '本地工作区请求失败'}
 }
@@ -34,8 +39,8 @@ async function localRequest<T>(path:string,options:LocalRequestOptions={}):Promi
     if(!response.ok)throw new Error(await localError(response))
     return await response.json() as T
   }catch(error){
-    if((error as Error).name==='AbortError')throw new Error('本地工作区未启动或响应超时')
-    if(error instanceof TypeError)throw new Error('未检测到本地工作区，请先在电脑上启动剧枢本地助手')
+    if((error as Error).name==='AbortError')throw new LocalAssistantAccessError('timeout','本地助手响应超时，请确认桌面快捷方式已启动')
+    if(error instanceof TypeError)throw new LocalAssistantAccessError('browser_access_blocked','浏览器未能访问本地助手。请允许本站的“本地网络访问”权限后重试')
     throw error
   }finally{window.clearTimeout(timeout)}
 }
@@ -57,8 +62,7 @@ async function assistantHealth(force=false,timeoutMs=1800):Promise<LocalHealth>{
 }
 
 export function localAssistantUnavailable(error:unknown){
-  const text=error instanceof Error?error.message:String(error??'')
-  return text.includes('未检测到本地工作区')||text.includes('未启动')||text.includes('响应超时')
+  return error instanceof LocalAssistantAccessError
 }
 
 export function localAssistantSupports(health:LocalHealth,capability:string){

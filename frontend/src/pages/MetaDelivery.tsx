@@ -5,7 +5,7 @@ import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Drama,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
 import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,type LocalWorkspace } from '../localWorkspace'
-import { showLocalAssistantInstallPrompt } from '../components/LocalAssistantPrompt'
+import { showLocalAssistantAccessPrompt,showLocalAssistantInstallPrompt } from '../components/LocalAssistantPrompt'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
 const defaults={locale:'en_US',genres:['Drama'],release_date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),ai_content:false,dubbed_content:false}
@@ -71,7 +71,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      setLocalStatus('checking')
      let health
      try{health=await localClient.health()}catch(error){
-       if(!stopped){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?'未检测到正在运行的本地助手':`本地助手响应异常：${(error as Error).message}`)}
+       if(!stopped){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?(error as Error).message:`本地助手响应异常：${(error as Error).message}`)}
        return
      }
      if(!localAssistantSupports(health,'meta_direct_local_v2')){
@@ -110,7 +110,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      let health
      try{health=await localClient.requestAccess()}catch(error){
        msg.destroy('local-access')
-       if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalWorkspaceHelp()}
+       if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalAssistantAccessPrompt()}
        else{setLocalStatus('error');setLocalIssue(`本地助手响应异常：${(error as Error).message}`);msg.error((error as Error).message)}
        return
      }
@@ -125,7 +125,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    }catch(error){
      msg.destroy('local-access')
      const text=(error as Error).message
-     if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalWorkspaceHelp()}
+     if(localAssistantUnavailable(error)){setLocalStatus('offline');showLocalAssistantAccessPrompt()}
      else if(!text.includes('取消选择'))msg.error(text)
    }finally{setAction(null)}
  }
@@ -143,7 +143,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const chooseAndBuild=async()=>{
    let queued:MetaPackage|undefined
    try{
-     if(localStatus==='offline'){showLocalWorkspaceHelp();return}
+     if(localStatus==='offline'){showLocalAssistantAccessPrompt();return}
      if(localStatus==='outdated'){showLocalWorkspaceHelp('update');return}
      if(!localSource||!source?.ready)throw new Error('请先连接本地文件夹，并在内容工厂完成 Meta 逐集切分')
      const values=await form.validateFields()
@@ -179,7 +179,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
   <Steps size="small" current={check?.ready?2:source?.ready?1:0} className="meta-steps" items={[{title:'选择本机素材或成品'},{title:'自动命名与严格校验'},{title:'直接生成到本机'}]}/>
   <Form form={form} layout="vertical" initialValues={defaults}><div className="split-workbench meta-workbench"><Card title="1. 选择本机素材或内容工厂成品">
     <Form.Item name="drama_id" label="剧目任务" rules={[{required:true,message:'请选择剧目任务'}]}><Select showSearch optionFilterProp="label" options={dramas.map(item=>({value:item.id,label:`${item.title} · 全集 ${item.total_episode_count}`}))}/></Form.Item>
-    {drama&&<Space wrap style={{marginBottom:12}}><Button type="primary" icon={<FolderOpenOutlined/>} loading={action==='connecting'||localStatus==='checking'} disabled={(building&&action!=='connecting')||localStatus==='outdated'||localStatus==='error'} onClick={connectLocalSource}>{localSource?'更换本地文件夹':'选择本地文件夹'}</Button>{localStatus==='offline'&&<Button onClick={()=>showLocalWorkspaceHelp()}>安装本地助手</Button>}{localStatus==='outdated'&&<Button onClick={()=>showLocalWorkspaceHelp('update')}>更新本地助手</Button>}{localStatus==='error'&&<Button onClick={()=>setDetectVersion(value=>value+1)}>重新检测</Button>}</Space>}
+    {drama&&<Space wrap style={{marginBottom:12}}><Button type="primary" icon={<FolderOpenOutlined/>} loading={action==='connecting'||localStatus==='checking'} disabled={(building&&action!=='connecting')||localStatus==='outdated'||localStatus==='error'} onClick={connectLocalSource}>{localSource?'更换本地文件夹':'选择本地文件夹'}</Button>{localStatus==='offline'&&<><Button onClick={showLocalAssistantAccessPrompt}>允许本地访问</Button><Button onClick={()=>showLocalWorkspaceHelp()}>重新安装</Button></>}{localStatus==='outdated'&&<Button onClick={()=>showLocalWorkspaceHelp('update')}>更新本地助手</Button>}{localStatus==='error'&&<Button onClick={()=>setDetectVersion(value=>value+1)}>重新检测</Button>}</Space>}
     {localIssue&&<Alert type={localStatus==='offline'||localStatus==='outdated'||localStatus==='error'?'warning':'info'} showIcon message={localIssue} style={{marginBottom:12}}/>}
     {localSource&&<Alert type="success" showIcon message={`本机文件夹：${localSource.folder_name}`} description={<Space direction="vertical" size={0}><Typography.Text ellipsis={{tooltip:localSource.absolute_path}}>{localSource.absolute_path}</Typography.Text><Typography.Text type="secondary">{localSource.file_count} 个视频 · {formatSize(localSource.total_bytes)} · 竖版封面 {localSource.covers.vertical?'已就绪':'缺少'} · 方形封面 {localSource.covers.square?'已就绪':'缺少'}</Typography.Text></Space>} style={{marginBottom:12}}/>}
     {drama&&<Space wrap className="meta-drama-tags"><Tag color={localSource?'green':'default'}>{localSource?'本机工作区':'尚未连接本机'}</Tag><Tag>源文件 {localSource?.file_count??0} 集</Tag><Tag color={source?.ready?'green':'default'}>可投递 {source?.episode_count??0} 集</Tag><Tag color={localSource?.covers.vertical?'green':'red'}>竖版封面</Tag><Tag color={localSource?.covers.square?'green':'red'}>方形封面</Tag>{Boolean(localSource?.covers.horizontal)&&<Tag color="green">横版封面</Tag>}<Button type="link" size="small" icon={<EditOutlined/>} onClick={()=>navigate(`/dramas/${drama.id}`)}>编辑剧目</Button></Space>}
