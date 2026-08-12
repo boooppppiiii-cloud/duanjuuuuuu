@@ -11,6 +11,10 @@ import os
 from io import BytesIO
 from pathlib import Path
 import shutil
+import threading
+import time
+from urllib.parse import urlparse
+from urllib.request import Request as UrlRequest, urlopen
 import uuid
 
 
@@ -57,6 +61,14 @@ from .app.services.windows_folder_picker import (
 LOCAL_USER_EMAIL = "local-workspace@jushu.invalid"
 MACHINE_ID_FILE = APP_DIR / "machine-id"
 LOCAL_COVER_ROOT = APP_DIR / "covers"
+LEGACY_IMPORT_ROOT = APP_DIR / "legacy-server-sources"
+LEGACY_SOURCE_HOSTS = {
+    item.strip().casefold()
+    for item in os.getenv("JUSHU_LEGACY_SOURCE_HOSTS", "app.duanju.chat,127.0.0.1,localhost").split(",")
+    if item.strip()
+}
+_legacy_import_jobs: dict[str, dict] = {}
+_legacy_import_lock = threading.Lock()
 LOCAL_COVER_SPECS = {
     "vertical": ("cover_vertical_path", 3 / 4, 1440, 1920, "竖版封面必须为 3:4，且至少 1440x1920"),
     "square": ("cover_square_path", 1.0, 1200, 1200, "方形封面必须为 1:1，且至少 1200x1200"),
@@ -89,6 +101,18 @@ class WorkspaceFile(BaseModel):
     name: str
     relative_path: str
     size_bytes: int
+
+
+class LegacyImportFile(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=1)
+    sequence: int = Field(ge=1)
+    url: str = Field(min_length=1, max_length=4096)
+
+
+class LegacyImportRequest(WorkspaceBindRequest):
+    factory_job_id: int = Field(gt=0)
+    files: list[LegacyImportFile] = Field(min_length=1, max_length=999)
 
 
 class WorkspaceView(BaseModel):
@@ -201,6 +225,99 @@ def _workspace_view(drama: Drama) -> WorkspaceView:
     )
 
 
+def _bind_workspace(payload: WorkspaceBindRequest, folder: Path, source_note: str) -> WorkspaceView:
+    videos = [path for path in episode_files(folder) if path.suffix.lower() in VIDEO_SUFFIXES]
+    if not videos:
+        raise ValueError("该文件夹内没有找到支持的视频文件")
+    with Session(engine) as session:
+        duplicate = session.exec(select(Drama).where(Drama.file_dir == str(folder), Drama.id != payload.drama_id)).first()
+        if duplicate:
+            raise ValueError(f"该文件夹已连接到《{duplicate.title}》")
+        drama = session.get(Drama, payload.drama_id)
+        if drama is None:
+            drama = Drama(id=payload.drama_id, title=payload.title.strip(), file_dir=str(folder))
+        drama.title = payload.title.strip()
+        drama.theater = payload.theater.strip()
+        drama.description = payload.description.strip()
+        drama.genres = payload.genres
+        drama.language = payload.language
+        drama.total_episode_count = payload.total_episode_count
+        drama.promotion_episode_count = payload.total_episode_count
+        drama.file_dir = str(folder)
+        drama.source_note = source_note
+        drama.episode_count = len(videos)
+        _sync_local_covers(drama, folder)
+        session.add(drama)
+        session.commit()
+        session.refresh(drama)
+        return _workspace_view(drama)
+
+
+def _legacy_source_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"https", "http"} or (parsed.hostname or "").casefold() not in LEGACY_SOURCE_HOSTS:
+        raise ValueError("旧成品下载地址不属于剧枢服务器")
+    if not parsed.path.startswith("/api/meta-sfs/legacy-assets/"):
+        raise ValueError("旧成品下载路径无效")
+    if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("旧成品下载必须使用 HTTPS")
+    return value
+
+
+def _legacy_job_update(job_id: str, **values) -> None:
+    with _legacy_import_lock:
+        if job_id in _legacy_import_jobs:
+            _legacy_import_jobs[job_id].update(values, updated_at=datetime.utcnow().isoformat())
+
+
+def _legacy_import_worker(job_id: str, payload: LegacyImportRequest) -> None:
+    staging = LEGACY_IMPORT_ROOT / f".{payload.drama_id}-{job_id}.importing"
+    target = LEGACY_IMPORT_ROOT / str(payload.drama_id)
+    total_bytes = sum(item.size_bytes for item in payload.files)
+    downloaded = 0
+    try:
+        LEGACY_IMPORT_ROOT.mkdir(parents=True, exist_ok=True)
+        reserve = max(1024 * 1024 * 1024, round(total_bytes * 0.1))
+        if shutil.disk_usage(LEGACY_IMPORT_ROOT).free < total_bytes + reserve:
+            raise ValueError(f"本机磁盘空间不足：迁移需要约 {round(total_bytes / 1024**3, 2)} GB，并需保留至少 1 GB 空闲空间")
+        shutil.rmtree(staging, ignore_errors=True)
+        episodes = staging / "episodes"
+        episodes.mkdir(parents=True, exist_ok=False)
+        _legacy_job_update(job_id, status="downloading", current_step="准备迁移服务器旧成品", progress=0)
+        for index, item in enumerate(sorted(payload.files, key=lambda row: row.sequence), 1):
+            safe_name = Path(item.name).name
+            if safe_name != item.name or Path(safe_name).suffix.casefold() not in VIDEO_SUFFIXES:
+                raise ValueError(f"旧成品文件名无效：{item.name}")
+            destination = episodes / safe_name
+            temporary = destination.with_suffix(destination.suffix + ".part")
+            request = UrlRequest(_legacy_source_url(item.url), headers={"User-Agent": "Jushu-Local-Assistant/1.4"})
+            _legacy_job_update(job_id, current_step=f"正在迁移第 {index}/{len(payload.files)} 集 · {safe_name}")
+            with urlopen(request, timeout=90) as response, temporary.open("wb") as output:
+                while True:
+                    chunk = response.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    downloaded += len(chunk)
+                    _legacy_job_update(job_id, bytes_downloaded=downloaded, progress=min(99, round(downloaded / max(total_bytes, 1) * 100)))
+            actual_size = temporary.stat().st_size
+            if actual_size != item.size_bytes:
+                raise ValueError(f"{safe_name} 迁移不完整：应为 {item.size_bytes} 字节，实际 {actual_size} 字节")
+            os.replace(temporary, destination)
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging, target)
+        workspace = _bind_workspace(payload, target.resolve(), f"服务器旧成品已迁移到本机（任务 #{payload.factory_job_id}）")
+        _legacy_job_update(
+            job_id, status="completed", current_step="服务器旧成品已迁移到本机", progress=100,
+            bytes_downloaded=downloaded, workspace=workspace.model_dump(),
+        )
+    except Exception as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        _legacy_job_update(job_id, status="failed", current_step="迁移失败", error_message=str(exc)[:2000])
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_db_and_tables()
@@ -241,12 +358,12 @@ app.include_router(meta_sfs_router)
 @app.get("/api/local/health")
 def health():
     picker = folder_picker_environment()
-    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
+    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "legacy_server_import_v1", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
     return {
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.3.0",
+        "version": "1.4.1",
         "picker_backend": "IFileOpenDialog",
         "picker_ready": picker.ready,
         "picker_reason": picker.reason,
@@ -272,35 +389,39 @@ def select_workspace(payload: WorkspaceBindRequest):
         raise HTTPException(409, "已取消选择文件夹")
     if not folder.is_dir():
         raise HTTPException(422, "选择的本地文件夹不存在")
-    videos = [path for path in episode_files(folder) if path.suffix.lower() in VIDEO_SUFFIXES]
-    if not videos:
-        raise HTTPException(422, "该文件夹内没有找到支持的视频文件")
-    with Session(engine) as session:
-        duplicate = session.exec(select(Drama).where(Drama.file_dir == str(folder), Drama.id != payload.drama_id)).first()
-        if duplicate:
-            raise HTTPException(409, f"该文件夹已连接到《{duplicate.title}》")
-        drama = session.get(Drama, payload.drama_id)
-        if drama is None:
-            drama = Drama(
-                id=payload.drama_id,
-                title=payload.title.strip(),
-                file_dir=str(folder),
-            )
-        drama.title = payload.title.strip()
-        drama.theater = payload.theater.strip()
-        drama.description = payload.description.strip()
-        drama.genres = payload.genres
-        drama.language = payload.language
-        drama.total_episode_count = payload.total_episode_count
-        drama.promotion_episode_count = payload.total_episode_count
-        drama.file_dir = str(folder)
-        drama.source_note = "本地工作区（源视频不上传）"
-        drama.episode_count = len(videos)
-        _sync_local_covers(drama, folder)
-        session.add(drama)
-        session.commit()
-        session.refresh(drama)
-        return _workspace_view(drama)
+    try:
+        return _bind_workspace(payload, folder, "本地工作区（源视频不上传）")
+    except ValueError as exc:
+        raise HTTPException(409 if "已连接" in str(exc) else 422, str(exc)) from exc
+
+
+@app.post("/api/local/workspaces/import-legacy")
+def import_legacy_workspace(payload: LegacyImportRequest):
+    for item in payload.files:
+        _legacy_source_url(item.url)
+    with _legacy_import_lock:
+        active = next((item for item in _legacy_import_jobs.values() if item.get("drama_id") == payload.drama_id and item.get("status") in {"queued", "downloading"}), None)
+        if active:
+            return active
+        job_id = uuid.uuid4().hex
+        job = {
+            "id": job_id, "drama_id": payload.drama_id, "status": "queued", "progress": 0,
+            "current_step": "等待迁移服务器旧成品", "bytes_downloaded": 0,
+            "total_bytes": sum(item.size_bytes for item in payload.files), "error_message": "",
+            "workspace": None, "updated_at": datetime.utcnow().isoformat(),
+        }
+        _legacy_import_jobs[job_id] = job
+    threading.Thread(target=_legacy_import_worker, args=(job_id, payload), name=f"jushu-legacy-import-{job_id[:8]}", daemon=True).start()
+    return job
+
+
+@app.get("/api/local/workspaces/import-legacy/{job_id}")
+def legacy_workspace_import(job_id: str):
+    with _legacy_import_lock:
+        job = _legacy_import_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "旧成品迁移任务不存在")
+        return dict(job)
 
 
 @app.get("/api/local/workspaces/{drama_id}", response_model=WorkspaceView)

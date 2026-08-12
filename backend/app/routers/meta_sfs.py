@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 import secrets
 import shutil
@@ -26,6 +28,47 @@ from ..services.windows_folder_picker import FolderPickerBusy, FolderPickerCance
 
 router = APIRouter(prefix="/api/meta-sfs", tags=["Meta SFS 官方投递"])
 _local_destinations: dict[str, tuple[Path, float]] = {}
+LEGACY_ASSET_TICKET_TTL_SECONDS = 6 * 60 * 60
+
+
+def _legacy_factory_assets(session: Session, drama: Drama, user: AppUser) -> tuple[FactoryJob | None, list[GeneratedAsset]]:
+    latest = session.exec(select(FactoryJob).where(
+        FactoryJob.drama_id == drama.id, FactoryJob.owner_user_id == user.id,
+        FactoryJob.status == "completed", FactoryJob.meta_count > 0,
+    ).order_by(FactoryJob.id.desc())).first()
+    if not latest:
+        return None, []
+    assets = session.exec(select(GeneratedAsset).where(
+        GeneratedAsset.factory_job_id == latest.id, GeneratedAsset.owner_user_id == user.id,
+        GeneratedAsset.kind == "meta_episode",
+    ).order_by(GeneratedAsset.sequence)).all()
+    available = [item for item in assets if Path(item.file_path).resolve().is_file()]
+    return latest, available if len(available) == len(assets) else []
+
+
+def _legacy_ticket(asset: GeneratedAsset, user: AppUser, expires_at: int) -> str:
+    secret = get_settings().credential_secret
+    if not secret:
+        raise HTTPException(503, "服务器尚未配置旧成品迁移签名密钥")
+    message = f"{asset.id}:{user.id}:{expires_at}"
+    signature = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{user.id}.{expires_at}.{signature}"
+
+
+def _validate_legacy_ticket(asset: GeneratedAsset, ticket: str) -> None:
+    try:
+        raw_user_id, raw_expires_at, supplied = ticket.split(".", 2)
+        user_id = int(raw_user_id)
+        expires_at = int(raw_expires_at)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise HTTPException(403, "旧成品迁移链接无效") from exc
+    if expires_at < int(time.time()) or asset.owner_user_id != user_id:
+        raise HTTPException(403, "旧成品迁移链接已过期")
+    secret = get_settings().credential_secret
+    message = f"{asset.id}:{user_id}:{expires_at}"
+    expected = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not secret or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(403, "旧成品迁移链接无效")
 
 
 def _package_root(item: MetaDeliveryPackage) -> Path:
@@ -47,21 +90,56 @@ def _owned_package(package_id: int, session: Session, user: AppUser) -> MetaDeli
 
 
 def _delivery_for_user(session: Session, drama: Drama, user: AppUser) -> tuple[list[Path], str]:
-    latest = session.exec(select(FactoryJob).where(
-        FactoryJob.drama_id == drama.id, FactoryJob.owner_user_id == user.id,
-        FactoryJob.status == "completed", FactoryJob.meta_count > 0,
-    ).order_by(FactoryJob.id.desc())).first()
-    if latest:
-        assets = session.exec(select(GeneratedAsset).where(
-            GeneratedAsset.factory_job_id == latest.id, GeneratedAsset.owner_user_id == user.id,
-            GeneratedAsset.kind == "meta_episode",
-        ).order_by(GeneratedAsset.sequence)).all()
+    _, assets = _legacy_factory_assets(session, drama, user)
+    if assets:
         paths = [Path(item.file_path).resolve() for item in assets]
-        if paths and all(path.is_file() for path in paths):
-            return paths, "factory_meta_split"
+        return paths, "factory_meta_split"
     if os.getenv("JUSHU_LOCAL_WORKSPACE") == "1":
         return delivery_sources(Path(drama.file_dir).resolve())
     return [], "factory_meta_split"
+
+
+@router.get("/legacy-source/{drama_id}")
+def legacy_server_source(drama_id: int, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    """Issue short-lived download links for Meta episodes created by the legacy server pipeline."""
+    drama = session.get(Drama, drama_id)
+    if not drama:
+        raise HTTPException(404, "剧目不存在")
+    job, assets = _legacy_factory_assets(session, drama, user)
+    expires_at = int(time.time()) + LEGACY_ASSET_TICKET_TTL_SECONDS
+    files = [
+        {
+            "name": item.filename,
+            "size_bytes": item.size_bytes or Path(item.file_path).stat().st_size,
+            "sequence": item.sequence,
+            "url": f"/api/meta-sfs/legacy-assets/{item.id}?ticket={_legacy_ticket(item, user, expires_at)}",
+        }
+        for item in assets
+    ]
+    return {
+        "ready": bool(files),
+        "factory_job_id": int(job.id) if job and job.id else 0,
+        "episode_count": len(files),
+        "total_bytes": sum(int(item["size_bytes"]) for item in files),
+        "expires_at": expires_at,
+        "files": files,
+    }
+
+
+@router.get("/legacy-assets/{asset_id}")
+def download_legacy_asset(asset_id: int, ticket: str, session: Session = Depends(get_session)):
+    asset = session.get(GeneratedAsset, asset_id)
+    if not asset or asset.kind != "meta_episode":
+        raise HTTPException(404, "旧成品不存在")
+    _validate_legacy_ticket(asset, ticket)
+    drama = session.get(Drama, asset.drama_id)
+    if not drama:
+        raise HTTPException(404, "剧目不存在")
+    path = Path(asset.file_path).resolve()
+    root = (Path(drama.file_dir) / "generated").resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(404, "旧成品文件不存在")
+    return FileResponse(path, filename=asset.filename, media_type="video/mp4")
 
 
 @router.get("/source/{drama_id}")

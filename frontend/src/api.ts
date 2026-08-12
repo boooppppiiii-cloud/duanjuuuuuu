@@ -41,6 +41,7 @@ export type WorkspaceSummary = { kpis:{accounts:number;connected_accounts:number
 export type MetaSFSInput = { drama_id:number;series_slug:string;description:string;locale:string;genres:string[];release_date:string;cast_list:string[];tags:string[];geogating:string[];ai_content:boolean;dubbed_content:boolean;include_episode_csv:boolean;include_thumbnails:boolean;local_destination_token?:string }
 export type MetaPreflight = { ready:boolean;series_slug:string;episode_count:number;source_mode:'factory_meta_split'|'source_episodes';assets:{episode:number;source:string;target:string;info:Record<string,number|string|boolean>;issues:string[]}[];cover_source:{path:string;width:number;height:number};cover_sources:Record<'vertical'|'square'|'horizontal',{path:string;width:number;height:number}>;blockers:string[];automatic_fixes:string[];requirements:Record<string,string> }
 export type MetaFactorySource = { ready:boolean;episode_count:number;source_episode_count:number;source_mode?:'factory_meta_split'|'source_episodes';files:string[] }
+export type LegacyMetaSource = {ready:boolean;factory_job_id:number;episode_count:number;total_bytes:number;expires_at:number;files:{name:string;size_bytes:number;sequence:number;url:string}[]}
 export type MetaPackage = { id:number;drama_id:number;series_slug:string;output_dir:string;status:string;validation_json:Record<string,unknown>;drive_folder_id:string;drive_folder_url:string;last_error:string;uploaded_at:string|null;created_at:string }
 export type MetaPackageFiles = { folder_name:string;total_bytes:number;files:{path:string;size:number}[] }
 export type SocialComment = { id:number;external_id:string;platform:string;account_id:number|null;video_id:string;video_title:string;video_url:string;author_name:string;author_handle:string;text_original:string;text_zh:string;like_count:number;published_at:string|null;sentiment:string;user_status:string;keyword_category:string;keywords:string[];summary:string;ticket_type:string;severity:string;needs_human:boolean;status:string;suggested_replies:string[];analysis_source:string;reply_id:string;reply_text:string;replied_at:string|null;fetched_at:string }
@@ -191,6 +192,7 @@ export const api = {
   setFactoryHookActive: (hookId:number,active:boolean) => request<HookAsset>(`/api/factory/hooks/${hookId}?active=${active}`,{method:'PATCH'}),
   accountMatrix: (refresh=false) => request<AccountMatrixRow[]>('/api/workspace/account-matrix',{cacheTtlMs:30_000,forceRefresh:refresh}),
   metaFactorySource: (dramaId:number) => request<MetaFactorySource>(`/api/meta-sfs/source/${dramaId}`),
+  legacyMetaSource: (dramaId:number) => request<LegacyMetaSource>(`/api/meta-sfs/legacy-source/${dramaId}`),
   selectMetaOutputDirectory: () => request<{token:string;name:string}>('/api/meta-sfs/select-local-directory',{method:'POST'}),
   metaPreflight: (body:MetaSFSInput) => request<MetaPreflight>('/api/meta-sfs/preflight?quick=true',{method:'POST',body:JSON.stringify(body)}),
   buildMetaPackage: (body:MetaSFSInput) => request<MetaPackage>('/api/meta-sfs/build',{method:'POST',body:JSON.stringify(body)}),

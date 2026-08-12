@@ -5,8 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
+from sqlmodel import Session, SQLModel, create_engine
 
-from app.models import Drama
+from app.models import AppUser, Drama, FactoryJob, GeneratedAsset
+from app.routers import meta_sfs as meta_sfs_router
 from app.schemas import MetaSFSRequest
 from app.services import meta_sfs
 
@@ -63,6 +65,60 @@ def compliant_video(**overrides) -> dict:
 def test_slug_is_predictable_and_has_chinese_fallback():
     assert meta_sfs.suggest_slug("My Drama 2026", 1) == "my-drama-2026"
     assert meta_sfs.suggest_slug("午夜契约", 7) == "short-drama-7"
+
+
+def test_legacy_asset_ticket_is_bound_to_user_asset_and_expiry(monkeypatch):
+    monkeypatch.setattr(meta_sfs_router, "get_settings", lambda: SimpleNamespace(credential_secret="fixed-test-secret"))
+    user = AppUser(id=9, email="owner@example.com", password_hash="test")
+    asset = GeneratedAsset(
+        id=17, factory_job_id=3, drama_id=7, kind="meta_episode", sequence=1,
+        file_path="episode.mp4", filename="episode.mp4", owner_user_id=9,
+    )
+    expires_at = int(meta_sfs_router.time.time()) + 600
+    ticket = meta_sfs_router._legacy_ticket(asset, user, expires_at)
+
+    meta_sfs_router._validate_legacy_ticket(asset, ticket)
+
+    other_asset = asset.model_copy(update={"owner_user_id": 10})
+    with pytest.raises(Exception, match="过期"):
+        meta_sfs_router._validate_legacy_ticket(other_asset, ticket)
+    expired = meta_sfs_router._legacy_ticket(asset, user, int(meta_sfs_router.time.time()) - 1)
+    with pytest.raises(Exception, match="过期"):
+        meta_sfs_router._validate_legacy_ticket(asset, expired)
+
+
+def test_legacy_server_source_only_lists_owned_existing_meta_assets(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs_router, "get_settings", lambda: SimpleNamespace(credential_secret="fixed-test-secret"))
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    drama_root = tmp_path / "drama"
+    output = drama_root / "generated" / "meta" / "J0042"
+    output.mkdir(parents=True)
+    episode = output / "J0042_E001.mp4"
+    episode.write_bytes(b"legacy-meta-video")
+
+    with Session(engine) as session:
+        user = AppUser(email="owner@example.com", password_hash="test")
+        drama = Drama(id=7, title="Legacy Drama", file_dir=str(drama_root))
+        session.add(user); session.add(drama); session.commit(); session.refresh(user)
+        job = FactoryJob(drama_id=7, status="completed", meta_count=1, owner_user_id=user.id)
+        session.add(job); session.commit(); session.refresh(job)
+        asset = GeneratedAsset(
+            factory_job_id=job.id, drama_id=7, kind="meta_episode", sequence=1,
+            file_path=str(episode), filename=episode.name, size_bytes=episode.stat().st_size,
+            owner_user_id=user.id,
+        )
+        session.add(asset); session.commit(); session.refresh(asset)
+
+        source = meta_sfs_router.legacy_server_source(7, session, user)
+        assert source["ready"] is True
+        assert source["factory_job_id"] == job.id
+        assert source["total_bytes"] == episode.stat().st_size
+        assert source["files"][0]["url"].startswith(f"/api/meta-sfs/legacy-assets/{asset.id}?ticket=")
+
+        ticket = source["files"][0]["url"].split("ticket=", 1)[1]
+        response = meta_sfs_router.download_legacy_asset(asset.id, ticket, session)
+        assert Path(response.path) == episode
 
 
 def test_preflight_builds_official_three_digit_filename(monkeypatch, tmp_path: Path):
