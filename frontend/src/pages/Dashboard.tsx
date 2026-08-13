@@ -227,7 +227,7 @@ export default function DashboardPage(){
     const cached=mediaCache.current.get(accountId)
     if(cached&&!force){setMedia(cached);return}
     setMediaLoading(true);setMediaError('')
-    try{const rows=await api.accountMedia(accountId,50,force);mediaCache.current.set(accountId,rows);if(requestId===mediaRequest.current)setMedia(rows)}catch(error){if(requestId===mediaRequest.current){setMedia([]);setMediaError((error as Error).message)}}finally{if(requestId===mediaRequest.current)setMediaLoading(false)}
+    try{const rows=await api.accountMedia(accountId,200,force);mediaCache.current.set(accountId,rows);if(requestId===mediaRequest.current)setMedia(rows)}catch(error){if(requestId===mediaRequest.current){setMedia([]);setMediaError((error as Error).message)}}finally{if(requestId===mediaRequest.current)setMediaLoading(false)}
   }
   const loadCalendar=async(accountId:number,force=false)=>{
     const requestId=++calendarRequest.current
