@@ -97,7 +97,9 @@ def to_list_detail(drama: Drama) -> DramaDetail:
         source_storage=source_storage,
         source_storage_path=source_storage_path,
         stills=[],
-        highlights=[],
+        # Highlights are a small JSON sidecar used by the factory to prevent
+        # duplicate adoptions. Reading it does not enumerate or stat videos.
+        highlights=read_highlights(folder),
         generated_files=[],
     )
 
