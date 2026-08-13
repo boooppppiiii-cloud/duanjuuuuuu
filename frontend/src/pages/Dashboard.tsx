@@ -300,7 +300,10 @@ export default function DashboardPage(){
         <Card className="account-insight-hero">
           <div className="account-insight-head">
             <Avatar size={58} src={selectedAccount.avatar_url} icon={<PlatformLogo platform={selectedAccount.platform} size={28}/>}/>
-            <div className="account-insight-title"><Typography.Title level={3}>{selectedAccount.name}</Typography.Title><PlatformLogo platform={selectedAccount.platform} size={20}/></div>
+            <div className="account-insight-identity">
+              <div className="account-insight-title"><Typography.Title level={3}>{selectedAccount.name}</Typography.Title><PlatformLogo platform={selectedAccount.platform} size={20}/></div>
+              {insights&&<Space size={6} wrap><Tag>{insights.range.start} — {insights.range.end}</Tag>{insights.unavailable.length>0&&<Popover title="平台数据权限" content={<ul className="data-availability-list">{insights.unavailable.map(item=><li key={item}>{item}</li>)}</ul>}><Tag color="gold">部分指标不可用</Tag></Popover>}</Space>}
+            </div>
             {selectedAccount.profile_url&&<Button href={selectedAccount.profile_url} target="_blank" icon={<ExportOutlined/>}>打开主页</Button>}
           </div>
           {insightError?<div className="inline-error">{insightError}</div>:<div className="insight-metric-grid">
@@ -311,7 +314,6 @@ export default function DashboardPage(){
             <InsightMetric label="RPM" value={money(insightTotals?.rpm)} sub={insightDays==='all'?'每千次播放':changeText(insights?.changes.rpm)} muted={insightTotals?.rpm==null}/>
             <InsightMetric label="当前订阅数" value={fmt(insightTotals?.followers??selectedAccount.follower_count)} sub={netSubscribers==null?undefined:`周期净增 ${netSubscribers>=0?'+':''}${fmt(netSubscribers)}${insightDays==='all'?'':` · ${changeText(insights?.changes.net_subscribers)}`}`}/>
             <InsightMetric label="公开视频" value={fmt(insightTotals?.video_count)} muted={insightTotals?.video_count==null}/>
-            <InsightMetric label="数据区间" value={insights?`${insightDays==='all'?insights.range.start:insights.range.start.slice(5)} — ${insightDays==='all'?insights.range.end:insights.range.end.slice(5)}`:'—'} muted={!insights}/>
           </div>}
         </Card>
 
