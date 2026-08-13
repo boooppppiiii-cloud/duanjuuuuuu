@@ -4,7 +4,7 @@ import { useEffect,useMemo,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Drama,type LegacyMetaSource,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
-import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,NATIVE_FOLDER_PICKER_CAPABILITY,type LocalWorkspace } from '../localWorkspace'
+import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,META_DURATION_GUARD_CAPABILITY,NATIVE_FOLDER_PICKER_CAPABILITY,type LocalWorkspace } from '../localWorkspace'
 import { LOCAL_ASSISTANT_DOWNLOAD_FILENAME,LOCAL_ASSISTANT_DOWNLOAD_URL,showLocalAssistantAccessPrompt,showLocalAssistantInstallPrompt } from '../components/LocalAssistantPrompt'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
@@ -79,7 +79,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        if(!stopped){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?(error as Error).message:`本地助手响应异常：${(error as Error).message}`)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)){
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||!localAssistantSupports(health,META_DURATION_GUARD_CAPABILITY)){
        if(!stopped){setLocalStatus('outdated');setPackages([]);setLocalIssue('当前本地助手版本过旧，需要更新后使用 Meta 官方投递')}
        return
      }
@@ -156,7 +156,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        else{setLocalStatus('error');setLocalIssue(`本地助手响应异常：${(error as Error).message}`);msg.error((error as Error).message)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)){msg.destroy('local-access');setLocalStatus('outdated');setLocalIssue('当前本地助手仍使用旧式文件夹选择器，请安装新版后重试');showLocalWorkspaceHelp('update');return}
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||!localAssistantSupports(health,META_DURATION_GUARD_CAPABILITY)){msg.destroy('local-access');setLocalStatus('outdated');setLocalIssue('当前本地助手缺少最新 Meta 时长修复能力，请安装新版后重试');showLocalWorkspaceHelp('update');return}
      if(health.picker_ready===false){msg.destroy('local-access');setLocalStatus('unavailable');setLocalIssue('本地助手未运行在当前 Windows 用户桌面，请双击桌面快捷方式后重试');msg.warning('请先启动当前用户桌面上的 Jushu Local Assistant');return}
      msg.destroy('local-access')
      setLocalStatus(fallbackStatus)

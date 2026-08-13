@@ -28,6 +28,10 @@ ALLOWED_GENRES = {
 }
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 ProgressCallback = Callable[[int, str], None]
+META_MIN_DURATION_SECONDS = 60.0
+META_MAX_DURATION_SECONDS = 180.0
+META_REPAIRABLE_MIN_DURATION_SECONDS = 59.0
+META_REPAIR_TARGET_DURATION_SECONDS = 61.0
 
 
 def _notify_progress(callback: ProgressCallback | None, progress: int, step: str) -> None:
@@ -177,9 +181,13 @@ def preflight(
         try:
             info = inspect_video(source)
             issues = []
-            if not 60 <= info["duration"] <= 180:
+            duration = float(info["duration"])
+            if META_REPAIRABLE_MIN_DURATION_SECONDS <= duration < META_MIN_DURATION_SECONDS:
+                issues.append("将自动补足末帧与音频到 61 秒")
+                fixable.append(f"第 {index} 集：检测到 {duration:.2f} 秒，将自动补足到 61 秒后再校验")
+            elif not META_MIN_DURATION_SECONDS <= duration <= META_MAX_DURATION_SECONDS:
                 issues.append("时长必须在 60 秒到 3 分钟之间")
-                blockers.append(f"第 {index} 集时长 {info['duration']:.1f} 秒，不符合 60 秒到 3 分钟要求")
+                blockers.append(f"第 {index} 集时长 {duration:.2f} 秒，不符合 60 秒到 3 分钟要求")
             if info["size"] > 2 * 1024**3:
                 issues.append("文件超过 2GB")
                 blockers.append(f"第 {index} 集文件超过 2GB")
@@ -267,26 +275,42 @@ def _normalize_video(source: Path, target: Path, info: dict) -> None:
     ffmpeg = _binary("ffmpeg")
     command = [ffmpeg, "-y", "-i", str(source)]
     has_audio = bool(info.get("has_audio"))
+    duration = float(info.get("duration") or 0)
+    repair_short_duration = META_REPAIRABLE_MIN_DURATION_SECONDS <= duration < META_MIN_DURATION_SECONDS
     if not has_audio:
         command += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
-    if _video_stream_copy_ready(info):
+    if _video_stream_copy_ready(info) and not repair_short_duration:
         command += [
-            "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0", "-shortest",
+            "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0",
             "-c:v", "copy",
         ]
         if has_audio and info.get("audio_codec") == "aac" and info.get("audio_channels") == 2:
             command += ["-c:a", "copy"]
         else:
             command += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000"]
+        if not has_audio:
+            command += ["-shortest"]
+        command += ["-t", f"{duration:.3f}"]
         command += ["-movflags", "+faststart", str(target)]
     else:
+        video_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=25"
+        target_duration = duration
+        if repair_short_duration:
+            pad_seconds = META_REPAIR_TARGET_DURATION_SECONDS - duration
+            video_filter += f",tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}"
+            target_duration = META_REPAIR_TARGET_DURATION_SECONDS
         command += [
-            "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0", "-shortest",
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=25",
+            "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0",
+            "-vf", video_filter,
             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-b:v", "3M",
             "-minrate", "3M", "-maxrate", "3M", "-bufsize", "6M", "-x264-params", "nal-hrd=cbr:force-cfr=1",
-            "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-movflags", "+faststart", str(target),
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000",
         ]
+        if has_audio and repair_short_duration:
+            command += ["-af", "apad"]
+        if not has_audio:
+            command += ["-shortest"]
+        command += ["-t", f"{target_duration:.3f}", "-movflags", "+faststart", str(target)]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-1200:] or "ffmpeg 转码失败")
@@ -299,7 +323,7 @@ def _verify_output(path: Path) -> list[str]:
     if info["video_codec"] != "h264": errors.append("视频编码不是 H.264")
     if not _video_dimensions_ready(info): errors.append("视频分辨率不是 1080x1920")
     if not _video_bitrate_ready(info): errors.append("视频码率低于 2.5Mbps")
-    if not 59.5 <= info["duration"] <= 180.5: errors.append("时长不在 60 秒到 3 分钟之间")
+    if not META_MIN_DURATION_SECONDS <= info["duration"] <= META_MAX_DURATION_SECONDS: errors.append("时长不在 60 秒到 3 分钟之间")
     if info["audio_codec"] != "aac" or info["audio_channels"] != 2: errors.append("音频不是 AAC 双声道")
     if info["size"] > 2 * 1024**3: errors.append("文件超过 2GB")
     return errors

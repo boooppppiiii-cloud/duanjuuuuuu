@@ -138,6 +138,16 @@ def test_preflight_blocks_noncompliant_duration(monkeypatch, tmp_path: Path):
     assert any("60 秒到 3 分钟" in item for item in result["blockers"])
 
 
+def test_preflight_repairs_marginally_short_legacy_output(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video(duration=59.72))
+
+    result = meta_sfs.preflight(make_drama(tmp_path), request())
+
+    assert result["ready"] is True
+    assert result["blockers"] == []
+    assert any("59.72 秒" in item and "61 秒" in item for item in result["automatic_fixes"])
+
+
 def test_quick_preflight_registers_files_without_synchronous_media_probe(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: (_ for _ in ()).throw(AssertionError("must run in background")))
 
@@ -176,6 +186,24 @@ def test_normalize_video_only_reencodes_noncompliant_audio(monkeypatch, tmp_path
     assert command[command.index("-c:a") + 1] == "aac"
 
 
+def test_normalize_video_pads_marginally_short_legacy_output(monkeypatch, tmp_path: Path):
+    commands = []
+    monkeypatch.setattr(meta_sfs, "_binary", lambda _: "ffmpeg")
+    monkeypatch.setattr(meta_sfs.subprocess, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stderr=""))
+
+    meta_sfs._normalize_video(
+        tmp_path / "source.mp4",
+        tmp_path / "target.mp4",
+        compliant_video(duration=59.72),
+    )
+
+    command = commands[0]
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert "tpad=stop_mode=clone" in command[command.index("-vf") + 1]
+    assert command[command.index("-af") + 1] == "apad"
+    assert command[command.index("-t") + 1] == "61.000"
+
+
 def test_verify_output_rejects_low_resolution_and_bitrate(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         meta_sfs,
@@ -186,6 +214,14 @@ def test_verify_output_rejects_low_resolution_and_bitrate(monkeypatch, tmp_path:
     errors = meta_sfs._verify_output(tmp_path / "target.mp4")
     assert "视频分辨率不是 1080x1920" in errors
     assert "视频码率低于 2.5Mbps" in errors
+
+
+def test_verify_output_strictly_rejects_sub_minute_duration(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(meta_sfs, "inspect_video", lambda _: compliant_video(duration=59.99))
+
+    errors = meta_sfs._verify_output(tmp_path / "target.mp4")
+
+    assert "时长不在 60 秒到 3 分钟之间" in errors
 
 
 def test_normalize_video_uses_fast_server_preset_for_noncompliant_video(monkeypatch, tmp_path: Path):

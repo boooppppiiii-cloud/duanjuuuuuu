@@ -61,6 +61,19 @@ def test_meta_plan_rejects_a_whole_drama_shorter_than_one_minute(tmp_path: Path)
         build_meta_episode_plan([(tmp_path / "Episode1.mp4", 59)], 180)
 
 
+def test_meta_plan_can_reserve_a_one_second_encoding_margin(tmp_path: Path):
+    sources = [
+        (tmp_path / "Episode1.mp4", 59.6),
+        (tmp_path / "Episode2.mp4", 130.0),
+        (tmp_path / "Episode3.mp4", 358.0),
+    ]
+
+    plan = build_meta_episode_plan(sources, maximum=179.0, minimum=61.0)
+
+    assert all(61.0 <= part.duration <= 179.0 for part in plan)
+    assert sum(part.duration for part in plan) == pytest.approx(sum(duration for _, duration in sources))
+
+
 def test_identical_reuploads_of_a_numbered_episode_are_ignored(tmp_path: Path):
     original = tmp_path / "Drama-EP.1第1集.mp4"
     copy = tmp_path / "Drama-EP.1第1集 (1).mp4"

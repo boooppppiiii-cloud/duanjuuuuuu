@@ -58,6 +58,9 @@ PROFILES = {
     "meta": {"preset": "veryfast", "audio": "192k"},
 }
 
+META_SAFE_MIN_DURATION_SECONDS = 61.0
+META_SAFE_MAX_DURATION_SECONDS = 179.0
+
 
 class FactoryCancelled(RuntimeError):
     """Raised cooperatively after an operator cancels a factory job."""
@@ -679,15 +682,15 @@ class FactoryPipeline:
                     meta_operations: list[str] = []
                     meta_plan = build_meta_episode_plan(
                         source_info,
-                        float(job.max_duration_seconds),
-                        minimum=60.0,
+                        min(float(job.max_duration_seconds) - 1.0, META_SAFE_MAX_DURATION_SECONDS),
+                        minimum=META_SAFE_MIN_DURATION_SECONDS,
                         operations=meta_operations,
                     )
                     job.warnings = [
                         *job.warnings,
                         *meta_operations,
                         f"Meta 时长整理：{len(source_info)} 个有效原片将生成 {len(meta_plan)} 个投递文件，"
-                        "每集时长均为 60–180 秒",
+                        "按 61–179 秒安全区间生成，转码后仍严格满足 60–180 秒",
                     ]
                     self._save(session, job, "已完成 Meta 超时拆分与短集合并检查", 8)
 
