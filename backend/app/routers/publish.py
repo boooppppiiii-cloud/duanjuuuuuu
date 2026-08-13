@@ -47,6 +47,13 @@ def related_drama(session: Session, post_id: int) -> Drama | None:
     return session.get(Drama, clip.drama_id) if clip else None
 
 
+def require_horizontal_publish_cover(drama: Drama, publish_options: dict | None) -> None:
+    """Real platform publishing always uses the drama's explicit 16:9 cover."""
+    cover = Path(drama.cover_horizontal_path or "")
+    if str((publish_options or {}).get("cover_kind") or "") != "horizontal" or not cover.is_file():
+        raise HTTPException(422, "真实发布必须先在剧库上传可用的 16:9 横版封面")
+
+
 def account_view(account: Account) -> dict:
     data = account.model_dump(exclude={"credentials_json", "auto_publish"})
     data["credential_status"] = sanitized_credentials(account)
@@ -381,6 +388,7 @@ def create_job(payload: PublishJobCreateRequest, session: Session = Depends(get_
         raise HTTPException(404, "成品或账号不存在")
     if account.status != "connected":
         raise HTTPException(422, f"账号“{account.name}”尚未通过真实连接检测")
+    require_horizontal_publish_cover(drama, payload.publish_options)
     if drama.is_ai_generated and payload.ai_disclosure is False:
         raise HTTPException(422, "AI 剧必须开启 AI 内容标注，不能关闭")
     job = PublishJob(**payload.model_dump(), owner_user_id=owner_id)
@@ -402,6 +410,7 @@ def create_batch(payload: BatchPublishRequest, session: Session = Depends(get_se
         post = session.get(Post, post_id)
         owner_id = _request_user_id(user, post.owner_user_id if post else None)
         if not drama or not post or post.owner_user_id != owner_id: raise HTTPException(404, f"成品不存在：{post_id}")
+        require_horizontal_publish_cover(drama, payload.publish_options)
         for account in accounts:
             job = PublishJob(post_id=post_id, account_id=account.id, scheduled_at=payload.scheduled_at, ai_disclosure=drama.is_ai_generated or payload.ai_disclosure, publish_options=payload.publish_options, owner_user_id=owner_id)
             session.add(job); created.append(job)
@@ -468,7 +477,8 @@ def recurring(payload: RecurringPublishRequest, session: Session = Depends(get_s
             post = session.get(Post, post_id)
             owner_id = _request_user_id(user, post.owner_user_id if post else None)
             if not drama or not post or post.owner_user_id != owner_id: raise HTTPException(404, f"成品不存在：{post_id}")
-            job = PublishJob(post_id=post_id, account_id=payload.account_id, scheduled_at=scheduled, ai_disclosure=drama.is_ai_generated, owner_user_id=owner_id)
+            require_horizontal_publish_cover(drama, {"cover_kind": "horizontal"})
+            job = PublishJob(post_id=post_id, account_id=payload.account_id, scheduled_at=scheduled, ai_disclosure=drama.is_ai_generated, publish_options={"cover_kind": "horizontal"}, owner_user_id=owner_id)
             session.add(job); created.append(job)
     session.commit()
     for job in created: session.refresh(job)

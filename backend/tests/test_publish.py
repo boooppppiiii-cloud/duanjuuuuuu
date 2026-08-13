@@ -27,7 +27,8 @@ def test_library_cover_is_converted_to_youtube_safe_thumbnail(tmp_path: Path):
 
 def seed(session: Session, root: Path, ai: bool = True):
     video = root / "clean.mp4"; video.write_bytes(b"video")
-    drama = Drama(title="AI 发布剧", file_dir=str(root), source_note="测试", is_ai_generated=ai)
+    cover = root / "horizontal.jpg"; Image.new("RGB", (1920, 1080), "#20422f").save(cover)
+    drama = Drama(title="AI 发布剧", file_dir=str(root), source_note="测试", is_ai_generated=ai, cover_horizontal_path=str(cover))
     session.add(drama); session.commit(); session.refresh(drama)
     clip = Clip(drama_id=drama.id, template_name="suspense_hook", file_path=str(video), current_step="completed")
     session.add(clip); session.commit(); session.refresh(clip)
@@ -43,8 +44,8 @@ def test_ai_disclosure_cannot_be_created_or_updated_false(tmp_path: Path):
     with Session(engine) as session:
         _, _, post, account = seed(session, tmp_path)
         with pytest.raises(HTTPException):
-            create_job(PublishJobCreateRequest(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=False), session)
-        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True)
+            create_job(PublishJobCreateRequest(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=False, publish_options={"cover_kind": "horizontal"}), session)
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={"cover_kind": "horizontal"})
         session.add(job); session.commit(); session.refresh(job)
         with pytest.raises(HTTPException):
             update_job(job.id, PublishJobUpdateRequest(ai_disclosure=False), session)
@@ -59,7 +60,7 @@ def test_disconnected_account_is_blocked_without_fake_success(monkeypatch, tmp_p
     with Session(engine) as session:
         _, _, post, account = seed(session, tmp_path)
         account.status = "not_connected"; session.add(account)
-        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True)
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={"cover_kind": "horizontal"})
         session.add(job); session.commit(); session.refresh(job)
         result = execute_publish_job(session, job)
         assert result.status == "blocked"
@@ -84,7 +85,7 @@ def test_platform_response_is_required_for_success(monkeypatch, tmp_path: Path):
     with Session(engine) as session:
         _, _, post, account = seed(session, tmp_path)
         account.platform = "facebook"; session.add(account)
-        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True)
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={"cover_kind": "horizontal"})
         session.add(job); session.commit(); session.refresh(job)
         result = execute_publish_job(session, job)
         assert result.status == "published"
@@ -109,7 +110,7 @@ def test_unresolved_app_link_is_never_sent(monkeypatch, tmp_path: Path):
         account.platform = "youtube"; account.account_type = "official"
         post.caption = "Watch now: {app_link}"
         session.add(account); session.add(post)
-        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now())
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), publish_options={"cover_kind": "horizontal"})
         session.add(job); session.commit(); session.refresh(job)
         result = execute_publish_job(session, job)
         assert result.status == "failed"
@@ -134,7 +135,7 @@ def test_first_comment_is_posted_after_real_platform_publish(monkeypatch, tmp_pa
     with Session(engine) as session:
         _, _, post, account = seed(session, tmp_path, ai=False)
         account.platform = "facebook"; session.add(account)
-        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), publish_options={"first_comments": {str(post.id): "Watch here: https://example.com"}})
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), publish_options={"cover_kind": "horizontal", "first_comments": {str(post.id): "Watch here: https://example.com"}})
         session.add(job); session.commit(); session.refresh(job)
         result = execute_publish_job(session, job)
         assert calls == [("facebook", "published-video", "Watch here: https://example.com")]
@@ -148,7 +149,7 @@ def test_tiktok_first_comment_is_blocked_before_video_upload(tmp_path: Path):
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         _, _, post, account = seed(session, tmp_path, ai=False)
-        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), publish_options={"first_comments": {str(post.id): "A real first comment"}})
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), publish_options={"cover_kind": "horizontal", "first_comments": {str(post.id): "A real first comment"}})
         session.add(job); session.commit(); session.refresh(job)
         result = execute_publish_job(session, job)
         assert result.status == "blocked"

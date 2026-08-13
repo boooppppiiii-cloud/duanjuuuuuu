@@ -21,12 +21,17 @@ from .hook_recommender import loudness_peaks, media_duration
 
 
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 5
 MAX_HIGH_ENERGY_CANDIDATES = 10
 MIN_HIGH_ENERGY_SECONDS = 15.0
 MAX_HIGH_ENERGY_SECONDS = 30.0
 RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
-SEXUAL_CATEGORIES = {"软色情", "性暗示", "色情", "性行为", "性暴力"}
+SEXUAL_CATEGORIES = {"软色情", "低俗擦边", "暴露", "裸露", "性暗示", "色情", "性行为", "性暴力"}
+SEXUAL_SIGNAL_TERMS = {
+    "比基尼", "泳装", "情趣内衣", "内衣", "低领", "暴露", "裸露", "裸体", "裸上身", "赤裸",
+    "床戏", "性爱", "软色情", "低俗擦边", "性暗示", "性行为", "性暴力", "裙底", "胸部", "臀部",
+    "胯部", "大腿", "压床", "脱衣", "换衣", "湿身", "抚摸", "骨盆", "呻吟", "喘息", "挑逗",
+}
 SEXUAL_SCENE_PADDING_BEFORE = 5.0
 SEXUAL_SCENE_PADDING_AFTER = 15.0
 SEXUAL_SCENE_MERGE_GAP = 15.0
@@ -187,7 +192,19 @@ def _candidate_categories(row: dict[str, Any]) -> set[str]:
 
 
 def _is_sexual_candidate(row: dict[str, Any]) -> bool:
-    return bool(_candidate_categories(row) & SEXUAL_CATEGORIES)
+    if _candidate_categories(row) & SEXUAL_CATEGORIES:
+        return True
+    sensitive = row.get("sensitive") if isinstance(row.get("sensitive"), dict) else {}
+    evidence = " ".join([
+        *_reason_list(row.get("evidence")),
+        *[str(value) for values in sensitive.values() for value in _reason_list(values)],
+    ]).casefold()
+    if any(term.casefold() in evidence for term in SEXUAL_SIGNAL_TERMS):
+        return True
+    scores = row.get("risk_scores") if isinstance(row.get("risk_scores"), dict) else {}
+    body = int(scores.get("body_focus") or 0)
+    context = max(int(scores.get(key) or 0) for key in ("action", "expression_audio", "scene_context"))
+    return body >= 35 and context >= 25
 
 
 def _merge_text_values(left: Any, right: Any) -> list[str]:
@@ -598,7 +615,9 @@ def _model_candidates(
             overall_risk_score = 0
         if not overall_risk_score and any(risk_scores.values()):
             overall_risk_score = round(max(risk_scores.values()))
-        threshold = 10 if category in SEXUAL_CATEGORIES else 30
+        probe = {"sensitive": {category: reasons}, "evidence": reasons, "risk_scores": risk_scores}
+        sexual_signal = _is_sexual_candidate(probe)
+        threshold = 10 if sexual_signal else 30
         if "overall_risk_score" in raw and overall_risk_score < threshold:
             continue
         confidence = max(confidence, overall_risk_score / 100)
@@ -609,7 +628,7 @@ def _model_candidates(
             "confidence": round(confidence, 2),
             "overall_risk_score": overall_risk_score,
             "risk_scores": risk_scores,
-            "review_status": "approved" if category in SEXUAL_CATEGORIES or overall_risk_score >= 60 or confidence >= 0.75 else "pending",
+            "review_status": "approved" if sexual_signal or overall_risk_score >= 60 or confidence >= 0.75 else "pending",
             "evidence": reasons, "frame_files": _candidate_frames(frames, start, end), "source": source,
         })
     return high_energy, sensitive

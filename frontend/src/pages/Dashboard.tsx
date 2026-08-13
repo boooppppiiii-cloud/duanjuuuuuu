@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Avatar,
   Button,
@@ -59,11 +59,15 @@ const validDate=(value:string|null|undefined)=>{
 const calendarDate=(item:PlatformMedia)=>validDate(item.calendar_at||item.scheduled_at||item.published_at)
 const sentimentMeta:Record<string,[string,string]>={positive:['正面','green'],negative:['负面','red'],neutral:['中性','default'],unanalyzed:['待分析','orange']}
 
-function InsightMetric({label,value,sub,muted=false}:{label:string;value:string;sub?:string;muted?:boolean}){
+function InsightMetric({label,value,sub,muted=false}:{label:string;value:string;sub?:ReactNode;muted?:boolean}){
   return <div className="insight-metric"><span>{label}</span><strong className={muted?'metric-empty':''}>{value}</strong>{sub&&<small>{sub}</small>}</div>
 }
 
-const changeText=(value:number|null|undefined)=>value==null?'无可比数据':`${value>=0?'+':''}${value.toFixed(1)}% 环比`
+function ChangeBadge({value}:{value:number|null|undefined}){
+  if(value==null)return <span className="account-change is-flat">无可比数据</span>
+  const direction=value>0?'is-up':value<0?'is-down':'is-flat'
+  return <span className={`account-change ${direction}`}>{value>0?'↑':value<0?'↓':'—'} {Math.abs(value).toFixed(1)}% 环比</span>
+}
 const exportHref=(path:string)=>path
 
 type TrendMetric='views'|'watch_time_seconds'|'estimated_revenue'|'subscribers_gained'
@@ -309,12 +313,12 @@ export default function DashboardPage(){
             {selectedAccount.profile_url&&<Button href={selectedAccount.profile_url} target="_blank" icon={<ExportOutlined/>}>打开主页</Button>}
           </div>
           {insightError?<div className="inline-error">{insightError}</div>:<div className="insight-metric-grid">
-            <InsightMetric label={insightDays==='all'?'全部播放':`周期播放`} value={compact(insightTotals?.views)} sub={insightDays==='all'?(insightTotals?.channel_views!=null?`频道累计 ${fmt(insightTotals.channel_views)}`:undefined):changeText(insights?.changes.views)} muted={insightTotals?.views==null}/>
-            <InsightMetric label="缩略图点击率" value={percent(insightTotals?.ctr)} sub={insightTotals?.impressions==null?(insightDays==='all'?undefined:changeText(insights?.changes.ctr)):`${fmt(insightTotals.impressions)} 次曝光${insightDays==='all'?'':` · ${changeText(insights?.changes.ctr)}`}`} muted={insightTotals?.ctr==null}/>
-            <InsightMetric label="观看时长" value={duration(insightTotals?.watch_time_seconds)} sub={insightDays==='all'?(insightTotals?.average_view_duration_seconds!=null?`平均 ${duration(Math.round(insightTotals.average_view_duration_seconds))}`:undefined):`平均 ${duration(Math.round(insightTotals?.average_view_duration_seconds||0))} · ${changeText(insights?.changes.watch_time_seconds)}`} muted={insightTotals?.watch_time_seconds==null}/>
-            <InsightMetric label="广告收入" value={money(insightTotals?.estimated_revenue)} sub={insightDays==='all'?'USD':changeText(insights?.changes.estimated_revenue)} muted={insightTotals?.estimated_revenue==null}/>
-            <InsightMetric label="RPM" value={money(insightTotals?.rpm)} sub={insightDays==='all'?'每千次播放':changeText(insights?.changes.rpm)} muted={insightTotals?.rpm==null}/>
-            <InsightMetric label="当前订阅数" value={fmt(insightTotals?.followers??selectedAccount.follower_count)} sub={netSubscribers==null?undefined:`周期净增 ${netSubscribers>=0?'+':''}${fmt(netSubscribers)}${insightDays==='all'?'':` · ${changeText(insights?.changes.net_subscribers)}`}`}/>
+            <InsightMetric label={insightDays==='all'?'全部播放':`周期播放`} value={compact(insightTotals?.views)} sub={insightDays==='all'?(insightTotals?.channel_views!=null?`频道累计 ${fmt(insightTotals.channel_views)}`:undefined):<ChangeBadge value={insights?.changes.views}/>} muted={insightTotals?.views==null}/>
+            <InsightMetric label="缩略图点击率" value={percent(insightTotals?.ctr)} sub={<>{insightTotals?.impressions!=null&&<span>{fmt(insightTotals.impressions)} 次曝光</span>}{insightDays!=='all'&&<ChangeBadge value={insights?.changes.ctr}/>}</>} muted={insightTotals?.ctr==null}/>
+            <InsightMetric label="观看时长" value={duration(insightTotals?.watch_time_seconds)} sub={<>{insightTotals?.average_view_duration_seconds!=null&&<span>平均 {duration(Math.round(insightTotals.average_view_duration_seconds))}</span>}{insightDays!=='all'&&<ChangeBadge value={insights?.changes.watch_time_seconds}/>}</>} muted={insightTotals?.watch_time_seconds==null}/>
+            <InsightMetric label="广告收入" value={money(insightTotals?.estimated_revenue)} sub={insightDays==='all'?'USD':<ChangeBadge value={insights?.changes.estimated_revenue}/>} muted={insightTotals?.estimated_revenue==null}/>
+            <InsightMetric label="RPM" value={money(insightTotals?.rpm)} sub={insightDays==='all'?'每千次播放':<ChangeBadge value={insights?.changes.rpm}/>} muted={insightTotals?.rpm==null}/>
+            <InsightMetric label="当前订阅数" value={fmt(insightTotals?.followers??selectedAccount.follower_count)} sub={netSubscribers==null?undefined:<><span>周期净增 {netSubscribers>=0?'+':''}{fmt(netSubscribers)}</span>{insightDays!=='all'&&<ChangeBadge value={insights?.changes.net_subscribers}/>}</>}/>
             <InsightMetric label="公开视频" value={fmt(insightTotals?.video_count)} muted={insightTotals?.video_count==null}/>
           </div>}
         </Card>

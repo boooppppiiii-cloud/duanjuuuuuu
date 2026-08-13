@@ -80,6 +80,13 @@ def execute_publish_job(session: Session, job: PublishJob) -> PublishJob:
     drama = session.get(Drama, clip.drama_id) if clip else None
     if not all((post, account, clip, drama)):
         raise RuntimeError("发布任务关联数据不完整")
+    horizontal_cover = Path(drama.cover_horizontal_path or "")
+    if not horizontal_cover.is_file():
+        job.status = "blocked"; job.result_log = "真实发布必须先在剧库上传可用的 16:9 横版封面"
+        session.add(job); session.commit(); session.refresh(job)
+        return job
+    if str((job.publish_options or {}).get("cover_kind") or "") != "horizontal":
+        job.publish_options = {**(job.publish_options or {}), "cover_kind": "horizontal"}
     if account.status != "connected":
         job.status = "blocked"; job.result_log = "账号尚未通过真实连接检测，请先到账号矩阵完成连接"
         session.add(job); session.commit(); session.refresh(job)
@@ -116,9 +123,8 @@ def execute_publish_job(session: Session, job: PublishJob) -> PublishJob:
         video = finalize_video(settings.ffmpeg_binary, Path(clip.file_path), account.account_type, settings.media_root / "assets", settings.media_root / "posts" / "final_cache")
         job.final_video_path = str(video)
         session.add(job); session.commit(); session.refresh(job)
-        cover_fields = {"vertical": drama.cover_vertical_path, "square": drama.cover_square_path, "horizontal": drama.cover_horizontal_path}
         cover_kind = str((job.publish_options or {}).get("cover_kind") or "")
-        source_cover = Path(cover_fields.get(cover_kind) or "") if cover_kind else None
+        source_cover = Path(drama.cover_horizontal_path) if cover_kind == "horizontal" else None
         cover = prepare_publish_cover(source_cover, settings.media_root / "posts" / "final_cache" / f"cover_job_{job.id}.jpg") if source_cover and source_cover.is_file() else None
         payload = PublishPayload(job=job, post=delivery_post, account=account, video=video, package_root=settings.media_root / "packages", cover=cover)
         result = channel_cls().publish(payload)

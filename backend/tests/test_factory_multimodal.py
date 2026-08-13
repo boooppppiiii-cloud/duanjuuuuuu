@@ -37,7 +37,28 @@ def test_prompt_requires_contextual_soft_sexual_review():
     assert "ASR 台词与人物位置" in prompt
     assert "不得只截取最露骨的几秒" in prompt
     assert "动画、特效、奇幻生物和非真人画面使用同一标准" in prompt
+    assert "泳装/比基尼" in prompt
+    assert "男性裸露上半身" in prompt
+    assert "低俗擦边" in prompt
     assert "完整 15-30 秒范围" in prompt
+
+
+def test_revealing_clothing_is_treated_as_high_recall_sexual_risk():
+    row = {
+        "sensitive": {"其他": ["镜头长时间聚焦比基尼与胸部"]},
+        "risk_scores": {"body_focus": 70, "action": 20, "expression_audio": 10, "scene_context": 30},
+    }
+
+    assert script_analysis._is_sexual_candidate(row) is True
+
+
+def test_body_focus_plus_context_is_not_dropped_when_provider_uses_other_category():
+    row = {
+        "sensitive": {"其他": ["人物服装与动作存在风险，交由人工复核"]},
+        "risk_scores": {"body_focus": 45, "action": 30, "expression_audio": 20, "scene_context": 35},
+    }
+
+    assert script_analysis._is_sexual_candidate(row) is True
 
 
 def test_analysis_falls_back_to_qwen_when_gemini_fails(monkeypatch):
