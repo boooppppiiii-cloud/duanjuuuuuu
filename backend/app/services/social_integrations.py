@@ -300,17 +300,15 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
         if all_time and published_at:
             start = date.fromisoformat(published_at)
 
-        dimension = "month" if all_time else "day"
+        # Query daily rows even for all-time analytics: YouTube only accepts
+        # monthly reports whose boundaries are complete calendar months.  A
+        # daily query preserves the current partial month and is aggregated
+        # below for a compact all-time chart.
+        dimension = "day"
         report_start = start
         report_end = end
         previous_start = None if all_time else start - timedelta(days=selected_days or 0)
         query_start = previous_start or report_start
-        # YouTube Analytics requires a monthly report to start on the first
-        # day of a month.  Keep the real channel creation date in the response
-        # range, but align the upstream query so the API does not reject it.
-        if dimension == "month":
-            query_start = date(query_start.year, query_start.month, 1)
-
         daily: dict[str, dict[str, float | str | None]] = {}
         available_groups: set[str] = set()
         groups = [
@@ -328,6 +326,33 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
                 key = str(row.get(dimension) or "")
                 if key:
                     daily.setdefault(key, {"date": key}).update(row)
+
+        if all_time:
+            monthly: dict[str, dict[str, float | str | None]] = {}
+            additive = (
+                "views", "estimatedMinutesWatched", "subscribersGained",
+                "subscribersLost", "videoThumbnailImpressions", "estimatedRevenue",
+            )
+            for day_key, row in daily.items():
+                month_key = day_key[:7]
+                bucket = monthly.setdefault(month_key, {"date": month_key})
+                for field in additive:
+                    if row.get(field) is not None:
+                        bucket[field] = float(bucket.get(field) or 0) + float(row[field])
+                views_for_day = float(row.get("views") or 0)
+                if row.get("averageViewDuration") is not None and views_for_day:
+                    bucket["_average_duration_weight"] = float(bucket.get("_average_duration_weight") or 0) + float(row["averageViewDuration"]) * views_for_day
+                    bucket["_average_duration_views"] = float(bucket.get("_average_duration_views") or 0) + views_for_day
+                impressions_for_day = float(row.get("videoThumbnailImpressions") or 0)
+                if row.get("videoThumbnailImpressionsClickRate") is not None and impressions_for_day:
+                    bucket["_ctr_weight"] = float(bucket.get("_ctr_weight") or 0) + float(row["videoThumbnailImpressionsClickRate"]) * impressions_for_day
+                    bucket["_ctr_impressions"] = float(bucket.get("_ctr_impressions") or 0) + impressions_for_day
+            for bucket in monthly.values():
+                if bucket.get("_average_duration_views"):
+                    bucket["averageViewDuration"] = float(bucket["_average_duration_weight"]) / float(bucket["_average_duration_views"])
+                if bucket.get("_ctr_impressions"):
+                    bucket["videoThumbnailImpressionsClickRate"] = float(bucket["_ctr_weight"]) / float(bucket["_ctr_impressions"])
+            daily = monthly
 
         core_available = "核心观看数据" in available_groups
         impression_available = "曝光与点击率" in available_groups
