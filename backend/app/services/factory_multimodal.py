@@ -91,7 +91,7 @@ def _strip_fences(value: str) -> str:
     return text.strip()
 
 
-def _prompt(episode: str, window_start: float, window_end: float, transcript: list[dict[str, Any]], frames: list[FrameSample]) -> str:
+def build_window_prompt(episode: str, window_start: float, window_end: float, transcript: list[dict[str, Any]], frames: list[FrameSample]) -> str:
     transcript_text = "\n".join(
         f"[{row['start']:.2f}-{row['end']:.2f}] {str(row.get('text', ''))[:400]}" for row in transcript
     )[:30000]
@@ -180,7 +180,7 @@ def analyze_window(
     transcript: list[dict[str, Any]],
     frames: list[FrameSample],
 ) -> tuple[dict[str, Any], str, str]:
-    prompt = _prompt(episode, window_start, window_end, transcript, frames)
+    prompt = build_window_prompt(episode, window_start, window_end, transcript, frames)
     errors: list[str] = []
     retries = max(1, min(3, int(getattr(settings, "factory_analysis_api_retries", 2))))
     for attempt in range(retries):

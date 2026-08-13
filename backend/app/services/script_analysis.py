@@ -643,9 +643,11 @@ def analyze_drama(
     videos = episode_files(folder)
     if not videos:
         raise RuntimeError("本地剧目目录中没有可分析的视频")
-    production_ai = model is None
+    production_ai = model is None and ai_analyzer is None
     if production_ai:
         provider, provider_model = provider_name(settings)
+    elif ai_analyzer is not None:
+        provider, provider_model = "server_proxy", "server_managed"
     else:
         provider, provider_model = "test", "injected"
     previous = read_analysis(folder) if resume else None
@@ -858,12 +860,18 @@ class FactoryAnalysisPipeline:
             return drama_id in self._active
 
     def run(self, folder: Path, drama_id: int, title: str, settings: Settings, words: list[str], resume: bool = False) -> None:
+        self.run_with_analyzer(folder, drama_id, title, settings, words, resume=resume)
+
+    def run_with_analyzer(
+        self, folder: Path, drama_id: int, title: str, settings: Settings, words: list[str],
+        *, resume: bool = False, ai_analyzer: Callable[..., Any] | None = None,
+    ) -> None:
         with self._guard:
             if drama_id in self._active:
                 return
             self._active.add(drama_id)
         try:
-            analyze_drama(folder, drama_id, title, settings, words, resume=resume)
+            analyze_drama(folder, drama_id, title, settings, words, ai_analyzer=ai_analyzer, resume=resume)
         except Exception as exc:
             failed_analysis(folder, drama_id, title, exc)
         finally:

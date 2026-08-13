@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     factory_analysis_frames_per_window: int = 30
     factory_analysis_request_timeout_seconds: int = 120
     factory_analysis_api_retries: int = 2
+    factory_model_proxy_enabled: bool = False
     factory_whisper_beam_size: int = 1
     qwen_api_key: str = ""
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"

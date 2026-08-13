@@ -250,6 +250,25 @@ class FactoryProcessRequest(BaseModel):
         return unique
 
 
+class FactoryAnalysisStartRequest(BaseModel):
+    proxy_origin: str = ""
+    proxy_token: str = ""
+
+
+class FactoryAnalysisFrameRequest(BaseModel):
+    index: int = Field(ge=1, le=100)
+    second: float = Field(ge=0)
+    data: str = Field(min_length=1, max_length=2_000_000)
+
+
+class FactoryAnalysisWindowRequest(BaseModel):
+    episode: str = Field(min_length=1, max_length=500)
+    window_start: float = Field(ge=0)
+    window_end: float = Field(gt=0)
+    transcript: list[dict] = Field(default_factory=list, max_length=500)
+    frames: list[FactoryAnalysisFrameRequest] = Field(default_factory=list, max_length=48)
+
+
 class FactoryAnalysisReviewRequest(BaseModel):
     episode: str = Field(min_length=1)
     kind: Literal["high_energy", "sensitive"]

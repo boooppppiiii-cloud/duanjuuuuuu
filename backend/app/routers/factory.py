@@ -1,19 +1,26 @@
 from pathlib import Path
 from datetime import datetime
+import base64
+import binascii
+import hashlib
+import hmac
 import json
 import os
 import shutil
+import tempfile
+import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from ..config import get_settings
 from ..database import get_session
 from ..models import AppUser, Clip, CloudAsset, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
-from ..schemas import CloudAssetView, FactoryAnalysisReviewRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, GeneratedAssetView, HookAssetView
-from ..services.factory_multimodal import FactoryAIUnavailableError, provider_name
+from ..schemas import CloudAssetView, FactoryAnalysisFrameRequest, FactoryAnalysisReviewRequest, FactoryAnalysisStartRequest, FactoryAnalysisWindowRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, GeneratedAssetView, HookAssetView
+from ..services.factory_multimodal import FactoryAIUnavailableError, FrameSample, analyze_window, provider_name
 from ..services.script_analysis import ANALYSIS_VERSION, add_manual_sensitive, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review, write_analysis
 from ..services.drama_library import episode_files
 from ..services.factory_processing import factory_pipeline, sync_hook_assets
@@ -24,12 +31,76 @@ from ..services.usage import record_usage
 router = APIRouter(prefix="/api/factory", tags=["内容工厂"])
 
 
-def _run_analysis_as_user(user_id: int, *args) -> None:
+def _run_analysis_as_user(user_id: int, *args, ai_analyzer=None) -> None:
     token = bind_current_user(user_id)
     try:
-        factory_analysis_pipeline.run(*args)
+        factory_analysis_pipeline.run_with_analyzer(*args, ai_analyzer=ai_analyzer)
     finally:
         reset_current_user(token)
+
+
+def _analysis_token(user_id: int, expires_at: int) -> str:
+    secret = get_settings().credential_secret.encode("utf-8")
+    if not secret:
+        raise HTTPException(503, "服务器尚未启用模型代理签名")
+    payload = base64.urlsafe_b64encode(f"{user_id}:{expires_at}".encode()).decode().rstrip("=")
+    signature = hmac.new(secret, f"factory-analysis:{payload}".encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def _analysis_token_user(authorization: str) -> int:
+    raw = authorization.removeprefix("Bearer ").strip()
+    secret = get_settings().credential_secret.encode()
+    if not secret:
+        raise HTTPException(503, "服务器尚未启用模型代理签名")
+    try:
+        payload, signature = raw.split(".", 1)
+        expected = hmac.new(
+            secret, f"factory-analysis:{payload}".encode(), hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
+        user_id, expires_at = decoded.split(":", 1)
+        if int(expires_at) < int(time.time()):
+            raise ValueError
+        return int(user_id)
+    except (ValueError, TypeError, binascii.Error):
+        raise HTTPException(401, "模型代理授权已失效，请重新开始识别")
+
+
+def _proxy_analyzer(origin: str, token: str):
+    allowed = {
+        "https://app.duanju.chat",
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+    }
+    origin = origin.rstrip("/")
+    if origin not in allowed or not token:
+        raise HTTPException(422, "本地识别缺少有效的服务器模型授权")
+
+    def call(episode: str, window_start: float, window_end: float, transcript: list[dict], frames: list[FrameSample]):
+        payload = {
+            "episode": episode, "window_start": window_start, "window_end": window_end,
+            "transcript": transcript,
+            "frames": [{
+                "index": frame.index, "second": frame.second,
+                "data": base64.b64encode(frame.path.read_bytes()).decode("ascii"),
+            } for frame in frames],
+        }
+        response = httpx.post(
+            f"{origin}/api/factory/analysis-window", json=payload,
+            headers={"Authorization": f"Bearer {token}"}, timeout=180,
+        )
+        if response.status_code == 401:
+            raise RuntimeError("服务器模型授权已失效，请重新开始识别")
+        response.raise_for_status()
+        data = response.json()
+        return data["result"], data["provider"], data["model"]
+
+    return call
 
 
 def get_drama(drama_id: int, session: Session) -> Drama:
@@ -37,6 +108,55 @@ def get_drama(drama_id: int, session: Session) -> Drama:
     if not drama:
         raise HTTPException(404, "剧目不存在")
     return drama
+
+
+@router.post("/analysis-access")
+def create_analysis_access(user: AppUser = Depends(get_current_user)):
+    settings = get_settings()
+    try:
+        provider, model = provider_name(settings)
+    except FactoryAIUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    expires_at = int(time.time()) + 24 * 60 * 60
+    return {
+        "token": _analysis_token(int(user.id), expires_at),
+        "expires_at": expires_at,
+        "provider": provider,
+        "model": model,
+    }
+
+
+@router.post("/analysis-window")
+def analyze_local_window(payload: FactoryAnalysisWindowRequest, authorization: str = Header(default="")):
+    if payload.window_end <= payload.window_start:
+        raise HTTPException(422, "分析窗口结束时间必须晚于开始时间")
+    user_id = _analysis_token_user(authorization)
+    settings = get_settings()
+    token = bind_current_user(user_id)
+    try:
+        with tempfile.TemporaryDirectory(prefix="jushu-analysis-") as directory:
+            root = Path(directory)
+            frames: list[FrameSample] = []
+            for item in payload.frames:
+                try:
+                    data = base64.b64decode(item.data, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise HTTPException(422, "抽帧数据不合法") from exc
+                if not data or len(data) > 1_500_000:
+                    raise HTTPException(413, "单张抽帧不能超过 1.5MB")
+                path = root / f"frame-{item.index:03d}.jpg"
+                path.write_bytes(data)
+                frames.append(FrameSample(index=item.index, second=item.second, path=path))
+            try:
+                result, provider, model = analyze_window(
+                    settings, payload.episode, payload.window_start, payload.window_end,
+                    payload.transcript, frames,
+                )
+            except FactoryAIUnavailableError as exc:
+                raise HTTPException(503, str(exc)) from exc
+            return {"result": result, "provider": provider, "model": model}
+    finally:
+        reset_current_user(token)
 
 
 @router.get("/{drama_id}/analysis")
@@ -48,7 +168,10 @@ def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
         provider, model = provider_name(settings)
         ai_ready = True
     except FactoryAIUnavailableError:
-        provider, model, ai_ready = "", "", False
+        if settings.factory_model_proxy_enabled:
+            provider, model, ai_ready = "server_proxy", "server_managed", True
+        else:
+            provider, model, ai_ready = "", "", False
     base = result or {
         "status": "not_analyzed",
         "progress": 0,
@@ -114,13 +237,20 @@ def import_local_analysis(
 
 
 @router.post("/{drama_id}/analyze")
-def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+def run_script_analysis(
+    drama_id: int, background_tasks: BackgroundTasks, payload: FactoryAnalysisStartRequest | None = None,
+    session: Session = Depends(get_session), user: AppUser = Depends(get_current_user),
+):
     drama = get_drama(drama_id, session)
     settings = get_settings()
-    try:
-        provider_name(settings)
-    except FactoryAIUnavailableError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    analyzer = None
+    if payload and payload.proxy_origin and payload.proxy_token:
+        analyzer = _proxy_analyzer(payload.proxy_origin, payload.proxy_token)
+    else:
+        try:
+            provider_name(settings)
+        except FactoryAIUnavailableError as exc:
+            raise HTTPException(422, str(exc)) from exc
     if factory_analysis_pipeline.is_active(drama_id):
         return read_analysis(Path(drama.file_dir))
     words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
@@ -136,7 +266,10 @@ def run_script_analysis(drama_id: int, background_tasks: BackgroundTasks, sessio
         queued_resume_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
         if resume else queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
     )
-    background_tasks.add_task(_run_analysis_as_user, user.id, Path(drama.file_dir), drama.id, drama.title, settings, words, resume)
+    background_tasks.add_task(
+        _run_analysis_as_user, user.id, Path(drama.file_dir), drama.id, drama.title, settings, words, resume,
+        ai_analyzer=analyzer,
+    )
     record_usage("内容识别", user_id=user.id, event_kind="feature", cache_hit=False, details={"drama_id": drama_id, "resume": resume})
     return result
 
