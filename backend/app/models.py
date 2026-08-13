@@ -638,3 +638,32 @@ class RadarScanLease(SQLModel, table=True):
     name: str = Field(primary_key=True)
     acquired_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime = Field(index=True)
+
+
+class PromotionDramaPool(SQLModel, table=True):
+    """Small, explicit set of dramas that are eligible for scheduled radar scans."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True, unique=True)
+    active: bool = Field(default=True, index=True)
+    sources: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    priority: str = Field(default="normal", index=True)
+    pinned: bool = Field(default=False, index=True)
+    note: str = ""
+    discovered_from_account_id: Optional[int] = Field(default=None, foreign_key="monitoredaccount.id")
+    discovered_from_video_id: Optional[int] = Field(default=None, foreign_key="externalvideo.id")
+    last_scanned_at: Optional[datetime] = Field(default=None, index=True)
+    next_scan_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RadarQuotaUsage(SQLModel, table=True):
+    """Persistent YouTube quota ledger, keyed by the platform's Pacific quota day."""
+
+    quota_day: str = Field(primary_key=True)
+    search_calls: int = 0
+    used_units: int = 0
+    scan_count: int = 0
+    failed_scan_count: int = 0
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)

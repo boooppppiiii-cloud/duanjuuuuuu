@@ -61,12 +61,15 @@ export type CloudAsset = {id:number;drama_id:number;drama_title:string;uploader_
 export type AdminAnalytics = {range_days:number;totals:{users:number;active_users:number;api_calls:number;model_calls:number;tokens:number;cloud_assets:number;cloud_bytes:number};users:{user_id:number;email:string;api_calls:number;model_calls:number;input_tokens:number;output_tokens:number;total_tokens:number;feature_actions:number;failures:number}[];features:{feature:string;uses:number;successes:number;failures:number;cache_hits:number;model_calls:number;tokens:number;active_users:number;usage_rate:number;success_rate:number|null;hit_rate:number|null}[];daily:{date:string;api_calls:number;model_calls:number;tokens:number;success:number;failure:number}[];definitions:Record<string,string>}
 export type MonitoredAccount = {id:number;platform:string;platform_account_id:string;handle:string;display_name:string;profile_url:string;avatar_url:string;relationship_type:string;authorization_status:string;company_name:string;allowed_full_series:boolean;authorized_regions:string[];authorization_start:string|null;authorization_end:string|null;notes:string;active:boolean;source:string;updated_at:string;dramas:{id:number;title:string}[]}
 export type RadarQuery = {id:number;drama_id:number;query_text:string;query_type:string;platform:string;region:string;language:string;enabled:boolean;weight:number}
-export type RadarDrama = {id:number;title:string;theater:string;language:string;monitoring_enabled:boolean;last_scanned_at:string|null;last_error:string}
+export type RadarDrama = {id:number;title:string;theater:string;language:string;monitoring_enabled:boolean;in_promotion_pool:boolean;pool_sources:string[];last_scanned_at:string|null;last_error:string}
 export type RadarProfile = {id:number;drama_id:number;drama_title:string;enabled:boolean;official_title:string;aliases:string[];disabled_aliases:string[];misspellings:string[];character_names:string[];custom_queries:string[];regions:string[];languages:string[];scan_interval_hours:number;priority:'high'|'normal'|'low'|'paused';last_scanned_at:string|null;next_scan_at:string|null;last_error:string;queries:RadarQuery[];suggestions:{text:string;type:string}[];top_five:RadarResult[]}
 export type RadarSnapshot = {id:number;drama_id:number;query_id:number;platform:string;region:string;language:string;captured_at:string;result_count:number;collection_source:string;collection_status:string;error_message:string}
 export type RadarResult = {id:number;snapshot_id:number;external_video_id:number|null;platform_video_id:string;rank:number;previous_rank:number|null;title:string;description:string;video_url:string;embed_url:string;thumbnail_url:string;channel_id:string;channel_name:string;channel_url:string;channel_avatar_url:string;channel_subscribers:number|null;published_at:string|null;duration_seconds:number;views:number;likes:number;comments:number;tags:string[];matched_account_id:number|null;relationship_type:string;authorization_status:string;classification:string;review_status:string;view_growth:number|null}
 export type RadarLive = {drama:{id:number;title:string};query:RadarQuery|null;snapshot:RadarSnapshot|null;results:RadarResult[];summary:{own:number;authorized:number;unknown:number;risk:number;first_owner:string};standard_notice:string;stale:boolean}
 export type RadarEvent = {id:number;drama_id:number;external_video_id:number|null;event_type:string;severity:string;title:string;summary:string;evidence_json:Record<string,unknown>;status:string;first_detected_at:string;last_detected_at:string;drama_title:string;thumbnail_url:string;video_url:string}
+export type PromotionDrama = {id:number;drama_id:number;drama_title:string;active:boolean;sources:string[];priority:'normal'|'low';pinned:boolean;note:string;last_scanned_at:string|null;next_scan_at:string|null}
+export type RadarQuota = {quota_day:string;search_calls:number;search_limit:number;used_units:number;unit_budget:number;scan_count:number;failed_scan_count:number}
+export type RightsCase = {id:number;drama_id:number;external_video_id:number;case_status:string;rights_owner:string;authorization_review:string;evidence_ready:boolean;notes:string;created_at:string;drama_title:string;video_title:string;video_url:string;channel_name:string;classification:string}
 export type RadarImportPreview = {filename:string;headers:string[];fields:{value:string;label:string}[];mapping:Record<string,string>;row_count:number;valid_count:number;invalid_count:number;rows:(Record<string,unknown>&{row_number:number;errors:string[]})[]}
 
 async function responseError(response: Response, fallback='请求失败') {
@@ -122,7 +125,7 @@ export const api = {
   register: (email:string,password:string) => request<{user:AuthUser}>('/api/auth/register',{method:'POST',body:JSON.stringify({email,password})}),
   logout: () => request<{logged_out:boolean}>('/api/auth/logout',{method:'POST'}),
   adminAnalytics: (days=30) => request<AdminAnalytics>(`/api/admin/analytics?days=${days}`),
-  radarDramas: () => request<RadarDrama[]>('/api/radar/dramas',{cacheTtlMs:30_000}),
+  radarDramas: (includeAll=false) => request<RadarDrama[]>(`/api/radar/dramas${includeAll?'?include_all=true':''}`),
   radarProfile: (dramaId:number) => request<RadarProfile>(`/api/radar/dramas/${dramaId}/profile`),
   saveRadarProfile: (dramaId:number,body:object) => request<RadarProfile>(`/api/radar/dramas/${dramaId}/profile`,{method:'PUT',body:JSON.stringify(body)}),
   scanRadarDrama: (dramaId:number,force=false) => request<{captured_at:string;query_count:number;unique_video_count:number}>(`/api/radar/dramas/${dramaId}/scan?force=${force}`,{method:'POST'}),
@@ -139,6 +142,14 @@ export const api = {
   radarImportAccounts: (file:File,mapping:Record<string,string>) => {const body=new FormData();body.append('file',file);body.append('mapping',JSON.stringify(mapping));return request<Record<string,unknown>>('/api/radar/accounts/import',{method:'POST',body,headers:{}})},
   radarImportHistory: () => request<Record<string,unknown>[]>('/api/radar/imports/history'),
   radarUnmatchedDramas: () => request<Record<string,unknown>[]>('/api/radar/imports/unmatched-dramas'),
+  promotionPool: () => request<PromotionDrama[]>('/api/radar/promotion-pool'),
+  upsertPromotionDrama: (dramaId:number,body:object={source:'manual_confirmed'}) => request<PromotionDrama>(`/api/radar/promotion-pool/${dramaId}`,{method:'PUT',body:JSON.stringify(body)}),
+  removePromotionDrama: (dramaId:number) => request<{ok:boolean}>(`/api/radar/promotion-pool/${dramaId}`,{method:'DELETE'}),
+  radarQuota: () => request<RadarQuota>('/api/radar/quota'),
+  sendRadarVideoToFactory: (videoId:number,body:object) => request<{ok:boolean;handoff_id:number;factory_url:string;source_video_url:string}>(`/api/radar/videos/${videoId}/send-to-factory`,{method:'POST',body:JSON.stringify(body)}),
+  radarCases: () => request<RightsCase[]>('/api/radar/cases'),
+  createRadarCase: (body:object) => request<RightsCase>('/api/radar/cases',{method:'POST',body:JSON.stringify(body)}),
+  generateRadarEvidence: (caseId:number) => request<{ok:boolean;filename:string;download_url:string}>(`/api/radar/cases/${caseId}/evidence`,{method:'POST'}),
   sendTelemetry: (events:{client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind?:'client_feature'|'model_call';provider?:string;model?:string;input_tokens?:number;output_tokens?:number;total_tokens?:number;api_calls?:number;details:Record<string,unknown>}[]) => request<{accepted:number}>('/api/telemetry/events',{method:'POST',body:JSON.stringify({events}),preserveCache:true}),
   list: (refresh=false) => request<Drama[]>('/api/dramas',{cacheTtlMs:60_000,forceRefresh:refresh}),
   createDramaTask: (body:{title:string;theater:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),

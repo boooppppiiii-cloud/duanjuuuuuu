@@ -8,6 +8,7 @@ from .models import PublishJob
 from .services.publisher import execute_publish_job, refresh_publish_status
 from .services.metrics import collect_daily_metrics
 from .services.radar_search import scan_due_profiles
+from .config import get_settings
 
 
 def scan_publish_jobs() -> None:
@@ -30,7 +31,8 @@ def scan_radar_jobs() -> None:
 
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+settings = get_settings()
 scheduler.add_job(scan_publish_jobs, "interval", minutes=1, id="publish_scan", replace_existing=True)
 scheduler.add_job(scan_submitted_jobs, "interval", minutes=2, id="publish_status_scan", replace_existing=True)
 scheduler.add_job(collect_daily_metrics, "cron", hour=3, minute=0, id="daily_metrics", replace_existing=True)
-scheduler.add_job(scan_radar_jobs, "interval", hours=1, id="radar_scan", replace_existing=True, max_instances=1, coalesce=True)
+scheduler.add_job(scan_radar_jobs, "cron", hour=settings.radar_daily_scan_hour, minute=20, id="radar_daily_scan", replace_existing=True, max_instances=1, coalesce=True)

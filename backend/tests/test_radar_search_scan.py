@@ -9,6 +9,7 @@ from app.models import (
     ExternalVideo,
     MonitoredAccount,
     MonitoredAccountDrama,
+    PromotionDramaPool,
     RadarEvent,
     SearchQuery,
     SearchResult,
@@ -58,7 +59,7 @@ class FakeYouTube:
 def test_official_youtube_scan_saves_real_snapshots_and_matches_account(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'scan.db'}")
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(radar_search, "get_settings", lambda: SimpleNamespace(youtube_api_key="real-key", radar_youtube_quota_per_run=800))
+    monkeypatch.setattr(radar_search, "get_settings", lambda: SimpleNamespace(youtube_api_key="real-key", radar_youtube_queries_per_drama=3, radar_youtube_daily_search_limit=60, radar_youtube_daily_quota_budget=5000, radar_approved_redirect_domain_list=["youtube.com"]))
     monkeypatch.setattr(radar_search, "build", lambda *args, **kwargs: FakeYouTube())
     with Session(engine) as session:
         user = AppUser(email="dev@example.com", password_hash="x", is_developer=True)
@@ -68,6 +69,7 @@ def test_official_youtube_scan_saves_real_snapshots_and_matches_account(monkeypa
         session.add(MonitoredAccountDrama(account_id=account.id, drama_id=drama.id));
         profile = DramaSearchProfile(drama_id=drama.id, enabled=True, official_title="Radar Drama")
         session.add(profile); session.commit(); session.refresh(profile)
+        session.add(PromotionDramaPool(drama_id=drama.id, sources=["manual_confirmed"])); session.commit()
         session.add(SearchQuery(drama_id=drama.id, query_text="Radar Drama", enabled=True)); session.commit()
         result = radar_search.scan_drama(session, drama.id, user)
         assert result["unique_video_count"] == 2
@@ -83,7 +85,7 @@ def test_official_youtube_scan_saves_real_snapshots_and_matches_account(monkeypa
 def test_missing_youtube_key_creates_no_fake_snapshot(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'no-key.db'}")
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(radar_search, "get_settings", lambda: SimpleNamespace(youtube_api_key="", radar_youtube_quota_per_run=800))
+    monkeypatch.setattr(radar_search, "get_settings", lambda: SimpleNamespace(youtube_api_key="", radar_youtube_queries_per_drama=3, radar_youtube_daily_search_limit=60, radar_youtube_daily_quota_budget=5000, radar_approved_redirect_domain_list=[]))
     with Session(engine) as session:
         drama = Drama(title="No Key Drama", file_dir="none"); session.add(drama); session.commit(); session.refresh(drama)
         session.add(DramaSearchProfile(drama_id=drama.id, official_title=drama.title)); session.commit()

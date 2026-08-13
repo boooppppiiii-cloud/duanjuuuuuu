@@ -4,6 +4,7 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -17,18 +18,68 @@ from ..models import (
     ExternalVideo,
     ExternalVideoMetric,
     MonitoredAccount,
+    PromotionDramaPool,
+    RadarQuotaUsage,
     RadarEvent,
     RadarScanLease,
     SearchQuery,
     SearchResult,
     SearchSnapshot,
+    VideoMatchEvidence,
 )
 from .radar_accounts import authorization_for, normalize_account_name, normalize_profile_url
+from .radar_pool import ensure_promotion_drama
+from .radar_scoring import GROWTH_ABSOLUTE_MIN, GROWTH_RATE_MIN, RANK_CHANGE_THRESHOLD, classify_candidate, episode_like
 
 
 SCAN_LOCK = threading.Lock()
 DEFAULT_QUERY_SUFFIXES = ["", "full movie", "full episodes", "complete series", "episode 1", "ending", "where to watch"]
-INTERVALS = {"high": 4, "normal": 12, "low": 24, "paused": 24}
+DAILY_SCAN_INTERVAL = timedelta(days=1)
+
+
+def _quota_day(now: datetime | None = None) -> str:
+    value = (now or datetime.now(timezone.utc)).replace(tzinfo=timezone.utc)
+    return value.astimezone(ZoneInfo("America/Los_Angeles")).date().isoformat()
+
+
+def quota_status(session: Session) -> dict[str, int | str]:
+    settings = get_settings()
+    day = _quota_day()
+    row = session.get(RadarQuotaUsage, day)
+    return {
+        "quota_day": day,
+        "search_calls": row.search_calls if row else 0,
+        "search_limit": settings.radar_youtube_daily_search_limit,
+        "used_units": row.used_units if row else 0,
+        "unit_budget": settings.radar_youtube_daily_quota_budget,
+        "scan_count": row.scan_count if row else 0,
+        "failed_scan_count": row.failed_scan_count if row else 0,
+    }
+
+
+def _reserve_quota(session: Session, search_calls: int, estimated_units: int) -> None:
+    settings = get_settings()
+    day = _quota_day()
+    row = session.get(RadarQuotaUsage, day) or RadarQuotaUsage(quota_day=day)
+    if row.search_calls + search_calls > settings.radar_youtube_daily_search_limit:
+        raise RuntimeError("今日 YouTube 搜索调用额度已达到安全上限，系统将在下一个配额日继续")
+    if row.used_units + estimated_units > settings.radar_youtube_daily_quota_budget:
+        raise RuntimeError("今日 YouTube API 安全预算已用完，系统将在下一个配额日继续")
+    row.search_calls += search_calls
+    row.used_units += estimated_units
+    row.scan_count += 1
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.commit()
+
+
+def _record_failed_scan(session: Session) -> None:
+    row = session.get(RadarQuotaUsage, _quota_day())
+    if row:
+        row.failed_scan_count += 1
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+        session.commit()
 
 
 def query_suggestions(official_title: str, aliases: list[str] | None = None, custom: list[str] | None = None) -> list[dict[str, str]]:
@@ -156,6 +207,7 @@ def register_owned_video(session: Session, platform: str, video_id: str, video_u
         from ..models import MonitoredAccountDrama
         link = session.exec(select(MonitoredAccountDrama).where(MonitoredAccountDrama.account_id == account.id, MonitoredAccountDrama.drama_id == drama_id)).first()
         if not link: session.add(MonitoredAccountDrama(account_id=account.id, drama_id=drama_id, relationship_override="own_official", authorization_status_override="authorized", allowed_full_series_override=True))
+        ensure_promotion_drama(session, drama_id, "owned_publish", account_id=account.id, video_id=video.id)
 
 
 def _classification(relationship: str, authorized: bool) -> str:
@@ -182,21 +234,31 @@ def _release_lease(session: Session, name: str) -> None:
         lease.expires_at = datetime.utcnow(); session.add(lease); session.commit()
 
 
-def _event(session: Session, drama: Drama, video: ExternalVideo, result: SearchResult) -> None:
+def _event(session: Session, drama: Drama, video: ExternalVideo, result: SearchResult, view_growth: int | None = None, previous_views: int | None = None) -> None:
     if result.rank > 5:
         return
     event_type = "new_top_five"
     severity = "opportunity"
     title = f"新视频进入《{drama.title}》标准监测前五"
-    if result.relationship_type in {"own_official", "own_creator"} and result.rank <= 3:
+    if video.classification == "suspected_full_reupload" and result.rank <= 3:
+        event_type = "suspected_full_top_three"; severity = "high"; title = f"《{drama.title}》疑似全集进入标准监测前三"
+    elif video.classification == "suspected_external_redirect":
+        event_type = "suspected_external_redirect"; severity = "high"; title = f"《{drama.title}》出现疑似外链截流"
+    elif video.classification == "suspected_impersonation":
+        event_type = "suspected_impersonation"; severity = "high"; title = f"《{drama.title}》出现疑似冒充官方账号"
+    elif result.relationship_type in {"own_official", "own_creator"} and result.rank <= 3:
         event_type = "owned_top_three"; severity = "positive"; title = f"我方内容进入《{drama.title}》标准监测前三"
     elif result.authorization_status == "authorized" and result.rank <= 3:
         event_type = "authorized_top_three"; severity = "positive"; title = f"授权内容进入《{drama.title}》标准监测前三"
+    elif result.previous_rank and result.previous_rank - result.rank >= RANK_CHANGE_THRESHOLD:
+        event_type = "rank_growth"; severity = "opportunity"; title = f"《{drama.title}》外部视频排名明显上升"
+    elif view_growth is not None and previous_views is not None and view_growth >= GROWTH_ABSOLUTE_MIN and view_growth / max(previous_views, 1) >= GROWTH_RATE_MIN:
+        event_type = "view_growth"; severity = "opportunity"; title = f"《{drama.title}》外部视频播放增长加快"
     existing = session.exec(select(RadarEvent).where(
         RadarEvent.drama_id == drama.id, RadarEvent.external_video_id == video.id,
         RadarEvent.event_type == event_type, RadarEvent.status.in_(["new", "watching"]),
     )).first()
-    evidence = {"rank": result.rank, "thumbnail_url": result.thumbnail_url, "video_url": result.video_url, "platform": "youtube"}
+    evidence = {"rank": result.rank, "previous_rank": result.previous_rank, "view_growth": view_growth, "thumbnail_url": result.thumbnail_url, "video_url": result.video_url, "platform": "youtube", "classification": video.classification}
     if existing:
         existing.last_detected_at = datetime.utcnow(); existing.evidence_json = evidence; session.add(existing); return
     session.add(RadarEvent(drama_id=drama.id, external_video_id=video.id, event_type=event_type, severity=severity, title=title, summary=f"{result.channel_name} 发布的视频当前位于第 {result.rank} 位。", evidence_json=evidence))
@@ -210,14 +272,17 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
     profile = session.exec(select(DramaSearchProfile).where(DramaSearchProfile.drama_id == drama_id)).first()
     if not drama or not profile:
         raise ValueError("剧目搜索配置不存在")
+    pool = session.exec(select(PromotionDramaPool).where(PromotionDramaPool.drama_id == drama_id, PromotionDramaPool.active == True)).first()  # noqa: E712
+    if not pool:
+        raise RuntimeError("该剧目不在推广剧目池中，请先确认加入后再监测")
     now = datetime.utcnow()
     if profile.last_scanned_at and now - profile.last_scanned_at < timedelta(minutes=15) and not (force and user and user.is_developer):
         remaining = 15 - int((now - profile.last_scanned_at).total_seconds() // 60)
         raise RuntimeError(f"同一剧目 15 分钟内不重复消耗搜索配额，请约 {max(1, remaining)} 分钟后重试")
-    query_budget = max(1, min(8, (settings.radar_youtube_quota_per_run - 2) // 100))
+    query_budget = max(1, min(8, settings.radar_youtube_queries_per_drama))
     queries = session.exec(select(SearchQuery).where(SearchQuery.drama_id == drama_id, SearchQuery.enabled == True).order_by(SearchQuery.weight.desc())).all()[:query_budget]  # noqa: E712
     if not queries:
-        queries = sync_queries(session, profile)
+        queries = [row for row in sync_queries(session, profile) if row.enabled][:query_budget]
     if not SCAN_LOCK.acquire(blocking=False):
         raise RuntimeError("传播雷达正在执行另一轮扫描，请稍后重试")
     lease_name = "youtube_global_scan"
@@ -225,6 +290,8 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
         SCAN_LOCK.release()
         raise RuntimeError("另一台服务实例正在执行传播扫描，请稍后重试")
     try:
+        estimated_units = len(queries) + 2
+        _reserve_quota(session, len(queries), estimated_units)
         youtube = build("youtube", "v3", developerKey=settings.youtube_api_key, cache_discovery=False)
         if hasattr(youtube, "_http"):
             youtube._http.timeout = 20
@@ -233,6 +300,11 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
             ids_by_query[query.id] = _youtube_search(youtube, query)
         all_ids = list(dict.fromkeys(video_id for ids in ids_by_query.values() for video_id in ids))
         videos, channels = _youtube_details(youtube, all_ids)
+        episode_counts: dict[str, int] = {}
+        for item in videos.values():
+            channel_id = item.get("snippet", {}).get("channelId", "")
+            if channel_id and episode_like(item.get("snippet", {}).get("title", "")):
+                episode_counts[channel_id] = episode_counts.get(channel_id, 0) + 1
         snapshots: list[int] = []
         for query in queries:
             previous = session.exec(select(SearchSnapshot).where(
@@ -255,12 +327,19 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
                 external = session.exec(select(ExternalVideo).where(ExternalVideo.platform == "youtube", ExternalVideo.platform_video_id == video_id)).first()
                 if not external:
                     external = ExternalVideo(platform_video_id=video_id)
+                previous_metric = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == external.id).order_by(ExternalVideoMetric.captured_at.desc())).first() if external.id else None
                 external.video_url=f"https://www.youtube.com/watch?v={video_id}"; external.channel_id=channel_id; external.channel_name=channel_name
                 external.title=snippet.get("title", ""); external.description=snippet.get("description", ""); external.thumbnail_url=thumbnail
                 external.published_at=published_at; external.duration_seconds=duration_seconds; external.last_seen_at=now
                 external.current_views=int(stats.get("viewCount", 0)); external.current_likes=int(stats.get("likeCount", 0)); external.current_comments=int(stats.get("commentCount", 0))
                 external.matched_account_id=account.id if account else None
-                if external.review_status != "reviewed": external.classification = _classification(authorization["relationship_type"], authorization["authorized"])
+                decision = classify_candidate(
+                    title=external.title, description=external.description, channel_name=external.channel_name,
+                    duration_seconds=duration_seconds, authorized=authorization["authorized"], relationship_type=authorization["relationship_type"],
+                    approved_domains=settings.radar_approved_redirect_domain_list, same_channel_episode_count=episode_counts.get(channel_id, 0),
+                )
+                if external.review_status != "reviewed":
+                    external.classification = decision.classification
                 session.add(external); session.flush()
                 result = SearchResult(
                     snapshot_id=snapshot.id, drama_id=drama_id, platform_video_id=video_id, rank=rank, previous_rank=previous_ranks.get(video_id),
@@ -272,16 +351,21 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
                 )
                 session.add(result); session.flush()
                 session.add(ExternalVideoMetric(external_video_id=external.id, views=external.current_views, likes=external.current_likes, comments=external.current_comments, search_rank=rank, query_id=query.id))
-                _event(session, drama, external, result)
-        profile.last_scanned_at = now; profile.next_scan_at = now + timedelta(hours=INTERVALS.get(profile.priority, profile.scan_interval_hours)); profile.last_error = ""; profile.consecutive_failures = 0
-        session.add(profile); session.commit()
-        return {"drama_id": drama_id, "captured_at": now, "snapshot_ids": snapshots, "query_count": len(queries), "unique_video_count": len(all_ids), "collection_source": "youtube_data_api"}
+                view_growth = max(0, external.current_views - previous_metric.views) if previous_metric else None
+                _event(session, drama, external, result, view_growth, previous_metric.views if previous_metric else None)
+                if decision.score and not session.exec(select(VideoMatchEvidence).where(VideoMatchEvidence.external_video_id == external.id, VideoMatchEvidence.drama_id == drama_id, VideoMatchEvidence.match_method == "metadata_rules")).first():
+                    session.add(VideoMatchEvidence(external_video_id=external.id, drama_id=drama_id, match_method="metadata_rules", confidence=decision.score / 100, matched_seconds=duration_seconds, is_full_series_candidate=decision.classification == "suspected_full_reupload", evidence_json={"risk_score": decision.score, "reasons": decision.reasons}, analysis_status="completed"))
+        profile.last_scanned_at = now; profile.next_scan_at = now + DAILY_SCAN_INTERVAL; profile.scan_interval_hours = 24; profile.last_error = ""; profile.consecutive_failures = 0
+        pool.last_scanned_at = now; pool.next_scan_at = now + DAILY_SCAN_INTERVAL; pool.updated_at = now
+        session.add(profile); session.add(pool); session.commit()
+        return {"drama_id": drama_id, "captured_at": now, "snapshot_ids": snapshots, "query_count": len(queries), "unique_video_count": len(all_ids), "collection_source": "youtube_data_api", "quota": quota_status(session)}
     except (HttpError, OSError) as exc:
         session.rollback()
+        _record_failed_scan(session)
         for query in queries:
             session.add(SearchSnapshot(drama_id=drama_id, query_id=query.id, region=query.region, language=query.language, result_count=0, collection_status="failed", error_message=str(exc)[:1000]))
         profile.last_error = str(exc)[:1000]; profile.consecutive_failures += 1
-        delay = min(24, max(profile.scan_interval_hours, 2 ** profile.consecutive_failures))
+        delay = min(24, max(2, 2 ** profile.consecutive_failures))
         profile.next_scan_at = now + timedelta(hours=delay); session.add(profile); session.commit()
         raise RuntimeError(f"YouTube 官方接口请求失败：{exc}") from exc
     finally:
@@ -291,12 +375,14 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
 
 def scan_due_profiles(session: Session) -> None:
     now = datetime.utcnow()
-    profiles = session.exec(select(DramaSearchProfile).where(
-        DramaSearchProfile.enabled == True,  # noqa: E712
-        (DramaSearchProfile.next_scan_at == None) | (DramaSearchProfile.next_scan_at <= now),  # noqa: E711
-    ).order_by(DramaSearchProfile.priority, DramaSearchProfile.next_scan_at)).all()
-    for profile in profiles[:4]:
+    pool_rows = session.exec(select(PromotionDramaPool).where(
+        PromotionDramaPool.active == True,  # noqa: E712
+        (PromotionDramaPool.next_scan_at == None) | (PromotionDramaPool.next_scan_at <= now),  # noqa: E711
+    ).order_by(PromotionDramaPool.pinned.desc(), PromotionDramaPool.priority, PromotionDramaPool.next_scan_at)).all()
+    for pool in pool_rows:
         try:
-            scan_drama(session, profile.drama_id)
-        except (RuntimeError, ValueError):
+            scan_drama(session, pool.drama_id)
+        except (RuntimeError, ValueError) as exc:
+            if "额度" in str(exc) or "预算" in str(exc):
+                break
             continue

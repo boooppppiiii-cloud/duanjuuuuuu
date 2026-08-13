@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 from datetime import date, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from ..database import get_session
+from ..config import get_settings
 from ..models import (
     AppUser,
     Drama,
@@ -19,6 +21,7 @@ from ..models import (
     ExternalVideoMetric,
     MonitoredAccount,
     MonitoredAccountDrama,
+    PromotionDramaPool,
     RadarEvent,
     RadarImportBatch,
     RadarUnmatchedDrama,
@@ -26,10 +29,13 @@ from ..models import (
     SearchQuery,
     SearchResult,
     SearchSnapshot,
+    VideoMatchEvidence,
 )
 from ..services.auth import get_current_user
 from ..services.radar_accounts import import_accounts, preview_import, template_bytes
-from ..services.radar_search import query_suggestions, scan_drama, sync_queries
+from ..services.radar_evidence import build_evidence_package
+from ..services.radar_pool import deactivate_promotion_drama, ensure_promotion_drama
+from ..services.radar_search import query_suggestions, quota_status, scan_drama, sync_queries
 
 
 router = APIRouter(prefix="/api/radar", tags=["传播雷达"])
@@ -80,6 +86,23 @@ class RightsCaseCreate(BaseModel):
     external_video_id: int
     rights_owner: str = ""
     notes: str = ""
+
+
+class PromotionPoolUpsert(BaseModel):
+    source: Literal["manual_confirmed", "owned_publish", "external_market"] = "manual_confirmed"
+    note: str = ""
+    pinned: bool = False
+    priority: Literal["normal", "low"] = "normal"
+    external_video_id: int | None = None
+
+
+class FactoryHandoffCreate(BaseModel):
+    drama_id: int
+    episode: str = ""
+    source_start: float = Field(default=0, ge=0)
+    source_end: float = Field(default=0, ge=0)
+    opening_structure: str = ""
+    reference_note: str = ""
 
 
 def _mapping(raw: str) -> dict[str, str]:
@@ -160,13 +183,53 @@ def unmatched_dramas(_: AppUser = Depends(get_current_user), session: Session = 
 
 
 @router.get("/dramas")
-def radar_dramas(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+def radar_dramas(include_all: bool = False, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    pool = session.exec(select(PromotionDramaPool).where(PromotionDramaPool.active == True)).all()  # noqa: E712
+    pool_by_drama = {row.drama_id: row for row in pool}
     dramas = session.exec(select(Drama).order_by(Drama.created_at.desc())).all()
+    if not include_all:
+        dramas = [drama for drama in dramas if drama.id in pool_by_drama]
     output = []
     for drama in dramas:
         profile = session.exec(select(DramaSearchProfile).where(DramaSearchProfile.drama_id == drama.id)).first()
-        output.append({"id": drama.id, "title": drama.title, "theater": drama.theater, "language": drama.language, "monitoring_enabled": bool(profile and profile.enabled), "last_scanned_at": profile.last_scanned_at if profile else None, "last_error": profile.last_error if profile else ""})
+        pool_row = pool_by_drama.get(drama.id)
+        output.append({"id": drama.id, "title": drama.title, "theater": drama.theater, "language": drama.language, "monitoring_enabled": bool(profile and profile.enabled and pool_row), "in_promotion_pool": bool(pool_row), "pool_sources": pool_row.sources if pool_row else [], "last_scanned_at": profile.last_scanned_at if profile else None, "last_error": profile.last_error if profile else ""})
     return output
+
+
+@router.get("/promotion-pool")
+def promotion_pool(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    rows = session.exec(select(PromotionDramaPool).order_by(PromotionDramaPool.pinned.desc(), PromotionDramaPool.updated_at.desc())).all()
+    return [{**row.model_dump(), "drama_title": (session.get(Drama, row.drama_id).title if session.get(Drama, row.drama_id) else "")} for row in rows]
+
+
+@router.put("/promotion-pool/{drama_id}")
+def upsert_promotion_pool(drama_id: int, payload: PromotionPoolUpsert, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    try:
+        row = ensure_promotion_drama(session, drama_id, payload.source, video_id=payload.external_video_id, note=payload.note)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    row.pinned = payload.pinned; row.priority = payload.priority
+    session.add(row); session.commit(); session.refresh(row)
+    profile = session.exec(select(DramaSearchProfile).where(DramaSearchProfile.drama_id == drama_id)).first()
+    if profile:
+        sync_queries(session, profile)
+    return row
+
+
+@router.delete("/promotion-pool/{drama_id}")
+def remove_promotion_pool(drama_id: int, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    try:
+        row = deactivate_promotion_drama(session, drama_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return {"ok": True, "id": row.id}
+
+
+@router.get("/quota")
+def radar_quota(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    return quota_status(session)
 
 
 def _profile_payload(session: Session, drama: Drama, profile: DramaSearchProfile) -> dict:
@@ -195,8 +258,17 @@ def update_profile(drama_id: int, payload: SearchProfileUpdate, _: AppUser = Dep
     values = payload.model_dump(exclude={"queries"})
     for key, value in values.items(): setattr(profile, key, value)
     profile.updated_at = datetime.utcnow()
-    profile.scan_interval_hours = {"high": 4, "normal": 12, "low": 24, "paused": 24}.get(profile.priority, profile.scan_interval_hours)
+    profile.scan_interval_hours = 24
     session.add(profile); session.commit(); session.refresh(profile)
+    if payload.enabled and payload.priority != "paused":
+        pool = ensure_promotion_drama(session, drama_id, "manual_confirmed")
+        pool.priority = "low" if payload.priority == "low" else "normal"
+        session.add(pool)
+        session.commit()
+    else:
+        pool = session.exec(select(PromotionDramaPool).where(PromotionDramaPool.drama_id == drama_id)).first()
+        if pool:
+            deactivate_promotion_drama(session, drama_id); session.commit()
     generated = sync_queries(session, profile)
     if payload.queries:
         enabled_ids = {int(item["id"]) for item in payload.queries if item.get("id") and item.get("enabled", True)}
@@ -259,6 +331,32 @@ def classify_video(video_id: int, payload: ClassificationUpdate, _: AppUser = De
     session.add(video); session.commit(); session.refresh(video); return video
 
 
+@router.post("/videos/{video_id}/send-to-factory")
+def send_video_to_factory(video_id: int, payload: FactoryHandoffCreate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    video = session.get(ExternalVideo, video_id)
+    drama = session.get(Drama, payload.drama_id)
+    if not video or not drama:
+        raise HTTPException(404, "外部视频或剧目不存在")
+    if payload.source_end and payload.source_end <= payload.source_start:
+        raise HTTPException(422, "原片结束时间必须晚于开始时间")
+    evidence = VideoMatchEvidence(
+        external_video_id=video.id, drama_id=drama.id, match_method="manual_factory_handoff",
+        confidence=1 if payload.episode else .5, matched_seconds=max(0, payload.source_end - payload.source_start),
+        episode_ranges=[{"episode": payload.episode, "start": payload.source_start, "end": payload.source_end}] if payload.episode else [],
+        source_ranges=[{"start": payload.source_start, "end": payload.source_end}] if payload.source_end else [],
+        evidence_json={"opening_structure": payload.opening_structure, "reference_note": payload.reference_note, "source_video_url": video.video_url},
+        analysis_status="manual_confirmed" if payload.episode else "pending",
+    )
+    session.add(evidence)
+    event = session.exec(select(RadarEvent).where(RadarEvent.external_video_id == video.id, RadarEvent.drama_id == drama.id, RadarEvent.status.in_(["new", "watching"]))).first()
+    if event:
+        event.status = "sent_to_factory"; session.add(event)
+    session.commit(); session.refresh(evidence)
+    params = {"drama": drama.id, "radar_video": video.id, "episode": payload.episode, "start": payload.source_start, "end": payload.source_end, "reference": video.title}
+    from urllib.parse import urlencode
+    return {"ok": True, "handoff_id": evidence.id, "factory_url": f"/factory?{urlencode(params)}", "source_video_url": video.video_url}
+
+
 @router.get("/events")
 def events(status: str = "", limit: int = Query(10, ge=1, le=100), _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
     statement = select(RadarEvent)
@@ -287,10 +385,40 @@ def update_event(event_id: int, payload: EventUpdate, user: AppUser = Depends(ge
 
 @router.get("/cases")
 def cases(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
-    return session.exec(select(RightsCase).order_by(RightsCase.created_at.desc())).all()
+    rows = session.exec(select(RightsCase).order_by(RightsCase.created_at.desc())).all()
+    output = []
+    for row in rows:
+        drama = session.get(Drama, row.drama_id); video = session.get(ExternalVideo, row.external_video_id)
+        payload = row.model_dump(exclude={"evidence_package_path"})
+        output.append({**payload, "evidence_ready": bool(row.evidence_package_path), "drama_title": drama.title if drama else "", "video_title": video.title if video else "", "video_url": video.video_url if video else "", "channel_name": video.channel_name if video else "", "classification": video.classification if video else "unknown"})
+    return output
 
 
 @router.post("/cases")
 def create_case(payload: RightsCaseCreate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
     if not session.get(Drama, payload.drama_id) or not session.get(ExternalVideo, payload.external_video_id): raise HTTPException(404, "剧目或视频不存在")
     row = RightsCase(**payload.model_dump()); session.add(row); session.commit(); session.refresh(row); return row
+
+
+@router.post("/cases/{case_id}/evidence")
+def generate_case_evidence(case_id: int, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    row = session.get(RightsCase, case_id)
+    if not row: raise HTTPException(404, "案件不存在")
+    try:
+        path = build_evidence_package(session, row)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event = session.exec(select(RadarEvent).where(RadarEvent.external_video_id == row.external_video_id, RadarEvent.drama_id == row.drama_id, RadarEvent.status.in_(["new", "watching"]))).first()
+    if event:
+        event.status = "evidence_prepared"; session.add(event); session.commit()
+    return {"ok": True, "filename": path.name, "download_url": f"/api/radar/cases/{case_id}/download"}
+
+
+@router.get("/cases/{case_id}/download")
+def download_case_evidence(case_id: int, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    row = session.get(RightsCase, case_id)
+    path = Path(row.evidence_package_path).resolve() if row and row.evidence_package_path else None
+    base = (get_settings().media_root / "radar-evidence").resolve()
+    if not path or not path.is_file() or base not in path.parents:
+        raise HTTPException(404, "证据包尚未生成")
+    return FileResponse(path, media_type="application/zip", filename=path.name)

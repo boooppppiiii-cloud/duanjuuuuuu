@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     qwen_vision_model: str = "qwen3-vl-plus"
     youtube_api_key: str = ""
     radar_youtube_quota_per_run: int = 1000
+    radar_youtube_daily_search_limit: int = 60
+    radar_youtube_daily_quota_budget: int = 5000
+    radar_youtube_queries_per_drama: int = 3
+    radar_daily_scan_hour: int = 4
+    radar_approved_redirect_domains: str = "dramabox.com,flickreels.com,shortmax.com,goodshort.com,moboreels.com,starshort.com,youtube.com,youtu.be"
     youtube_channel_ids: str = ""
     public_api_origin: str = "http://127.0.0.1:8000"
     public_ui_origin: str = "http://127.0.0.1:5174"
@@ -82,6 +87,10 @@ class Settings(BaseSettings):
     @property
     def youtube_channel_id_list(self) -> list[str]:
         return [item.strip() for item in self.youtube_channel_ids.split(",") if item.strip()]
+
+    @property
+    def radar_approved_redirect_domain_list(self) -> list[str]:
+        return [item.strip().lower() for item in self.radar_approved_redirect_domains.split(",") if item.strip()]
 
     @property
     def api_origin(self) -> str:
