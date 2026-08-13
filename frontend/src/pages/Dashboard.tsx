@@ -196,6 +196,9 @@ export default function DashboardPage(){
   const calendarCache=useRef(new Map<number,PlatformMedia[]>())
   const insightCache=useRef(new Map<string,AccountInsights>())
   const commentsLoaded=useRef(false)
+  const mediaRequest=useRef(0)
+  const calendarRequest=useRef(0)
+  const insightRequest=useRef(0)
   const [msg,holder]=message.useMessage()
   const navigate=useNavigate()
 
@@ -212,22 +215,25 @@ export default function DashboardPage(){
     try{setComments(await api.socialComments('',force));commentsLoaded.current=true}catch(error){msg.error((error as Error).message)}
   }
   const loadMedia=async(accountId:number,force=false)=>{
+    const requestId=++mediaRequest.current
     const cached=mediaCache.current.get(accountId)
     if(cached&&!force){setMedia(cached);return}
     setMediaLoading(true);setMediaError('')
-    try{const rows=await api.accountMedia(accountId,50,force);mediaCache.current.set(accountId,rows);setMedia(rows)}catch(error){setMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
+    try{const rows=await api.accountMedia(accountId,50,force);mediaCache.current.set(accountId,rows);if(requestId===mediaRequest.current)setMedia(rows)}catch(error){if(requestId===mediaRequest.current){setMedia([]);setMediaError((error as Error).message)}}finally{if(requestId===mediaRequest.current)setMediaLoading(false)}
   }
   const loadCalendar=async(accountId:number,force=false)=>{
+    const requestId=++calendarRequest.current
     const cached=calendarCache.current.get(accountId)
     if(cached&&!force){setCalendarMedia(cached);return}
     setMediaLoading(true);setMediaError('')
-    try{const rows=await api.accountCalendar(accountId,50,force);calendarCache.current.set(accountId,rows);setCalendarMedia(rows)}catch(error){setCalendarMedia([]);setMediaError((error as Error).message)}finally{setMediaLoading(false)}
+    try{const rows=await api.accountCalendar(accountId,50,force);calendarCache.current.set(accountId,rows);if(requestId===calendarRequest.current)setCalendarMedia(rows)}catch(error){if(requestId===calendarRequest.current){setCalendarMedia([]);setMediaError((error as Error).message)}}finally{if(requestId===calendarRequest.current)setMediaLoading(false)}
   }
   const loadInsights=async(accountId:number,days:InsightRange=insightDays,force=false)=>{
+    const requestId=++insightRequest.current
     const key=`${accountId}:${days}`;const cached=insightCache.current.get(key)
     if(cached&&!force){setInsights(cached);return}
     setInsightLoading(true);setInsightError('')
-    try{const result=await api.accountInsights(accountId,days,force);insightCache.current.set(key,result);setInsights(result)}catch(error){setInsights(undefined);setInsightError((error as Error).message)}finally{setInsightLoading(false)}
+    try{const result=await api.accountInsights(accountId,days,force);insightCache.current.set(key,result);if(requestId===insightRequest.current)setInsights(result)}catch(error){if(requestId===insightRequest.current){setInsights(undefined);setInsightError((error as Error).message)}}finally{if(requestId===insightRequest.current)setInsightLoading(false)}
   }
   useEffect(()=>{void load()},[])
   useEffect(()=>{

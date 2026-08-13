@@ -26,8 +26,6 @@ const PublishingCenter=lazy(loadPublishingCenter)
 const Management=lazy(loadManagement)
 const MetaDelivery=lazy(loadMetaDelivery)
 const DeveloperAnalytics=lazy(loadDeveloperAnalytics)
-const workspacePageLoaders=[loadDashboard,loadDramaLibrary,loadDramaDetail,loadContentFactory,loadPublishingCenter,loadManagement,loadMetaDelivery]
-
 const nav=[
  {key:'home',icon:<DashboardOutlined/>,label:'首页'},
  {key:'dramas',icon:<FolderOpenOutlined/>,label:'剧库'},
@@ -40,16 +38,6 @@ export default function App(){
  const navigate=useNavigate();const location=useLocation();const[collapsed,setCollapsed]=useState(()=>window.innerWidth<880);const[user,setUser]=useState<AuthUser|null|undefined>(undefined)
  useEffect(()=>{api.authMe().then(result=>setUser(result.user)).catch(()=>setUser(null));const expired=()=>setUser(null);window.addEventListener('jushu:unauthorized',expired);return()=>window.removeEventListener('jushu:unauthorized',expired)},[])
  useEffect(()=>{if(user)void flushTelemetry()},[user])
- useEffect(()=>{
-  if(!user)return
-  const preload=()=>{void Promise.allSettled([
-   ...workspacePageLoaders.map(load=>load()),
-   ...(user.is_developer?[loadDeveloperAnalytics()]:[]),
-   api.list(),api.clips(),api.accounts(),api.posts(),api.publishJobs(),api.integrationConfig(),
-  ])}
-  if(typeof window.requestIdleCallback==='function'){const id=window.requestIdleCallback(preload,{timeout:2500});return()=>window.cancelIdleCallback(id)}
-  const id=window.setTimeout(preload,1200);return()=>window.clearTimeout(id)
- },[user])
  useEffect(()=>{window.scrollTo({top:0,left:0,behavior:'instant'})},[location.pathname])
  const active=useMemo(()=>{const first=location.pathname.split('/')[1];return first||'home'},[location.pathname])
  const jump=(key:string)=>navigate(key==='home'?'/':`/${key}`)

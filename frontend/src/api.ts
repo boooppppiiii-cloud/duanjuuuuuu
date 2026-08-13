@@ -70,7 +70,7 @@ async function responseError(response: Response, fallback='请求失败') {
   return fallback
 }
 
-type RequestOptions = RequestInit & { cacheTtlMs?:number; forceRefresh?:boolean; cacheKey?:string }
+type RequestOptions = RequestInit & { cacheTtlMs?:number; forceRefresh?:boolean; cacheKey?:string; preserveCache?:boolean }
 type CachedResponse = { expiresAt:number; value:unknown }
 
 const responseCache = new Map<string,CachedResponse>()
@@ -81,7 +81,7 @@ function clearResponseCache(){
 }
 
 async function request<T>(url: string, options?: RequestOptions): Promise<T> {
-  const {cacheTtlMs=0,forceRefresh=false,cacheKey=url,...init}=options||{}
+  const {cacheTtlMs=0,forceRefresh=false,cacheKey=url,preserveCache=false,...init}=options||{}
   const method=(init.method||'GET').toUpperCase()
   const cacheable=method==='GET'&&cacheTtlMs>0
   if(cacheable&&!forceRefresh){
@@ -99,7 +99,7 @@ async function request<T>(url: string, options?: RequestOptions): Promise<T> {
     }
     const value=await response.json() as T
     if(cacheable)responseCache.set(cacheKey,{expiresAt:Date.now()+cacheTtlMs,value})
-    else if(method!=='GET')clearResponseCache()
+    else if(method!=='GET'&&!preserveCache)clearResponseCache()
     return value
   })()
   if(cacheable&&!forceRefresh)pendingRequests.set(cacheKey,task)
@@ -112,7 +112,7 @@ export const api = {
   register: (email:string,password:string) => request<{user:AuthUser}>('/api/auth/register',{method:'POST',body:JSON.stringify({email,password})}),
   logout: () => request<{logged_out:boolean}>('/api/auth/logout',{method:'POST'}),
   adminAnalytics: (days=30) => request<AdminAnalytics>(`/api/admin/analytics?days=${days}`),
-  sendTelemetry: (events:{client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind?:'client_feature'|'model_call';provider?:string;model?:string;input_tokens?:number;output_tokens?:number;total_tokens?:number;api_calls?:number;details:Record<string,unknown>}[]) => request<{accepted:number}>('/api/telemetry/events',{method:'POST',body:JSON.stringify({events})}),
+  sendTelemetry: (events:{client_event_id:string;feature:string;success:boolean;duration_ms:number;event_kind?:'client_feature'|'model_call';provider?:string;model?:string;input_tokens?:number;output_tokens?:number;total_tokens?:number;api_calls?:number;details:Record<string,unknown>}[]) => request<{accepted:number}>('/api/telemetry/events',{method:'POST',body:JSON.stringify({events}),preserveCache:true}),
   list: (refresh=false) => request<Drama[]>('/api/dramas',{cacheTtlMs:60_000,forceRefresh:refresh}),
   createDramaTask: (body:{title:string;theater:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean}) => request<Drama>('/api/dramas',{method:'POST',body:JSON.stringify(body)}),
   scan: () => request<{ scan_root: string; logs: ScanLog[]; dramas: Drama[] }>('/api/dramas/scan', { method: 'POST' }),

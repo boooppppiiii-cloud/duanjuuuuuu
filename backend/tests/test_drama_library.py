@@ -14,6 +14,38 @@ def login_test_user(client: TestClient) -> int:
     return int(response.json()["user"]["id"])
 
 
+def test_drama_list_uses_database_summary_without_scanning_source_files(monkeypatch, tmp_path: Path):
+    media = tmp_path / "media"
+    os.environ["MEDIA_ROOT"] = str(media)
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'list-summary.db'}"
+
+    import app.config
+    app.config.get_settings.cache_clear()
+    import app.database
+    import app.routers.dramas
+    import app.main
+    importlib.reload(app.database)
+    importlib.reload(app.routers.dramas)
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login_test_user(client)
+        created = client.post("/api/dramas", json={
+            "title": "列表摘要剧", "theater": "DramaBox", "description": "摘要",
+            "total_episode_count": 12, "genres": ["Drama"], "language": "en_US",
+            "is_ai_generated": False, "is_dubbed_content": False,
+        })
+        assert created.status_code == 200, created.text
+        monkeypatch.setattr(app.routers.dramas, "episode_files", lambda _: (_ for _ in ()).throw(AssertionError("list scanned episodes")))
+        monkeypatch.setattr(app.routers.dramas, "source_video_files", lambda _: (_ for _ in ()).throw(AssertionError("list scanned sources")))
+
+        response = client.get("/api/dramas")
+        assert response.status_code == 200, response.text
+        assert response.json()[0]["title"] == "列表摘要剧"
+        assert response.json()[0]["episode_count"] == 0
+        assert response.json()[0]["source_files"] == []
+
+
 def test_scan_update_highlights_and_stills(tmp_path: Path):
     media = tmp_path / "media"
     drama_dir = media / "dramas" / "测试短剧"

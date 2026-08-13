@@ -98,17 +98,21 @@ async def authentication_and_metering(request: Request, call_next):
     )
     user = None
     login = None
+    user_id = None
     if not public:
         raw_token = request.cookies.get(get_settings().auth_cookie_name, "")
         with Session(engine) as session:
             resolved = resolve_user(session, raw_token)
             if resolved:
                 user, login = resolved
+                # Keep primitive values before the session closes. Middleware
+                # logging must never trigger lazy loading on a detached model.
+                user_id = int(user.id)
         if path.startswith("/api/") and not user:
             return JSONResponse(status_code=401, content={"detail": "登录已过期，请重新登录"})
     request.state.user = user
     request.state.login_session = login
-    context_token = bind_current_user(user.id if user else None)
+    context_token = bind_current_user(user_id)
     started = time.perf_counter()
     response = None
     try:
@@ -116,9 +120,9 @@ async def authentication_and_metering(request: Request, call_next):
         return response
     finally:
         duration_ms = int((time.perf_counter() - started) * 1000)
-        if user and path.startswith("/api/") and path not in {"/api/auth/me", "/api/auth/logout"}:
+        if user_id is not None and path.startswith("/api/") and path not in {"/api/auth/me", "/api/auth/logout"}:
             record_usage(
-                feature_for(request.method, path), user_id=user.id, event_kind="api_request",
+                feature_for(request.method, path), user_id=user_id, event_kind="api_request",
                 endpoint=path, api_calls=1, success=bool(response and response.status_code < 400), duration_ms=duration_ms,
                 details={"method": request.method, "status_code": response.status_code if response else 500},
             )

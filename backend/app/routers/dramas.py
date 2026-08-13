@@ -74,6 +74,34 @@ def to_detail(drama: Drama) -> DramaDetail:
     )
 
 
+def to_list_detail(drama: Drama) -> DramaDetail:
+    """Return database-backed card data without walking every media folder.
+
+    The full filesystem inventory belongs to the single-drama detail endpoint.
+    Keeping it out of the shared list makes navigation cost independent of the
+    number and size of source videos stored on disk.
+    """
+    folder = Path(drama.file_dir)
+    settings = get_settings()
+    hostname = (urlparse(settings.public_ui_origin).hostname or "").casefold()
+    source_storage = "local" if hostname in {"", "localhost", "127.0.0.1", "::1"} else "server"
+    source_storage_path = "本地工作区" if drama.source_note.startswith("本地工作区") else "服务器共享素材"
+    data = drama.model_dump()
+    data["episode_count"] = max(drama.episode_count, 0)
+    data["total_episode_count"] = max(drama.total_episode_count, 1)
+    return DramaDetail(
+        **data,
+        episodes=[],
+        source_files=[],
+        source_size_bytes=0,
+        source_storage=source_storage,
+        source_storage_path=source_storage_path,
+        stills=[],
+        highlights=[],
+        generated_files=[],
+    )
+
+
 @router.post("", response_model=DramaDetail)
 def create_drama_task(payload: DramaCreateRequest, session: Session = Depends(get_session)):
     try:
@@ -225,7 +253,7 @@ def register_local_source_manifest(
 
 @router.get("", response_model=list[DramaDetail])
 def list_dramas(session: Session = Depends(get_session)):
-    return [to_detail(item) for item in session.exec(select(Drama).order_by(Drama.id.desc())).all()]
+    return [to_list_detail(item) for item in session.exec(select(Drama).order_by(Drama.id.desc())).all()]
 
 
 @router.get("/{drama_id}", response_model=DramaDetail)

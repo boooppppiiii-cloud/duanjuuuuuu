@@ -1,10 +1,11 @@
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import database
-from app.models import AppUser, Clip, Drama
+from app.models import AppUser, Clip, Drama, UserSession
 
 
 def test_login_shared_drama_and_private_clips(monkeypatch, tmp_path: Path):
@@ -36,6 +37,16 @@ def test_login_shared_drama_and_private_clips(monkeypatch, tmp_path: Path):
     second = TestClient(main.app)
     assert first.post("/api/auth/register", json={"email": "first@example.com", "password": "correct-horse-1"}).status_code == 200
     assert second.post("/api/auth/register", json={"email": "second@example.com", "password": "correct-horse-2"}).status_code == 200
+
+    # The hourly last-seen write commits the authentication session. The user
+    # returned from that request must remain readable after the session closes.
+    with Session(engine) as session:
+        login = session.exec(select(UserSession).order_by(UserSession.id)).first()
+        assert login is not None
+        login.last_seen_at = datetime.utcnow() - timedelta(hours=2)
+        session.add(login)
+        session.commit()
+    assert first.get("/api/auth/me").status_code == 200
 
     with Session(engine) as session:
         users = session.exec(select(AppUser).order_by(AppUser.id)).all()

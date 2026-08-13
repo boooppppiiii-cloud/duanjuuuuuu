@@ -82,6 +82,13 @@ def resolve_user(session: Session, raw_token: str) -> tuple[AppUser, UserSession
         login.last_seen_at = now
         session.add(login)
         session.commit()
+        # SQLAlchemy expires every ORM object in the session after commit.
+        # The authentication middleware intentionally keeps these two objects
+        # after this session closes, so load their values again while they are
+        # still attached.  Otherwise the first request after the hourly
+        # last-seen update can fail with DetachedInstanceError.
+        session.refresh(user)
+        session.refresh(login)
     return user, login
 
 

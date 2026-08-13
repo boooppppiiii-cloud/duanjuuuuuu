@@ -1,6 +1,6 @@
 import { Alert,Button,Card,Form,Input,List,Progress,Select,Space,Steps,Switch,Table,Tag,Typography,message } from 'antd'
 import { CheckCircleOutlined,EditOutlined,FolderOpenOutlined,SafetyCertificateOutlined } from '@ant-design/icons'
-import { useEffect,useMemo,useState } from 'react'
+import { useEffect,useMemo,useRef,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Drama,type LegacyMetaSource,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
@@ -28,6 +28,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const[action,setAction]=useState<string|null>(null)
  const[exportProgress,setExportProgress]=useState<{label:string;percent:number}|null>(null)
  const[legacyProgress,setLegacyProgress]=useState<{label:string;percent:number}|null>(null)
+ const detectRequest=useRef(0)
  const[msg,ctx]=message.useMessage()
  const navigate=useNavigate()
  const[params]=useSearchParams()
@@ -57,9 +58,9 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
    if(!form.getFieldValue('drama_id'))form.setFieldValue('drama_id',items.some(item=>item.id===requested)?requested:items[0]?.id)
  }
  useEffect(()=>{load().catch(error=>msg.error(error.message))},[])
- useEffect(()=>{
+  useEffect(()=>{
    if(!packages.some(item=>activePackageStatuses.has(item.status)))return
-   const timer=window.setInterval(()=>localClient.metaPackages().then(setPackages).catch(()=>undefined),1500)
+    const timer=window.setInterval(()=>{if(document.visibilityState==='visible')localClient.metaPackages().then(setPackages).catch(()=>undefined)},4000)
    return()=>window.clearInterval(timer)
  },[packages.some(item=>activePackageStatuses.has(item.status))])
  useEffect(()=>{
@@ -69,44 +70,46 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  useEffect(()=>{
    setCheck(undefined);setSource(undefined);setLegacySource(undefined);setLocalSource(undefined);setExportProgress(null);setLegacyProgress(null);setLocalIssue('')
    if(!dramaId||!drama){setPackages([]);setLocalStatus('none');return}
-   let stopped=false
-   const detect=async()=>{
-     try{const legacy=await api.legacyMetaSource(dramaId);if(!stopped)setLegacySource(legacy)}
-     catch(error){if(!stopped)setLocalIssue(`服务器旧成品读取失败：${(error as Error).message}`)}
+    let stopped=false
+    const requestId=++detectRequest.current
+    const isCurrent=()=>!stopped&&detectRequest.current===requestId
+    const detect=async()=>{
+      try{const legacy=await api.legacyMetaSource(dramaId);if(isCurrent())setLegacySource(legacy)}
+      catch(error){if(isCurrent())setLocalIssue(`服务器旧成品读取失败：${(error as Error).message}`)}
      setLocalStatus('checking')
      let health
      try{health=await localClient.health()}catch(error){
-       if(!stopped){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?(error as Error).message:`本地助手响应异常：${(error as Error).message}`)}
+        if(isCurrent()){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?(error as Error).message:`本地助手响应异常：${(error as Error).message}`)}
        return
      }
      if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||!localAssistantSupports(health,META_DURATION_GUARD_CAPABILITY)){
-       if(!stopped){setLocalStatus('outdated');setPackages([]);setLocalIssue('当前本地助手版本过旧，需要更新后使用 Meta 官方投递')}
+        if(isCurrent()){setLocalStatus('outdated');setPackages([]);setLocalIssue('当前本地助手版本过旧，需要更新后使用 Meta 官方投递')}
        return
      }
      if(health.picker_ready===false){
-       if(!stopped){setLocalStatus('unavailable');setPackages([]);setLocalIssue('本地助手未运行在当前 Windows 用户桌面，请双击桌面快捷方式后重试')}
+        if(isCurrent()){setLocalStatus('unavailable');setPackages([]);setLocalIssue('本地助手未运行在当前 Windows 用户桌面，请双击桌面快捷方式后重试')}
        return
      }
-     if(!stopped)setLocalStatus('none')
+      if(isCurrent())setLocalStatus('none')
      let items:MetaPackage[]=[]
-     try{items=await localClient.metaPackages()}catch(error){if(!stopped)setLocalIssue(`投递记录读取失败：${(error as Error).message}`)}
-     if(!stopped)setPackages(items)
+      try{items=await localClient.metaPackages()}catch(error){if(isCurrent())setLocalIssue(`投递记录读取失败：${(error as Error).message}`)}
+      if(isCurrent())setPackages(items)
      let workspace:LocalWorkspace
      try{workspace=await localClient.get(dramaId)}catch(error){
-       if(!stopped&&!((error as Error).message.includes('尚未连接')))setLocalIssue(`本机剧目读取失败：${(error as Error).message}`)
+        if(isCurrent()&&!((error as Error).message.includes('尚未连接')))setLocalIssue(`本机剧目读取失败：${(error as Error).message}`)
        return
      }
-     if(!stopped){setLocalSource(workspace);setLocalStatus('ready')}
+      if(isCurrent()){setLocalSource(workspace);setLocalStatus('ready')}
      try{
        workspace=await syncTaskCovers(drama,workspace)
-       if(!stopped)setLocalSource(workspace)
-     }catch(error){if(!stopped)setLocalIssue(`封面同步失败：${(error as Error).message}`)}
+        if(isCurrent())setLocalSource(workspace)
+      }catch(error){if(isCurrent())setLocalIssue(`封面同步失败：${(error as Error).message}`)}
      try{
        const delivery=await localClient.metaFactorySource(dramaId)
-       if(!stopped)setSource(delivery)
-     }catch(error){if(!stopped)setLocalIssue(`Meta 成品读取失败：${(error as Error).message}`)}
+        if(isCurrent())setSource(delivery)
+      }catch(error){if(isCurrent())setLocalIssue(`Meta 成品读取失败：${(error as Error).message}`)}
    }
-   detect().catch(error=>{if(!stopped)msg.error(error.message)})
+    detect().catch(error=>{if(isCurrent())msg.error(error.message)})
    return()=>{stopped=true}
  },[dramaId,detectVersion])
 
