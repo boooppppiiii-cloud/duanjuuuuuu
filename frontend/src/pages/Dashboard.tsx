@@ -29,9 +29,10 @@ import {
   TranslationOutlined,
   UserOutlined,
   VideoCameraOutlined,
+  RadarChartOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { api, type Account, type AccountInsights, type AccountInsightPoint, type PlatformMedia, type SocialComment } from '../api'
+import { api, type Account, type AccountInsights, type AccountInsightPoint, type PlatformMedia, type RadarEvent, type SocialComment } from '../api'
 import { PlatformBadge, PlatformLogo, PlatformOption } from '../components/PlatformBrand'
 import { SmoothLineChart } from '../components/SmoothLineChart'
 
@@ -178,6 +179,7 @@ function CommentCard({item,account}:{item:SocialComment;account?:Account}){
 }
 
 export default function DashboardPage(){
+  const [radarEvents,setRadarEvents]=useState<RadarEvent[]>([])
   const [accounts,setAccounts]=useState<Account[]>([])
   const [comments,setComments]=useState<SocialComment[]>([])
   const [media,setMedia]=useState<PlatformMedia[]>([])
@@ -243,7 +245,7 @@ export default function DashboardPage(){
     setInsightLoading(true);setInsightError('')
     try{const result=await api.accountInsights(accountId,days,type,force);insightCache.current.set(key,result);if(requestId===insightRequest.current)setInsights(result)}catch(error){if(requestId===insightRequest.current){setInsights(undefined);setInsightError((error as Error).message)}}finally{if(requestId===insightRequest.current)setInsightLoading(false)}
   }
-  useEffect(()=>{void load()},[])
+  useEffect(()=>{void load();api.radarEvents(10).then(setRadarEvents).catch(()=>setRadarEvents([]))},[])
   useEffect(()=>{if(selectedAccount?.platform!=='youtube'&&contentType!=='all')setContentType('all')},[selectedAccount?.platform,contentType])
   useEffect(()=>{
     if(!selectedAccountId)return
@@ -284,6 +286,7 @@ export default function DashboardPage(){
 
   return <div className="workspace-page overview-page">{holder}
     <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Space><Button onClick={()=>navigate('/management')}>管理账号</Button><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load(true);refreshSelected()}}>刷新</Button></Space></div>
+    {radarEvents.length>0&&<section className="dashboard-radar-strip"><div className="dashboard-radar-head"><b>今日传播动态</b><Button type="link" onClick={()=>navigate('/radar')}>查看全部</Button></div><div className="dashboard-radar-events">{radarEvents.map(item=><button key={item.id} onClick={()=>navigate(`/radar/dramas/${item.drama_id}`)}>{item.thumbnail_url?<img src={item.thumbnail_url} alt=""/>:<RadarChartOutlined/>}<span><b>{item.drama_title}</b><small>{item.title}</small></span><Tag color={item.severity==='positive'?'green':'cyan'}>{item.severity==='positive'?'占位':'机会'}</Tag></button>)}</div></section>}
     <Segmented block className="overview-pager" value={activeSection} onChange={value=>setActiveSection(value as typeof activeSection)} options={[{value:'accounts',label:'账号数据'},{value:'publishing',label:'发布日历'},{value:'fans',label:'粉丝评论'}]}/>
 
     {activeSection==='accounts'&&<section className="overview-section overview-accounts-section">

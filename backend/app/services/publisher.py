@@ -16,6 +16,7 @@ from .finalizer import finalize_video
 from .publish import CHANNEL_REGISTRY
 from .publish.base import PublishPayload
 from .social_integrations import TIKTOK_API, _youtube_analytics, bearer_headers, graph_version, publish_first_comment, tiktok_access_token, youtube_access_token
+from .radar_search import register_owned_video
 
 
 def _first_comment_text(job: PublishJob) -> str:
@@ -140,6 +141,15 @@ def execute_publish_job(session: Session, job: PublishJob) -> PublishJob:
         job.result_log = str(exc)[:2000]
         notify_serverchan(f"任务 #{job.id} 发布失败：{job.result_log}")
     session.add(post); session.add(job); session.commit(); session.refresh(job)
+    if job.platform_video_id and job.status in {"submitted", "published"}:
+        try:
+            register_owned_video(session, account.platform, job.platform_video_id, job.platform_url, account.platform_user_id, account.name, post.title, drama.id)
+            session.commit()
+        except Exception:
+            # Radar indexing is secondary and must never turn a successful
+            # platform upload into a failed publishing job.
+            session.rollback()
+        session.refresh(job)
     return job
 
 

@@ -1,0 +1,95 @@
+from types import SimpleNamespace
+
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from app.models import (
+    AppUser,
+    Drama,
+    DramaSearchProfile,
+    ExternalVideo,
+    MonitoredAccount,
+    MonitoredAccountDrama,
+    RadarEvent,
+    SearchQuery,
+    SearchResult,
+    SearchSnapshot,
+)
+from app.services import radar_search
+
+
+class FakeCall:
+    def __init__(self, payload): self.payload = payload
+    def execute(self, **kwargs): return self.payload
+
+
+class FakeSearch:
+    def list(self, **kwargs):
+        assert kwargs["type"] == "video" and kwargs["order"] == "relevance" and kwargs["maxResults"] == 10
+        return FakeCall({"items": [{"id": {"videoId": "video-1"}}, {"id": {"videoId": "video-2"}}]})
+
+
+class FakeVideos:
+    def list(self, **kwargs):
+        items = []
+        for index, video_id in enumerate(kwargs["id"].split(","), start=1):
+            items.append({
+                "id": video_id,
+                "snippet": {"title": f"Result {index}", "description": "real result", "channelId": "UC-OFFICIAL", "channelTitle": "Official Channel", "publishedAt": "2026-08-01T10:00:00Z", "tags": ["drama"], "thumbnails": {"high": {"url": f"https://img/{video_id}.jpg"}}},
+                "contentDetails": {"duration": "PT2M30S"},
+                "statistics": {"viewCount": str(index * 1000), "likeCount": "20", "commentCount": "3"},
+                "status": {"privacyStatus": "public"},
+            })
+        return FakeCall({"items": items})
+
+
+class FakeChannels:
+    def list(self, **kwargs):
+        assert kwargs["id"] == "UC-OFFICIAL"
+        return FakeCall({"items": [{"id": "UC-OFFICIAL", "snippet": {"title": "Official Channel", "thumbnails": {"default": {"url": "https://img/channel.jpg"}}}, "statistics": {"subscriberCount": "5000"}}]})
+
+
+class FakeYouTube:
+    _http = SimpleNamespace(timeout=None)
+    def search(self): return FakeSearch()
+    def videos(self): return FakeVideos()
+    def channels(self): return FakeChannels()
+
+
+def test_official_youtube_scan_saves_real_snapshots_and_matches_account(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'scan.db'}")
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(radar_search, "get_settings", lambda: SimpleNamespace(youtube_api_key="real-key", radar_youtube_quota_per_run=800))
+    monkeypatch.setattr(radar_search, "build", lambda *args, **kwargs: FakeYouTube())
+    with Session(engine) as session:
+        user = AppUser(email="dev@example.com", password_hash="x", is_developer=True)
+        drama = Drama(title="Radar Drama", file_dir="radar")
+        account = MonitoredAccount(platform="youtube", platform_account_id="UC-OFFICIAL", display_name="Official Channel", normalized_name="officialchannel", relationship_type="own_official")
+        session.add(user); session.add(drama); session.add(account); session.commit(); session.refresh(user); session.refresh(drama); session.refresh(account)
+        session.add(MonitoredAccountDrama(account_id=account.id, drama_id=drama.id));
+        profile = DramaSearchProfile(drama_id=drama.id, enabled=True, official_title="Radar Drama")
+        session.add(profile); session.commit(); session.refresh(profile)
+        session.add(SearchQuery(drama_id=drama.id, query_text="Radar Drama", enabled=True)); session.commit()
+        result = radar_search.scan_drama(session, drama.id, user)
+        assert result["unique_video_count"] == 2
+        assert len(session.exec(select(SearchSnapshot)).all()) == 1
+        rows = session.exec(select(SearchResult).order_by(SearchResult.rank)).all()
+        assert [row.rank for row in rows] == [1, 2]
+        assert all(row.relationship_type == "own_official" and row.authorization_status == "authorized" for row in rows)
+        assert len(session.exec(select(ExternalVideo)).all()) == 2
+        events = session.exec(select(RadarEvent)).all()
+        assert len(events) == 2 and all(event.event_type == "owned_top_three" for event in events)
+
+
+def test_missing_youtube_key_creates_no_fake_snapshot(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'no-key.db'}")
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(radar_search, "get_settings", lambda: SimpleNamespace(youtube_api_key="", radar_youtube_quota_per_run=800))
+    with Session(engine) as session:
+        drama = Drama(title="No Key Drama", file_dir="none"); session.add(drama); session.commit(); session.refresh(drama)
+        session.add(DramaSearchProfile(drama_id=drama.id, official_title=drama.title)); session.commit()
+        try:
+            radar_search.scan_drama(session, drama.id)
+            assert False, "scan should be blocked"
+        except RuntimeError as exc:
+            assert "YOUTUBE_API_KEY" in str(exc)
+        assert session.exec(select(SearchSnapshot)).first() is None

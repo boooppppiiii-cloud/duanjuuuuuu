@@ -124,6 +124,17 @@ def build_window_prompt(episode: str, window_start: float, window_end: float, tr
 {{"summary":"中文概括","sensitive":[{{"start":0,"end":0,"category":"软色情|性暗示|色情|性暴力|暴力|血腥|其他","confidence":0.0,"overall_risk_score":0,"risk_scores":{{"body_focus":0,"action":0,"dialogue_context":0,"expression_audio":0,"scene_context":0}},"reasons":["必须同时描述画面/动作与台词上下文"],"frame_indices":[1]}}],"high_energy":[{{"start":0,"end":0,"score":0,"reasons":["中文依据"],"frame_indices":[1]}}]}}"""
 
 
+# Keep the former private helper available for older integrations and tests.
+def _prompt(
+    episode: str,
+    window_start: float,
+    window_end: float,
+    transcript: list[dict[str, Any]],
+    frames: list[FrameSample],
+) -> str:
+    return build_window_prompt(episode, window_start, window_end, transcript, frames)
+
+
 def _gemini(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple[dict[str, Any], str]:
     from google import genai
     from google.genai import types

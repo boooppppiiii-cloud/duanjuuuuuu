@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -389,3 +389,252 @@ class SocialComment(SQLModel, table=True):
     reply_text: str = ""
     replied_at: Optional[datetime] = None
     fetched_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class MonitoredAccount(SQLModel, table=True):
+    """External account used by propagation monitoring, never by publishing."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(index=True)
+    platform_account_id: str = Field(default="", index=True)
+    handle: str = Field(default="", index=True)
+    display_name: str = Field(index=True)
+    profile_url: str = ""
+    normalized_profile_url: str = Field(default="", index=True)
+    normalized_name: str = Field(default="", index=True)
+    avatar_url: str = ""
+    relationship_type: str = Field(default="unknown", index=True)
+    authorization_status: str = Field(default="unknown", index=True)
+    company_name: str = ""
+    allowed_full_series: bool = False
+    authorized_regions: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    authorization_start: Optional[date] = None
+    authorization_end: Optional[date] = None
+    notes: str = ""
+    active: bool = True
+    source: str = "manual"
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    last_seen_at: Optional[datetime] = None
+
+
+class MonitoredAccountDrama(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("account_id", "drama_id", name="uq_monitored_account_drama"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="monitoredaccount.id", index=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    relationship_override: str = ""
+    authorization_status_override: str = ""
+    allowed_full_series_override: Optional[bool] = None
+    authorized_regions: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    authorization_start: Optional[date] = None
+    authorization_end: Optional[date] = None
+    notes: str = ""
+
+
+class DramaSearchProfile(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True, unique=True)
+    enabled: bool = False
+    official_title: str = ""
+    aliases: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    disabled_aliases: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    misspellings: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    character_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    custom_queries: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    regions: list[str] = Field(default_factory=lambda: ["US"], sa_column=Column(JSON))
+    languages: list[str] = Field(default_factory=lambda: ["en"], sa_column=Column(JSON))
+    scan_interval_hours: int = 12
+    priority: str = Field(default="normal", index=True)
+    last_scanned_at: Optional[datetime] = None
+    next_scan_at: Optional[datetime] = Field(default=None, index=True)
+    last_error: str = ""
+    consecutive_failures: int = 0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SearchQuery(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("drama_id", "query_text", "platform", "region", "language", name="uq_radar_query_condition"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    query_text: str = Field(index=True)
+    query_type: str = Field(default="custom", index=True)
+    platform: str = Field(default="youtube", index=True)
+    region: str = "US"
+    language: str = "en"
+    enabled: bool = True
+    weight: float = 1.0
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class SearchSnapshot(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    query_id: int = Field(foreign_key="searchquery.id", index=True)
+    platform: str = Field(default="youtube", index=True)
+    region: str = "US"
+    language: str = "en"
+    captured_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    result_count: int = 0
+    collection_source: str = "youtube_data_api"
+    collection_status: str = Field(default="success", index=True)
+    error_message: str = ""
+
+
+class SearchResult(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "platform_video_id", name="uq_radar_snapshot_video"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    snapshot_id: int = Field(foreign_key="searchsnapshot.id", index=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    platform: str = Field(default="youtube", index=True)
+    platform_video_id: str = Field(index=True)
+    rank: int = Field(index=True)
+    previous_rank: Optional[int] = None
+    title: str = ""
+    description: str = ""
+    video_url: str = ""
+    embed_url: str = ""
+    thumbnail_url: str = ""
+    channel_id: str = Field(default="", index=True)
+    channel_name: str = ""
+    channel_url: str = ""
+    channel_avatar_url: str = ""
+    channel_subscribers: Optional[int] = None
+    published_at: Optional[datetime] = None
+    duration_seconds: int = 0
+    views: int = 0
+    likes: int = 0
+    comments: int = 0
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    matched_account_id: Optional[int] = Field(default=None, foreign_key="monitoredaccount.id", index=True)
+    relationship_type: str = Field(default="unknown", index=True)
+    authorization_status: str = Field(default="unknown", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class ExternalVideo(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("platform", "platform_video_id", name="uq_external_video_platform_id"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="youtube", index=True)
+    platform_video_id: str = Field(index=True)
+    video_url: str = ""
+    channel_id: str = Field(default="", index=True)
+    channel_name: str = ""
+    title: str = ""
+    description: str = ""
+    thumbnail_url: str = ""
+    published_at: Optional[datetime] = None
+    duration_seconds: int = 0
+    first_seen_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    last_seen_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    current_views: int = 0
+    current_likes: int = 0
+    current_comments: int = 0
+    matched_account_id: Optional[int] = Field(default=None, foreign_key="monitoredaccount.id", index=True)
+    classification: str = Field(default="unknown", index=True)
+    review_status: str = Field(default="pending", index=True)
+    review_note: str = ""
+
+
+class ExternalVideoMetric(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    external_video_id: int = Field(foreign_key="externalvideo.id", index=True)
+    captured_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    views: int = 0
+    likes: int = 0
+    comments: int = 0
+    search_rank: Optional[int] = None
+    query_id: Optional[int] = Field(default=None, foreign_key="searchquery.id", index=True)
+
+
+class VideoMatchEvidence(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    external_video_id: int = Field(foreign_key="externalvideo.id", index=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    match_method: str = "manual"
+    confidence: float = 0
+    matched_seconds: float = 0
+    coverage_ratio: float = 0
+    episode_ranges: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    source_ranges: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    external_ranges: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    is_full_series_candidate: bool = False
+    evidence_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    analysis_status: str = "pending"
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RadarEvent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    external_video_id: Optional[int] = Field(default=None, foreign_key="externalvideo.id", index=True)
+    event_type: str = Field(index=True)
+    severity: str = Field(default="info", index=True)
+    title: str
+    summary: str = ""
+    evidence_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    status: str = Field(default="new", index=True)
+    first_detected_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    last_detected_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[int] = Field(default=None, foreign_key="appuser.id")
+    resolution_note: str = ""
+
+
+class RightsCase(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    external_video_id: int = Field(foreign_key="externalvideo.id", index=True)
+    case_status: str = Field(default="draft", index=True)
+    rights_owner: str = ""
+    authorization_review: str = "pending"
+    evidence_package_path: str = ""
+    platform_report_url: str = ""
+    submitted_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    outcome: str = ""
+    notes: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RadarImportBatch(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    filename: str
+    status: str = Field(default="completed", index=True)
+    row_count: int = 0
+    created_count: int = 0
+    updated_count: int = 0
+    ignored_count: int = 0
+    unmatched_count: int = 0
+    mapping_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    errors_json: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    created_by: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RadarUnmatchedDrama(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    import_batch_id: int = Field(foreign_key="radarimportbatch.id", index=True)
+    row_number: int
+    raw_name: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    matched_drama_id: Optional[int] = Field(default=None, foreign_key="drama.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RadarScanLease(SQLModel, table=True):
+    name: str = Field(primary_key=True)
+    acquired_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime = Field(index=True)

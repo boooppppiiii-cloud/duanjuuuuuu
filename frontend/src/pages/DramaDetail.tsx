@@ -6,6 +6,7 @@ import { api,Drama,EmotionWord,Highlight,HookSuggestion } from '../api'
 import { coverImageSpecs,prepareCoverImage,type CoverKind,type PreparedCoverImage } from '../utils/coverImage'
 import { localWorkspace as localClient,type LocalWorkspace } from '../localWorkspace'
 import { theaterOptions } from '../options'
+import RadarProfileCard from '../components/RadarProfileCard'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
 const languageOptions=[
@@ -94,6 +95,7 @@ export default function DramaDetail(){
    <div className="drama-flag-list"><Form.Item name="is_ai_generated" label="AI 标识" valuePropName="checked"><Switch checkedChildren="包含 AI" unCheckedChildren="非 AI"/></Form.Item><Form.Item name="is_dubbed_content" label="配音标识" valuePropName="checked"><Switch checkedChildren="配音内容" unCheckedChildren="原声内容"/></Form.Item></div>
    <Button size="large" type="primary" htmlType="submit" icon={<SaveOutlined/>} loading={saving}>保存剧目资料</Button>
   </Form></Card>
+  <RadarProfileCard dramaId={drama.id}/>
 
   <Card title="源文件存储" extra={!sourceIsLocal&&(drama.source_files??[]).length>0&&<Button danger icon={<DeleteOutlined/>} loading={deletingSource==='*'} disabled={Boolean(deletingSource)} onClick={()=>setPendingSourceDelete('*')}>清空全部</Button>}>
    <div className="drama-source-storage-summary">

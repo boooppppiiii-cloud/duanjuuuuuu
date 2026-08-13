@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     qwen_model: str = "qwen-plus"
     qwen_vision_model: str = "qwen3-vl-plus"
     youtube_api_key: str = ""
+    radar_youtube_quota_per_run: int = 1000
     youtube_channel_ids: str = ""
     public_api_origin: str = "http://127.0.0.1:8000"
     public_ui_origin: str = "http://127.0.0.1:5174"

@@ -25,6 +25,7 @@ from .routers.integrations import router as integrations_router
 from .routers.factory import router as factory_router
 from .routers.auth import router as auth_router
 from .routers.admin import router as admin_router
+from .routers.radar import router as radar_router
 from .scheduler import scheduler
 from .logging_config import configure_logging
 from .services.factory_processing import resume_factory_jobs
@@ -85,6 +86,7 @@ app.include_router(engagement_router)
 app.include_router(workspace_router)
 app.include_router(integrations_router)
 app.include_router(factory_router)
+app.include_router(radar_router)
 
 
 @app.middleware("http")

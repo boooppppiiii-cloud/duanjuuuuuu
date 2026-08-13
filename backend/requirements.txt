@@ -13,6 +13,7 @@ Pillow==11.3.0
 APScheduler==3.11.0
 google-api-python-client==2.178.0
 google-auth==2.49.0
+openpyxl==3.1.5
 cryptography==49.0.0
 argostranslate==1.11.0
 langdetect==1.0.9

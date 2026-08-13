@@ -647,7 +647,12 @@ def analyze_drama(
     if production_ai:
         provider, provider_model = provider_name(settings)
     elif ai_analyzer is not None:
-        provider, provider_model = "server_proxy", "server_managed"
+        # Injected speech + vision analyzers form a local test pipeline. The
+        # production proxy does not inject a speech model and keeps its managed
+        # provider label for usage tracking.
+        provider, provider_model = (
+            ("test", "injected") if model is not None else ("server_proxy", "server_managed")
+        )
     else:
         provider, provider_model = "test", "injected"
     previous = read_analysis(folder) if resume else None

@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+import io
+import json
+from datetime import date, datetime
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from sqlmodel import Session, select
+
+from ..database import get_session
+from ..models import (
+    AppUser,
+    Drama,
+    DramaSearchProfile,
+    ExternalVideo,
+    ExternalVideoMetric,
+    MonitoredAccount,
+    MonitoredAccountDrama,
+    RadarEvent,
+    RadarImportBatch,
+    RadarUnmatchedDrama,
+    RightsCase,
+    SearchQuery,
+    SearchResult,
+    SearchSnapshot,
+)
+from ..services.auth import get_current_user
+from ..services.radar_accounts import import_accounts, preview_import, template_bytes
+from ..services.radar_search import query_suggestions, scan_drama, sync_queries
+
+
+router = APIRouter(prefix="/api/radar", tags=["传播雷达"])
+
+
+class AccountUpdate(BaseModel):
+    display_name: str | None = None
+    platform_account_id: str | None = None
+    profile_url: str | None = None
+    relationship_type: str | None = None
+    authorization_status: str | None = None
+    company_name: str | None = None
+    allowed_full_series: bool | None = None
+    authorized_regions: list[str] | None = None
+    authorization_start: date | None = None
+    authorization_end: date | None = None
+    notes: str | None = None
+    active: bool | None = None
+
+
+class SearchProfileUpdate(BaseModel):
+    enabled: bool = True
+    official_title: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    disabled_aliases: list[str] = Field(default_factory=list)
+    misspellings: list[str] = Field(default_factory=list)
+    character_names: list[str] = Field(default_factory=list)
+    custom_queries: list[str] = Field(default_factory=list)
+    regions: list[str] = Field(default_factory=lambda: ["US"])
+    languages: list[str] = Field(default_factory=lambda: ["en"])
+    scan_interval_hours: int = Field(default=12, ge=4, le=168)
+    priority: Literal["high", "normal", "low", "paused"] = "normal"
+    queries: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ClassificationUpdate(BaseModel):
+    classification: Literal["own", "authorized", "external_promotion", "suspected_full_reupload", "suspected_episode_reupload", "suspected_impersonation", "suspected_external_redirect", "unknown"]
+    note: str = ""
+
+
+class EventUpdate(BaseModel):
+    status: Literal["new", "watching", "confirmed_authorized", "dismissed", "sent_to_factory", "evidence_prepared", "resolved"]
+    resolution_note: str = ""
+
+
+class RightsCaseCreate(BaseModel):
+    drama_id: int
+    external_video_id: int
+    rights_owner: str = ""
+    notes: str = ""
+
+
+def _mapping(raw: str) -> dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(422, "字段映射不是有效 JSON") from exc
+
+
+@router.get("/accounts/template.xlsx")
+def account_template(_: AppUser = Depends(get_current_user)):
+    return StreamingResponse(io.BytesIO(template_bytes()), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="radar-accounts-template.xlsx"'})
+
+
+@router.post("/accounts/import-preview")
+async def account_import_preview(file: UploadFile = File(...), mapping: str = Form(""), _: AppUser = Depends(get_current_user)):
+    try:
+        return preview_import(file.filename or "accounts.xlsx", await file.read(), _mapping(mapping))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/accounts/import")
+async def account_import(file: UploadFile = File(...), mapping: str = Form(""), user: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    try:
+        return import_accounts(session, file.filename or "accounts.xlsx", await file.read(), user.id, _mapping(mapping))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/accounts")
+def accounts(
+    platform: str = "", relationship_type: str = "", query: str = "", page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    _: AppUser = Depends(get_current_user), session: Session = Depends(get_session),
+):
+    rows = session.exec(select(MonitoredAccount).order_by(MonitoredAccount.updated_at.desc())).all()
+    if platform: rows = [row for row in rows if row.platform == platform]
+    if relationship_type: rows = [row for row in rows if row.relationship_type == relationship_type]
+    if query:
+        needle = query.casefold(); rows = [row for row in rows if needle in row.display_name.casefold() or needle in row.company_name.casefold() or needle in row.platform_account_id.casefold()]
+    total = len(rows); sliced = rows[(page - 1) * page_size:page * page_size]
+    items = []
+    for row in sliced:
+        links = session.exec(select(MonitoredAccountDrama).where(MonitoredAccountDrama.account_id == row.id)).all()
+        dramas = [session.get(Drama, link.drama_id) for link in links]
+        items.append({**row.model_dump(), "dramas": [{"id": drama.id, "title": drama.title} for drama in dramas if drama]})
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.put("/accounts/{account_id}")
+def update_account(account_id: int, payload: AccountUpdate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    row = session.get(MonitoredAccount, account_id)
+    if not row: raise HTTPException(404, "监测账号不存在")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, key, value)
+    row.updated_at = datetime.utcnow(); session.add(row); session.commit(); session.refresh(row); return row
+
+
+@router.delete("/accounts/{account_id}")
+def delete_account(account_id: int, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    row = session.get(MonitoredAccount, account_id)
+    if not row: raise HTTPException(404, "监测账号不存在")
+    row.active = False; row.updated_at = datetime.utcnow(); session.add(row); session.commit(); return {"ok": True}
+
+
+@router.get("/imports/history")
+def import_history(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    return session.exec(select(RadarImportBatch).order_by(RadarImportBatch.created_at.desc()).limit(50)).all()
+
+
+@router.get("/imports/unmatched-dramas")
+def unmatched_dramas(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    rows = session.exec(select(RadarUnmatchedDrama).where(RadarUnmatchedDrama.status == "pending").order_by(RadarUnmatchedDrama.created_at.desc())).all()
+    return rows
+
+
+@router.get("/dramas")
+def radar_dramas(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    dramas = session.exec(select(Drama).order_by(Drama.created_at.desc())).all()
+    output = []
+    for drama in dramas:
+        profile = session.exec(select(DramaSearchProfile).where(DramaSearchProfile.drama_id == drama.id)).first()
+        output.append({"id": drama.id, "title": drama.title, "theater": drama.theater, "language": drama.language, "monitoring_enabled": bool(profile and profile.enabled), "last_scanned_at": profile.last_scanned_at if profile else None, "last_error": profile.last_error if profile else ""})
+    return output
+
+
+def _profile_payload(session: Session, drama: Drama, profile: DramaSearchProfile) -> dict:
+    queries = session.exec(select(SearchQuery).where(SearchQuery.drama_id == drama.id).order_by(SearchQuery.weight.desc())).all()
+    latest = session.exec(select(SearchSnapshot).where(SearchSnapshot.drama_id == drama.id, SearchSnapshot.collection_status == "success").order_by(SearchSnapshot.captured_at.desc())).first()
+    top = session.exec(select(SearchResult).where(SearchResult.snapshot_id == latest.id).order_by(SearchResult.rank).limit(5)).all() if latest else []
+    return {**profile.model_dump(), "drama_title": drama.title, "queries": queries, "suggestions": query_suggestions(profile.official_title or drama.title, profile.aliases, profile.custom_queries), "top_five": top}
+
+
+@router.get("/dramas/{drama_id}/profile")
+def get_profile(drama_id: int, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    drama = session.get(Drama, drama_id)
+    if not drama: raise HTTPException(404, "剧目不存在")
+    profile = session.exec(select(DramaSearchProfile).where(DramaSearchProfile.drama_id == drama_id)).first()
+    if not profile:
+        profile = DramaSearchProfile(drama_id=drama_id, official_title=drama.title)
+        session.add(profile); session.commit(); session.refresh(profile); sync_queries(session, profile)
+    return _profile_payload(session, drama, profile)
+
+
+@router.put("/dramas/{drama_id}/profile")
+def update_profile(drama_id: int, payload: SearchProfileUpdate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    drama = session.get(Drama, drama_id)
+    if not drama: raise HTTPException(404, "剧目不存在")
+    profile = session.exec(select(DramaSearchProfile).where(DramaSearchProfile.drama_id == drama_id)).first() or DramaSearchProfile(drama_id=drama_id)
+    values = payload.model_dump(exclude={"queries"})
+    for key, value in values.items(): setattr(profile, key, value)
+    profile.updated_at = datetime.utcnow()
+    profile.scan_interval_hours = {"high": 4, "normal": 12, "low": 24, "paused": 24}.get(profile.priority, profile.scan_interval_hours)
+    session.add(profile); session.commit(); session.refresh(profile)
+    generated = sync_queries(session, profile)
+    if payload.queries:
+        enabled_ids = {int(item["id"]) for item in payload.queries if item.get("id") and item.get("enabled", True)}
+        for row in session.exec(select(SearchQuery).where(SearchQuery.drama_id == drama_id)).all():
+            row.enabled = row.id in enabled_ids; session.add(row)
+        session.commit()
+    return _profile_payload(session, drama, profile)
+
+
+@router.post("/dramas/{drama_id}/scan")
+def scan(drama_id: int, force: bool = False, user: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    try: return scan_drama(session, drama_id, user, force)
+    except ValueError as exc: raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc: raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/dramas/{drama_id}/snapshots")
+def snapshots(drama_id: int, query_id: int | None = None, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    statement = select(SearchSnapshot).where(SearchSnapshot.drama_id == drama_id)
+    if query_id: statement = statement.where(SearchSnapshot.query_id == query_id)
+    return session.exec(statement.order_by(SearchSnapshot.captured_at.desc()).limit(100)).all()
+
+
+@router.get("/dramas/{drama_id}/search-live")
+def search_live(drama_id: int, query_id: int | None = None, snapshot_id: int | None = None, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    drama = session.get(Drama, drama_id)
+    if not drama: raise HTTPException(404, "剧目不存在")
+    query = session.get(SearchQuery, query_id) if query_id else session.exec(select(SearchQuery).where(SearchQuery.drama_id == drama_id, SearchQuery.enabled == True).order_by(SearchQuery.weight.desc())).first()  # noqa: E712
+    snapshot = session.get(SearchSnapshot, snapshot_id) if snapshot_id else (session.exec(select(SearchSnapshot).where(SearchSnapshot.drama_id == drama_id, SearchSnapshot.query_id == query.id, SearchSnapshot.collection_status == "success").order_by(SearchSnapshot.captured_at.desc())).first() if query else None)
+    results = session.exec(select(SearchResult).where(SearchResult.snapshot_id == snapshot.id).order_by(SearchResult.rank)).all() if snapshot else []
+    items = []
+    for result in results:
+        video = session.exec(select(ExternalVideo).where(ExternalVideo.platform == result.platform, ExternalVideo.platform_video_id == result.platform_video_id)).first()
+        latest_metric = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video.id).order_by(ExternalVideoMetric.captured_at.desc())).first() if video else None
+        previous_metric = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video.id, ExternalVideoMetric.id != latest_metric.id).order_by(ExternalVideoMetric.captured_at.desc())).first() if video and latest_metric else None
+        items.append({**result.model_dump(), "external_video_id": video.id if video else None, "classification": video.classification if video else "unknown", "review_status": video.review_status if video else "pending", "view_growth": max(0, latest_metric.views - previous_metric.views) if latest_metric and previous_metric else None})
+    counts = {"own": 0, "authorized": 0, "unknown": 0, "risk": 0}
+    for item in items[:10]:
+        if item["relationship_type"] in {"own_official", "own_creator"}: counts["own"] += 1
+        elif item["authorization_status"] == "authorized": counts["authorized"] += 1
+        else: counts["unknown"] += 1
+        counts["risk"] += int(str(item["classification"]).startswith("suspected_"))
+    return {"drama": {"id": drama.id, "title": drama.title}, "query": query, "snapshot": snapshot, "results": items, "summary": {**counts, "first_owner": items[0]["relationship_type"] if items else "none"}, "standard_notice": "标准监测结果，实际用户结果可能受个性化影响", "stale": bool(snapshot and snapshot.collection_status != "success")}
+
+
+@router.get("/videos/{video_id}")
+def video_detail(video_id: int, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    video = session.get(ExternalVideo, video_id)
+    if not video: raise HTTPException(404, "外部视频不存在")
+    metrics = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video_id).order_by(ExternalVideoMetric.captured_at)).all()
+    appearances = session.exec(select(SearchResult).where(SearchResult.platform_video_id == video.platform_video_id).order_by(SearchResult.created_at.desc())).all()
+    return {**video.model_dump(), "metrics": metrics, "appearances": appearances}
+
+
+@router.put("/videos/{video_id}/classification")
+def classify_video(video_id: int, payload: ClassificationUpdate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    video = session.get(ExternalVideo, video_id)
+    if not video: raise HTTPException(404, "外部视频不存在")
+    video.classification = payload.classification; video.review_status = "reviewed"; video.review_note = payload.note
+    session.add(video); session.commit(); session.refresh(video); return video
+
+
+@router.get("/events")
+def events(status: str = "", limit: int = Query(10, ge=1, le=100), _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    statement = select(RadarEvent)
+    if status: statement = statement.where(RadarEvent.status == status)
+    rows = session.exec(statement.order_by(RadarEvent.last_detected_at.desc()).limit(200)).all()
+    priority = {
+        "suspected_full_top_three": 0, "suspected_impersonation": 1, "owned_rank_drop": 2,
+        "new_top_five": 3, "shared_plot_growth": 4, "owned_top_three": 5, "authorized_top_three": 6,
+    }
+    rows = sorted(rows, key=lambda row: (priority.get(row.event_type, 99), -row.last_detected_at.timestamp()))[:limit]
+    output = []
+    for row in rows:
+        drama = session.get(Drama, row.drama_id); video = session.get(ExternalVideo, row.external_video_id) if row.external_video_id else None
+        output.append({**row.model_dump(), "drama_title": drama.title if drama else "", "thumbnail_url": video.thumbnail_url if video else row.evidence_json.get("thumbnail_url", ""), "video_url": video.video_url if video else row.evidence_json.get("video_url", "")})
+    return output
+
+
+@router.put("/events/{event_id}")
+def update_event(event_id: int, payload: EventUpdate, user: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    row = session.get(RadarEvent, event_id)
+    if not row: raise HTTPException(404, "传播事件不存在")
+    row.status = payload.status; row.resolution_note = payload.resolution_note
+    if payload.status in {"resolved", "dismissed", "confirmed_authorized"}: row.resolved_at = datetime.utcnow(); row.resolved_by = user.id
+    session.add(row); session.commit(); session.refresh(row); return row
+
+
+@router.get("/cases")
+def cases(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    return session.exec(select(RightsCase).order_by(RightsCase.created_at.desc())).all()
+
+
+@router.post("/cases")
+def create_case(payload: RightsCaseCreate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    if not session.get(Drama, payload.drama_id) or not session.get(ExternalVideo, payload.external_video_id): raise HTTPException(404, "剧目或视频不存在")
+    row = RightsCase(**payload.model_dump()); session.add(row); session.commit(); session.refresh(row); return row

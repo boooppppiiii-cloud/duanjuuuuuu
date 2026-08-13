@@ -1,5 +1,5 @@
 import { lazy,Suspense,useEffect,useMemo,useState } from 'react'
-import { BarChartOutlined,DashboardOutlined,ExperimentOutlined,FolderOpenOutlined,LogoutOutlined,SendOutlined,SettingOutlined } from '@ant-design/icons'
+import { BarChartOutlined,DashboardOutlined,ExperimentOutlined,FolderOpenOutlined,LogoutOutlined,RadarChartOutlined,SendOutlined,SettingOutlined } from '@ant-design/icons'
 import { Button,Layout,Menu,Spin,Tooltip } from 'antd'
 import { Navigate,Route,Routes,useLocation,useNavigate } from 'react-router-dom'
 import { PlatformLogo } from './components/PlatformBrand'
@@ -17,6 +17,7 @@ const loadPublishingCenter=()=>import('./pages/PublishingCenter')
 const loadManagement=()=>import('./pages/Management')
 const loadMetaDelivery=()=>import('./pages/MetaDelivery')
 const loadDeveloperAnalytics=()=>import('./pages/DeveloperAnalytics')
+const loadRadar=()=>import('./pages/Radar')
 
 const DashboardPage=lazy(loadDashboard)
 const DramaLibrary=lazy(loadDramaLibrary)
@@ -26,9 +27,11 @@ const PublishingCenter=lazy(loadPublishingCenter)
 const Management=lazy(loadManagement)
 const MetaDelivery=lazy(loadMetaDelivery)
 const DeveloperAnalytics=lazy(loadDeveloperAnalytics)
+const Radar=lazy(loadRadar)
 const nav=[
  {key:'home',icon:<DashboardOutlined/>,label:'首页'},
  {key:'dramas',icon:<FolderOpenOutlined/>,label:'剧库'},
+ {key:'radar',icon:<RadarChartOutlined/>,label:'传播雷达'},
  {key:'factory',icon:<ExperimentOutlined/>,label:'内容工厂'},
  {key:'publishing',icon:<SendOutlined/>,label:'一键发布'},
  {key:'management',icon:<SettingOutlined/>,label:'管理'},
@@ -53,7 +56,7 @@ export default function App(){
   </Layout.Sider>
   <Layout className="main-layout">
    <Layout.Content className="content"><Suspense fallback={<div className="route-loading"><Spin size="large"/><span>正在加载工作区…</span></div>}><Routes>
-     <Route path="/" element={<DashboardPage/>}/><Route path="/dramas" element={<DramaLibrary/>}/><Route path="/dramas/:id" element={<DramaDetail/>}/><Route path="/factory" element={<ContentFactory/>}/><Route path="/publishing" element={<PublishingCenter/>}/><Route path="/management" element={<Management/>}/><Route path="/meta-delivery" element={<MetaDelivery/>}/>
+     <Route path="/" element={<DashboardPage/>}/><Route path="/dramas" element={<DramaLibrary/>}/><Route path="/dramas/:id" element={<DramaDetail/>}/><Route path="/radar" element={<Radar/>}/><Route path="/radar/dramas/:id" element={<Radar/>}/><Route path="/radar/accounts" element={<Radar/>}/><Route path="/radar/cases" element={<Radar/>}/><Route path="/factory" element={<ContentFactory/>}/><Route path="/publishing" element={<PublishingCenter/>}/><Route path="/management" element={<Management/>}/><Route path="/meta-delivery" element={<MetaDelivery/>}/>
      <Route path="/developer" element={user.is_developer?<DeveloperAnalytics/>:<Navigate to="/" replace/>}/>
     <Route path="/production" element={<Navigate to="/factory" replace/>}/><Route path="/visual-moderation" element={<Navigate to="/factory" replace/>}/><Route path="/creative" element={<Navigate to="/publishing" replace/>}/><Route path="/publish" element={<Navigate to="/publishing" replace/>}/><Route path="/matrix" element={<Navigate to="/management" replace/>}/><Route path="/strategies" element={<Navigate to="/management" replace/>}/><Route path="/metrics" element={<Navigate to="/" replace/>}/><Route path="/engagement" element={<Navigate to="/" replace/>}/><Route path="/library" element={<Navigate to="/dramas" replace/>}/><Route path="/operations" element={<Navigate to="/management" replace/>}/><Route path="*" element={<Navigate to="/" replace/>}/>
    </Routes></Suspense></Layout.Content>
