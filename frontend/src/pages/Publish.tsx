@@ -1,10 +1,10 @@
 import {
  CalendarOutlined,CheckCircleOutlined,ClockCircleOutlined,EditOutlined,FolderOpenOutlined,InboxOutlined,LinkOutlined,
- PictureOutlined,ReloadOutlined,RocketOutlined,SafetyCertificateOutlined,SyncOutlined,ThunderboltOutlined,
+ PictureOutlined,ReloadOutlined,RocketOutlined,SafetyCertificateOutlined,SmileOutlined,SyncOutlined,TagOutlined,ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
  Alert,Button,Card,Checkbox,DatePicker,Descriptions,Empty,Form,Image,Input,Modal,Popover,Progress,Radio,Segmented,Select,
- Space,Steps,Switch,Table,Tag,Typography,Upload,message,type UploadFile,
+ Space,Switch,Table,Tag,Typography,Upload,message,type UploadFile,
 } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect,useMemo,useState } from 'react'
@@ -25,6 +25,7 @@ const filename=(path:string)=>path.split(/[\\/]/).pop()||path
 const theaterTag=(theater='')=>`#${theater.trim().replace(/^#+/,'').replace(/\s+/g,'')}`
 const preferredCover=(drama?:Drama):CoverKind|undefined=>drama?.cover_horizontal_path?'horizontal':drama?.cover_vertical_path?'vertical':drama?.cover_square_path?'square':undefined
 const blankDraft=(clipId:number):ContentDraft=>({clipId,title:'',caption:'',hashtags:[],firstComment:'',formula:1,hitWords:[]})
+const composerEmojis=['🔥','✨','😍','😱','💔','👉','🎬','❤️']
 
 export default function Publish({embedded=false}:{embedded?:boolean}){
  const[params]=useSearchParams();const navigate=useNavigate();const{user}=useAuth()
@@ -56,14 +57,13 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const selectedDrafts=selectedClips.map(id=>drafts.find(x=>x.clipId===id)||blankDraft(id))
  const selectedStrategy=strategies.find(x=>x.id===strategyId)
  const aiUnavailableReason=!selectedClips.length?'请先选择视频':!selectedAccounts.length?'请先选择发布账号':''
- const contentReady=selectedDrafts.length===selectedClips.length&&selectedDrafts.every(x=>x.title.trim()&&x.caption.trim())
- const currentStep=!selectedClips.length?0:!selectedAccounts.length?1:!contentReady?2:3
  const coverChoices=useMemo(()=>drama?[
   {kind:'vertical' as const,title:'竖版',ratio:'3:4',path:drama.cover_vertical_path},
   {kind:'square' as const,title:'方形',ratio:'1:1',path:drama.cover_square_path},
   {kind:'horizontal' as const,title:'横版',ratio:'16:9',path:drama.cover_horizontal_path},
  ].filter(x=>Boolean(x.path)):[],[drama])
  const overallUploadPercent=useMemo(()=>uploadFiles.length?Math.round(uploadFiles.reduce((sum,file)=>sum+(uploadProgress[file.uid]||0),0)/uploadFiles.length):0,[uploadFiles,uploadProgress])
+ const composerTags=useMemo(()=>Array.from(new Set(['#ShortDrama','#Drama','#Romance',drama?.theater?theaterTag(drama.theater):''])).filter(Boolean),[drama?.theater])
 
  const changeDrama=(id:number)=>{const next=dramas.find(x=>x.id===id);const latest=clips.find(x=>x.drama_id===id&&x.status==='approved');setDramaId(id);setSelectedClips(latest?[latest.id]:[]);setDrafts(latest?[blankDraft(latest.id)]:[]);setProvider('');setIncludeTheaterTag(true);setCoverKind(preferredCover(next));form.setFieldValue('ai_disclosure',Boolean(next?.is_ai_generated))}
  const changeClips=(ids:number[])=>{
@@ -95,6 +95,8 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   }catch(e){msg.error((e as Error).message)}finally{setGenerating(false)}
  }
  const editDraft=(clipId:number,patch:Partial<ContentDraft>)=>setDrafts(rows=>selectedClips.map(id=>{const row=rows.find(item=>item.clipId===id)||blankDraft(id);return id===clipId?{...row,...patch}:row}))
+ const appendEmoji=(draft:ContentDraft,emoji:string)=>editDraft(draft.clipId,{caption:`${draft.caption}${draft.caption&& !draft.caption.endsWith(' ')?' ':''}${emoji}`})
+ const addTag=(draft:ContentDraft,value:string)=>{if(value&&!draft.hashtags.includes(value))editDraft(draft.clipId,{hashtags:[...draft.hashtags,value]})}
 
  const submit=async(values:any)=>{
   if(!drama||!selectedClips.length||!selectedAccounts.length){msg.error('请先完成视频与账号选择');return}
@@ -128,10 +130,9 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   <div className="page-heading publish-page-heading"><Typography.Title level={2}>一键发布</Typography.Title><Space wrap><Select className="publish-drama-select" showSearch optionFilterProp="label" value={dramaId} onChange={changeDrama} placeholder="选择剧目" options={dramas.map(x=>({value:x.id,label:x.title}))}/><Button icon={<FolderOpenOutlined/>} disabled={!drama} onClick={()=>setUploadOpen(true)}>上传视频</Button></Space></div>
   <div className="workflow-view-switch"><Segmented value={view} onChange={v=>setView(v as typeof view)} options={[{label:'创建发布',value:'workflow',icon:<RocketOutlined/>},{label:'任务记录',value:'records',icon:<ClockCircleOutlined/>}]}/></div>
   {view==='workflow'?<>
-   <Card className="publish-steps"><Steps current={currentStep} responsive={false} items={[{title:'选择视频'},{title:'账号与 AI 参考'},{title:'编辑内容'},{title:'确认发布'}]}/></Card>
    <Form form={form} layout="vertical" onFinish={submit} initialValues={{ai_disclosure:false,youtube_privacy:'private',facebook_published:true}}>
-    <Card className="publish-flow-card" title={<span><b>01</b> 视频与封面</span>}>
-     <Form.Item label="可发布视频"><Select mode="multiple" value={selectedClips} onChange={changeClips} optionFilterProp="label" placeholder="选择内容工厂成品或使用右上角本地上传" options={readyClips.map(x=>({value:x.id,label:`${filename(x.file_path)}${x.template_name==='local_upload'?' · 本地上传':''}`}))}/></Form.Item>
+    <Card className="publish-flow-card publish-source-card" title="发布素材与账号">
+     <div className="publish-source-account-grid"><Form.Item label="发布视频"><Select mode="multiple" value={selectedClips} onChange={changeClips} optionFilterProp="label" placeholder="选择内容工厂成品或本地上传" options={readyClips.map(x=>({value:x.id,label:`${filename(x.file_path)}${x.template_name==='local_upload'?' · 本地上传':''}`}))}/></Form.Item><Form.Item name="account_ids" label="发布账号" rules={[{required:true,message:'请选择账号'}]}><Select mode="multiple" optionFilterProp="label" onChange={changeAccounts} placeholder="选择一个或多个账号" options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/></Form.Item></div>
      <div className="publish-cover-title"><PictureOutlined/><b>选择剧库封面</b><Button type="link" size="small" icon={<EditOutlined/>} onClick={()=>navigate('/dramas')}>管理封面</Button></div>
      {coverChoices.length
       ?<Radio.Group className="publish-cover-picker" value={coverKind} onChange={e=>setCoverKind(e.target.value)}>{coverChoices.map(item=><Radio.Button value={item.kind} key={item.kind}><Image preview={false} src={`/api/dramas/${drama?.id}/covers/${item.kind}`}/><span>{item.title}<small>{item.ratio}</small></span></Radio.Button>)}</Radio.Group>
@@ -140,21 +141,17 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
      {!!selectedAccounts.length&&<Space wrap className="publish-cover-platforms">{platforms.has('youtube')&&<Tag color="green">YouTube 使用所选封面</Tag>}{platforms.has('tiktok')&&<Tag>TikTok 使用视频帧封面</Tag>}</Space>}
     </Card>
 
-    <Card className="publish-flow-card" title={<span><b>02</b> 账号与生成规则</span>}>
-     <Form.Item name="account_ids" label="发布账号" rules={[{required:true,message:'请选择账号'}]}><Select mode="multiple" optionFilterProp="label" onChange={changeAccounts} placeholder="选择一个或多个发布账号" options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/></Form.Item>
-     <div className="publish-rule-grid"><Form.Item label="文案参考"><Select allowClear value={strategyId} onChange={setStrategyId} placeholder="选择运营策略" options={strategies.filter(x=>x.confirmed).map(x=>({value:x.id,label:x.name}))}/></Form.Item><Form.Item label="目标语言"><Input value={language} onChange={e=>setLanguage(e.target.value)}/></Form.Item></div>
-     <div className="publish-ai-context">
-      <div className="publish-ai-context-item"><span>文案参考</span><div><b>{selectedStrategy?.name||'不使用历史样本'}</b>{selectedStrategy&&<Popover placement="bottomRight" title={selectedStrategy.name} content={<div className="publish-reference-preview">{selectedStrategy.history_text}</div>}><Button size="small" type="link">查看样本</Button></Popover>}</div><small>{selectedStrategy?`${selectedStrategy.history_text.length} 字`:'仅使用当前剧名、简介和视频内容'}</small></div>
-      <div className="publish-ai-context-item"><span>剧场标签</span>{drama?.theater?<><div><b>{theaterTag(drama.theater)}</b><Switch size="small" checked={includeTheaterTag} onChange={setIncludeTheaterTag}/></div><small>{includeTheaterTag?'生成时自动加入':'本次不加入'}</small></>:<><div><b>未填写</b><Button size="small" type="link" onClick={()=>navigate(`/dramas/${drama?.id}`)}>去补充</Button></div><small>不影响 AI 撰写</small></>}</div>
+    <Card className="publish-flow-card publish-composer-card" title="发布内容">
+     {!!selectedAccountRows.length&&<div className="publish-account-strip">{selectedAccountRows.map(x=><span key={x.id}><PlatformBadge platform={x.platform} size={20}/>{x.name}</span>)}</div>}
+     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-grid"><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="手动输入发布标题"/></Form.Item><Form.Item label="标签"><Input value={draft.hashtags.join(' ')} onChange={e=>editDraft(draft.clipId,{hashtags:e.target.value.split(/[\s,]+/).filter(Boolean)})} placeholder="#Drama #ShortDrama"/></Form.Item></div><Form.Item label="文案" required><Input.TextArea className="publish-caption-editor" autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value})} placeholder="先手动撰写文案，也可以在下方使用 AI 辅助"/></Form.Item><div className="publish-editor-tools"><Popover trigger="click" placement="bottomLeft" content={<div className="publish-emoji-grid">{composerEmojis.map(emoji=><button type="button" key={emoji} onClick={()=>appendEmoji(draft,emoji)}>{emoji}</button>)}</div>}><Button type="text" size="small" icon={<SmileOutlined/>}>表情</Button></Popover><Popover trigger="click" placement="bottomLeft" content={<div className="publish-tag-suggestions">{composerTags.map(value=><button type="button" key={value} onClick={()=>addTag(draft,value)}>{value}</button>)}</div>}><Button type="text" size="small" icon={<TagOutlined/>}>添加标签</Button></Popover></div><Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="可选，发布后作为真实首条评论发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请选择发布视频':'暂无可发布视频'}/>}
+     <div className="publish-ai-assist">
+      <div className="publish-ai-assist-heading"><ThunderboltOutlined/><div><b>AI 辅助撰写</b><span>按剧情、账号策略和参考样本生成，生成后仍可继续编辑</span></div></div>
+      <div className="publish-ai-assist-settings"><Select allowClear value={strategyId} onChange={setStrategyId} placeholder="选择运营策略（可选）" options={strategies.filter(x=>x.confirmed).map(x=>({value:x.id,label:x.name}))}/><Input value={language} onChange={e=>setLanguage(e.target.value)} placeholder="目标语言"/>{drama?.theater&&<label><Switch size="small" checked={includeTheaterTag} onChange={setIncludeTheaterTag}/><span>{theaterTag(drama.theater)}</span></label>}</div>
+      <div className="publish-ai-actions">{selectedStrategy&&<Popover placement="top" title={selectedStrategy.name} content={<div className="publish-reference-preview">{selectedStrategy.history_text}</div>}><Button size="small" type="link">查看参考样本</Button></Popover>}{provider&&<Tag color="green">{provider}</Tag>}<Button size="small" icon={<ThunderboltOutlined/>} loading={generating} disabled={Boolean(aiUnavailableReason)} onClick={generate}>AI 生成文案</Button></div>
      </div>
-     <div className="publish-ai-actions"><Button type="primary" icon={<ThunderboltOutlined/>} loading={generating} disabled={Boolean(aiUnavailableReason)} onClick={generate}>AI 一键撰写</Button>{aiUnavailableReason&&<Typography.Text type="secondary">{aiUnavailableReason}</Typography.Text>}{provider&&<Tag color="green">{provider}</Tag>}</div>
     </Card>
 
-    <Card className="publish-flow-card" title={<span><b>03</b> 发布内容</span>}>
-     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-grid"><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="输入发布标题"/></Form.Item><Form.Item label="标签"><Input value={draft.hashtags.join(' ')} onChange={e=>editDraft(draft.clipId,{hashtags:e.target.value.split(/[\s,]+/).filter(Boolean)})} placeholder="用空格分隔"/></Form.Item></div><Form.Item label="文案" required><Input.TextArea autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value})} placeholder="输入视频文案"/></Form.Item><Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="发布后自动发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请选择发布视频':'暂无可发布视频'}/>}
-    </Card>
-
-    <Card className="publish-flow-card" title={<span><b>04</b> 发布设置</span>}>
+    <Card className="publish-flow-card publish-settings-card" title="发布设置">
      <div className="publish-final-grid"><Form.Item label="发布时间"><Radio.Group value={mode} onChange={e=>setMode(e.target.value)} optionType="button" buttonStyle="solid" options={[{value:'now',label:'立即发布'},{value:'schedule',label:'定时发布'}]}/></Form.Item>{mode==='schedule'&&<Form.Item name="scheduled_at" label="计划时间" rules={[{required:true,message:'请选择时间'}]}><DatePicker showTime showNow disabledDate={date=>date.isBefore(dayjs().startOf('day'))}/></Form.Item>}<Form.Item name="ai_disclosure" label="AI 内容标注" valuePropName="checked"><Switch disabled={Boolean(drama?.is_ai_generated)}/></Form.Item></div>
      {platforms.size>0&&<div className="platform-settings">
       {platforms.has('youtube')&&<div className="platform-setting-row"><PlatformBadge platform="youtube" size={22}/><Form.Item name="youtube_privacy" label="可见性"><Select options={['private','unlisted','public'].map(x=>({value:x,label:x}))}/></Form.Item><Form.Item name="made_for_kids" label="儿童内容" valuePropName="checked"><Switch/></Form.Item></div>}

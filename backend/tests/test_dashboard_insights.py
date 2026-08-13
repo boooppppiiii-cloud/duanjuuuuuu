@@ -78,20 +78,23 @@ def test_youtube_seven_day_range_uses_settled_days_and_previous_period(monkeypat
     assert all(call[4] == "shorts" for call in report_calls)
 
 
-def test_youtube_time_report_filters_official_creator_content_type(monkeypatch):
+def test_youtube_time_report_groups_by_official_creator_content_type(monkeypatch):
     def fake_get(url, **kwargs):
-        assert kwargs["params"]["dimensions"] == "day"
-        assert kwargs["params"]["filters"] == "creatorContentType==SHORTS"
+        assert kwargs["params"]["dimensions"] == "day,creatorContentType"
+        assert "filters" not in kwargs["params"]
         return FakeResponse({
-            "columnHeaders": [{"name": "day"}, {"name": "views"}],
-            "rows": [["2026-08-10", 25]],
+            "columnHeaders": [{"name": "day"}, {"name": "creatorContentType"}, {"name": "views"}],
+            "rows": [
+                ["2026-08-10", "videoOnDemand", 75],
+                ["2026-08-10", "shorts", 25],
+            ],
         })
 
     monkeypatch.setattr(social_integrations.httpx, "get", fake_get)
     rows, error = social_integrations._youtube_time_report("token", date(2026, 8, 10), date(2026, 8, 10), "views", "day", "shorts")
 
     assert error == ""
-    assert rows == [{"day": "2026-08-10", "views": 25.0}]
+    assert rows == [{"day": "2026-08-10", "creatorContentType": "shorts", "views": 25.0}]
 
 
 def test_youtube_all_time_uses_daily_query_and_aggregates_months(monkeypatch):

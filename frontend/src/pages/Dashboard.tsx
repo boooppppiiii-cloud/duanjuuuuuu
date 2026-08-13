@@ -283,7 +283,7 @@ export default function DashboardPage(){
   const calendarExport=selectedAccountId?exportHref(`/api/publish/accounts/${selectedAccountId}/calendar.csv?start=${dateKey(visibleRange.start)}&end=${dateKey(addDays(visibleRange.end,-1))}`):undefined
 
   return <div className="workspace-page overview-page">{holder}
-    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load(true);refreshSelected()}}>刷新</Button></div>
+    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Space><Button onClick={()=>navigate('/management')}>管理账号</Button><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load(true);refreshSelected()}}>刷新</Button></Space></div>
     <Segmented block className="overview-pager" value={activeSection} onChange={value=>setActiveSection(value as typeof activeSection)} options={[{value:'accounts',label:'账号数据'},{value:'publishing',label:'发布日历'},{value:'fans',label:'粉丝评论'}]}/>
 
     {activeSection==='accounts'&&<section className="overview-section overview-accounts-section">
@@ -293,7 +293,6 @@ export default function DashboardPage(){
         {selectedAccount?.platform==='youtube'&&<Segmented value={contentType} onChange={value=>setContentType(value as typeof contentType)} options={[{value:'all',label:'全部内容'},{value:'videos',label:'长视频'},{value:'shorts',label:'Shorts'}]}/>}
         <Button icon={<ReloadOutlined/>} loading={insightLoading||mediaLoading} disabled={!selectedAccountId} onClick={refreshSelected}>刷新数据</Button>
         <Button icon={<DownloadOutlined/>} href={accountExport} disabled={!accountExport}>导出数据表</Button>
-        <Button type="link" onClick={()=>navigate('/management')}>管理账号 <ArrowRightOutlined/></Button>
       </div>
       {!accounts.length&&<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未连接账号"><Button type="primary" onClick={()=>navigate('/management')}>连接账号</Button></Empty>}
       {selectedAccount&&<Spin spinning={insightLoading}>
@@ -317,12 +316,12 @@ export default function DashboardPage(){
           </div>}
         </Card>
 
-        {insights&&<>
+        {insights&&<div className="account-visual-grid">
           <Card className="insight-chart-card" title="账号趋势" extra={<Segmented size="small" value={trendMetric} onChange={value=>setTrendMetric(value as TrendMetric)} options={(Object.keys(trendMeta) as TrendMetric[]).map(value=>({value,label:trendMeta[value].label}))}/>}>
             <TrendChart series={insights.series} metric={trendMetric}/>
           </Card>
           <Card className="content-performance-card" title="视频播放表现" extra={<span className="cell-sub">{accountMedia.length} 条视频</span>}><ContentPerformance items={accountMedia}/></Card>
-        </>}
+        </div>}
 
         <Card className="table-card video-data-card account-media-table" title="最近视频详细数据" styles={{body:{padding:0}}}>
           <Table loading={mediaLoading} rowKey="id" dataSource={accountMedia} pagination={{pageSize:8,hideOnSinglePage:true}} scroll={{x:1320}} locale={{emptyText:<Empty description="平台暂未返回该类型视频"/>}} onRow={item=>({onClick:()=>item.url&&window.open(item.url,'_blank','noopener,noreferrer')})} columns={[

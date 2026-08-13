@@ -182,7 +182,7 @@ def _youtube_analytics(token: str, video_ids: list[str], start: date | None = No
         return {}
     common = {
         "ids": "channel==MINE", "startDate": (start or date(2005, 1, 1)).isoformat(), "endDate": (end or _business_today()).isoformat(),
-        "dimensions": "video", "filters": f"video=={','.join(video_ids)}", "maxResults": len(video_ids),
+        "dimensions": "video", "filters": f"video=={','.join(video_ids)}", "maxResults": len(video_ids), "sort": "-views",
     }
     result: dict[str, dict[str, float | str]] = {}
     metric_groups = [
@@ -225,21 +225,23 @@ def _youtube_analytics(token: str, video_ids: list[str], start: date | None = No
 
 
 def _youtube_time_report(token: str, start: date, end: date, metrics: str, dimension: str = "day", content_type: str = "all") -> tuple[list[dict[str, float | str]], str]:
-    filters = None
-    if content_type == "shorts":
-        filters = "creatorContentType==SHORTS"
-    elif content_type == "videos":
-        filters = "creatorContentType==VIDEO_ON_DEMAND"
+    # creatorContentType is an optional report dimension, not a valid filter
+    # for channel reports. Asking for `creatorContentType==SHORTS` returns 400
+    # even though the grouped data is available. Query both types and keep the
+    # requested group locally so the values remain official Analytics totals.
+    requested_creator_type = {
+        "shorts": "shorts",
+        "videos": "videoondemand",
+    }.get(content_type)
+    dimensions = dimension if requested_creator_type is None else f"{dimension},creatorContentType"
     params = {
         "ids": "channel==MINE",
         "startDate": start.isoformat(),
         "endDate": end.isoformat(),
-        "dimensions": dimension,
+        "dimensions": dimensions,
         "metrics": metrics,
         "sort": dimension,
     }
-    if filters:
-        params["filters"] = filters
     response = httpx.get(
         "https://youtubeanalytics.googleapis.com/v2/reports",
         params=params,
@@ -253,8 +255,11 @@ def _youtube_time_report(token: str, start: date, end: date, metrics: str, dimen
     rows = []
     for values in payload.get("rows", []):
         row = dict(zip(headers, values))
+        creator_type = re.sub(r"[^a-z]", "", str(row.get("creatorContentType") or "").lower())
+        if requested_creator_type and creator_type != requested_creator_type:
+            continue
         rows.append({
-            key: str(value) if key == dimension else float(value)
+            key: str(value) if key in {dimension, "creatorContentType"} else float(value)
             for key, value in row.items()
             if value is not None
         })
@@ -548,10 +553,10 @@ def _list_platform_media_uncached(account: Account, limit: int = 25) -> list[dic
                 "estimated_revenue": revenue, "rpm": revenue / views * 1000 if revenue is not None and views else None,
                 "subscribers_gained": int(extra["subscribersGained"]) if "subscribersGained" in extra else None,
                 "content_type": {
-                    "SHORTS": "shorts",
-                    "VIDEO_ON_DEMAND": "videos",
-                    "LIVE_STREAM": "live",
-                }.get(str(extra.get("creatorContentType") or ""), "unknown"),
+                    "shorts": "shorts",
+                    "videoondemand": "videos",
+                    "livestream": "live",
+                }.get(re.sub(r"[^a-z]", "", str(extra.get("creatorContentType") or "").lower()), "unknown"),
             })
         return rows
     token = tiktok_access_token(account) if account.platform == "tiktok" else resolve_account_secret(account, "access_token")
