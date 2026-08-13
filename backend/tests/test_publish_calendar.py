@@ -66,6 +66,34 @@ def test_youtube_calendar_prefers_publish_at_and_hides_private_upload_time(monke
     assert indexed["public"]["calendar_at"] == "2026-08-06T10:00:00Z"
 
 
+def test_youtube_media_paginates_uploads_and_batches_details(monkeypatch):
+    monkeypatch.setattr(social_integrations, "youtube_access_token", lambda account: "token")
+    analytics_batches = []
+    monkeypatch.setattr(social_integrations, "_youtube_analytics", lambda token, ids: analytics_batches.append(list(ids)) or {})
+    playlist_calls = []
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/channels"):
+            return FakeResponse({"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "uploads"}}}]})
+        if url.endswith("/playlistItems"):
+            playlist_calls.append(kwargs["params"].get("pageToken"))
+            start = 0 if len(playlist_calls) == 1 else 50
+            count = 50 if start == 0 else 10
+            payload = {"items": [{"contentDetails": {"videoId": f"video-{index}"}} for index in range(start, start + count)]}
+            if start == 0:
+                payload["nextPageToken"] = "page-2"
+            return FakeResponse(payload)
+        ids = kwargs["params"]["id"].split(",")
+        return FakeResponse({"items": [{"id": video_id, "snippet": {"title": video_id, "publishedAt": "2026-08-10T00:00:00Z"}, "status": {"privacyStatus": "public"}, "statistics": {}, "contentDetails": {}} for video_id in ids]})
+
+    monkeypatch.setattr(social_integrations.httpx, "get", fake_get)
+    rows = social_integrations.list_platform_media(Account(platform="youtube", name="Channel"), 60, True)
+
+    assert len(rows) == 60
+    assert playlist_calls == [None, "page-2"]
+    assert [len(batch) for batch in analytics_batches] == [50, 10]
+
+
 def test_platform_media_uses_short_cache_and_supports_force_refresh(monkeypatch):
     social_integrations._account_media_cache.clear()
     calls = []

@@ -1,9 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+import csv
+import io
 from sqlmodel import Session, select
 
 from ..database import get_session
@@ -245,6 +247,7 @@ def account_calendar(account_id: int, limit: int = 50, session: Session = Depend
             "clicks": None,
             "ctr": None,
             "watch_time_seconds": None,
+            "average_view_duration_seconds": None,
             "estimated_revenue": None,
             "rpm": None,
             "subscribers_gained": None,
@@ -253,16 +256,65 @@ def account_calendar(account_id: int, limit: int = 50, session: Session = Depend
 
 
 @router.get("/accounts/{account_id}/insights")
-def account_analytics(account_id: int, days: str = "all", refresh: bool = False, session: Session = Depends(get_session)):
+def account_analytics(account_id: int, days: str = "all", content_type: str = "all", refresh: bool = False, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "账号不存在")
     if account.status != "connected":
         raise HTTPException(422, "账号尚未连接，不能读取官方分析数据")
     try:
-        return account_insights(account, days, refresh)
+        return account_insights(account, days, refresh, content_type)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+def _csv_response(filename: str, headers: list[str], rows: list[list[object]]) -> StreamingResponse:
+    stream = io.StringIO()
+    writer = csv.writer(stream)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    payload = "\ufeff" + stream.getvalue()
+    return StreamingResponse(iter([payload.encode("utf-8")]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/accounts/{account_id}/insights.csv")
+def export_account_analytics(account_id: int, days: str = "7", content_type: str = "all", session: Session = Depends(get_session)):
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    if account.status != "connected":
+        raise HTTPException(422, "账号尚未连接，不能导出官方分析数据")
+    try:
+        result = account_insights(account, days, False, content_type)
+    except Exception as exc:
+        raise HTTPException(422, str(exc)) from exc
+    totals = result.get("totals", {})
+    changes = result.get("changes", {})
+    rows = [
+        ["周期汇总", totals.get("views"), totals.get("impressions"), totals.get("ctr"), totals.get("watch_time_seconds"), totals.get("average_view_duration_seconds"), totals.get("estimated_revenue"), totals.get("rpm"), totals.get("subscribers_gained"), totals.get("subscribers_lost"), totals.get("followers")],
+        ["环比增减率(%)", changes.get("views"), changes.get("impressions"), changes.get("ctr"), changes.get("watch_time_seconds"), changes.get("average_view_duration_seconds"), changes.get("estimated_revenue"), changes.get("rpm"), changes.get("net_subscribers"), None, None],
+    ]
+    rows.extend([
+        [item.get("date"), item.get("views"), item.get("impressions"), item.get("ctr"), item.get("watch_time_seconds"), item.get("average_view_duration_seconds"), item.get("estimated_revenue"), (float(item.get("estimated_revenue")) / int(item.get("views")) * 1000 if item.get("estimated_revenue") is not None and item.get("views") else None), item.get("subscribers_gained"), item.get("subscribers_lost"), None]
+        for item in result.get("series", [])
+    ])
+    period = result["range"]
+    return _csv_response(f"account-{account_id}-{period['start']}-{period['end']}.csv", ["日期/类型", "播放量", "展现量", "点击率(%)", "观看时长(秒)", "平均观看时长(秒)", "广告收入(USD)", "RPM(USD)", "新增订阅", "取消订阅", "当前订阅数"], rows)
+
+
+@router.get("/accounts/{account_id}/calendar.csv")
+def export_account_calendar(account_id: int, start: str, end: str, session: Session = Depends(get_session)):
+    try:
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+    except ValueError as exc:
+        raise HTTPException(422, "日期格式必须为 YYYY-MM-DD") from exc
+    if start_date > end_date:
+        raise HTTPException(422, "开始日期不能晚于结束日期")
+    items = account_calendar(account_id, 200, session, False)
+    selected = [item for item in items if start <= str(item.get("calendar_at") or "")[:10] <= end]
+    rows = [[item.get("title"), item.get("id"), item.get("calendar_at"), item.get("publication_status"), item.get("duration_seconds"), item.get("views"), item.get("likes"), item.get("comments"), item.get("impressions"), item.get("ctr"), item.get("watch_time_seconds"), item.get("average_view_duration_seconds") if item.get("average_view_duration_seconds") is not None else (item.get("watch_time_seconds") / item.get("views") if item.get("watch_time_seconds") is not None and item.get("views") else None), item.get("estimated_revenue"), item.get("rpm"), item.get("subscribers_gained"), item.get("url")] for item in selected]
+    return _csv_response(f"publishing-calendar-{account_id}-{start}-{end}.csv", ["视频标题", "视频ID", "发布时间", "发布状态", "视频时长(秒)", "播放量", "点赞", "评论", "展现量", "点击率(%)", "总观看时长(秒)", "平均观看时长(秒)", "广告收入(USD)", "RPM(USD)", "新增订阅", "视频链接"], rows)
 
 
 @router.get("/strategies", response_model=list[AccountStrategy])

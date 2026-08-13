@@ -20,6 +20,7 @@ import {
   CalendarOutlined,
   ClockCircleOutlined,
   CommentOutlined,
+  DownloadOutlined,
   ExportOutlined,
   EyeOutlined,
   LikeOutlined,
@@ -60,6 +61,9 @@ const sentimentMeta:Record<string,[string,string]>={positive:['正面','green'],
 function InsightMetric({label,value,sub,muted=false}:{label:string;value:string;sub?:string;muted?:boolean}){
   return <div className="insight-metric"><span>{label}</span><strong className={muted?'metric-empty':''}>{value}</strong>{sub&&<small>{sub}</small>}</div>
 }
+
+const changeText=(value:number|null|undefined)=>value==null?'无可比数据':`${value>=0?'+':''}${value.toFixed(1)}% 环比`
+const exportHref=(path:string)=>path
 
 type TrendMetric='views'|'watch_time_seconds'|'estimated_revenue'|'subscribers_gained'
 type InsightRange='all'|'7'|'28'|'90'
@@ -102,7 +106,8 @@ function ContentPerformance({items}:{items:PlatformMedia[]}){
         {label:'点赞',value:fmt(item.likes)},
         {label:'评论',value:fmt(item.comments)},
         {label:'点击率',value:percent(item.ctr)},
-        {label:'观看时长',value:duration(item.watch_time_seconds)},
+        {label:'平均观看',value:duration(item.average_view_duration_seconds)},
+        {label:'总观看时长',value:duration(item.watch_time_seconds)},
         {label:'广告收入',value:money(item.estimated_revenue)},
         {label:'RPM',value:money(item.rpm)},
         {label:'新增订阅',value:fmt(item.subscribers_gained)},
@@ -119,7 +124,7 @@ function VideoPopover({item}:{item:PlatformMedia}){
     <strong>{item.title||'未命名视频'}</strong>
     <span>{displayTime?displayTime.toLocaleString('zh-CN'):'发布时间未知'}</span>
     <div><span><EyeOutlined/> {fmt(item.views)}</span><span><LikeOutlined/> {fmt(item.likes)}</span><span><CommentOutlined/> {fmt(item.comments)}</span></div>
-    <div><span>点击率 {percent(item.ctr)}</span><span>RPM {money(item.rpm)}</span></div>
+    <div><span>点击率 {percent(item.ctr)}</span><span>平均观看 {duration(item.average_view_duration_seconds)}</span><span>RPM {money(item.rpm)}</span></div>
   </div>
 }
 
@@ -180,6 +185,7 @@ export default function DashboardPage(){
   const [selectedAccountId,setSelectedAccountId]=useState<number>()
   const [activeSection,setActiveSection]=useState<'accounts'|'publishing'|'fans'>('accounts')
   const [insightDays,setInsightDays]=useState<InsightRange>('all')
+  const [contentType,setContentType]=useState<'all'|'videos'|'shorts'>('all')
   const [trendMetric,setTrendMetric]=useState<TrendMetric>('views')
   const [calendarView,setCalendarView]=useState<'week'|'month'>('week')
   const [calendarCursor,setCalendarCursor]=useState(new Date())
@@ -201,6 +207,7 @@ export default function DashboardPage(){
   const insightRequest=useRef(0)
   const [msg,holder]=message.useMessage()
   const navigate=useNavigate()
+  const selectedAccount=accounts.find(item=>item.id===selectedAccountId)
 
   const load=async(force=false)=>{
     setLoading(true)
@@ -226,28 +233,30 @@ export default function DashboardPage(){
     const cached=calendarCache.current.get(accountId)
     if(cached&&!force){setCalendarMedia(cached);return}
     setMediaLoading(true);setMediaError('')
-    try{const rows=await api.accountCalendar(accountId,50,force);calendarCache.current.set(accountId,rows);if(requestId===calendarRequest.current)setCalendarMedia(rows)}catch(error){if(requestId===calendarRequest.current){setCalendarMedia([]);setMediaError((error as Error).message)}}finally{if(requestId===calendarRequest.current)setMediaLoading(false)}
+    try{const rows=await api.accountCalendar(accountId,200,force);calendarCache.current.set(accountId,rows);if(requestId===calendarRequest.current)setCalendarMedia(rows)}catch(error){if(requestId===calendarRequest.current){setCalendarMedia([]);setMediaError((error as Error).message)}}finally{if(requestId===calendarRequest.current)setMediaLoading(false)}
   }
-  const loadInsights=async(accountId:number,days:InsightRange=insightDays,force=false)=>{
+  const loadInsights=async(accountId:number,days:InsightRange=insightDays,type=contentType,force=false)=>{
     const requestId=++insightRequest.current
-    const key=`${accountId}:${days}`;const cached=insightCache.current.get(key)
+    const key=`${accountId}:${days}:${type}`;const cached=insightCache.current.get(key)
     if(cached&&!force){setInsights(cached);return}
     setInsightLoading(true);setInsightError('')
-    try{const result=await api.accountInsights(accountId,days,force);insightCache.current.set(key,result);if(requestId===insightRequest.current)setInsights(result)}catch(error){if(requestId===insightRequest.current){setInsights(undefined);setInsightError((error as Error).message)}}finally{if(requestId===insightRequest.current)setInsightLoading(false)}
+    try{const result=await api.accountInsights(accountId,days,type,force);insightCache.current.set(key,result);if(requestId===insightRequest.current)setInsights(result)}catch(error){if(requestId===insightRequest.current){setInsights(undefined);setInsightError((error as Error).message)}}finally{if(requestId===insightRequest.current)setInsightLoading(false)}
   }
   useEffect(()=>{void load()},[])
+  useEffect(()=>{if(selectedAccount?.platform!=='youtube'&&contentType!=='all')setContentType('all')},[selectedAccount?.platform,contentType])
   useEffect(()=>{
     if(!selectedAccountId)return
-    if(activeSection==='accounts'&&accountDataRequested){void loadInsights(selectedAccountId,insightDays);void loadMedia(selectedAccountId)}
+    if(activeSection==='accounts'&&accountDataRequested){void loadInsights(selectedAccountId,insightDays,contentType);void loadMedia(selectedAccountId)}
     if(activeSection==='publishing')void loadCalendar(selectedAccountId)
     if(activeSection==='fans')void loadComments()
-  },[activeSection,selectedAccountId,insightDays,accountDataRequested])
+  },[activeSection,selectedAccountId,insightDays,contentType,accountDataRequested])
 
   const visibleRange=useMemo(()=>{
     if(calendarView==='week'){const start=startOfWeek(calendarCursor);return{start,end:addDays(start,7)}}
     const start=new Date(calendarCursor.getFullYear(),calendarCursor.getMonth(),1);return{start,end:new Date(calendarCursor.getFullYear(),calendarCursor.getMonth()+1,1)}
   },[calendarCursor,calendarView])
   const visibleMedia=useMemo(()=>calendarMedia.filter(item=>{const published=calendarDate(item);return published&&published>=visibleRange.start&&published<visibleRange.end}).sort((a,b)=>(calendarDate(a)?.getTime()||0)-(calendarDate(b)?.getTime()||0)),[calendarMedia,visibleRange])
+  const accountMedia=useMemo(()=>contentType==='all'?media:media.filter(item=>item.content_type===contentType),[media,contentType])
   const filteredComments=useMemo(()=>comments.filter(item=>commentAccount==='all'||item.account_id===commentAccount).sort((a,b)=>{
     if(commentSort==='video')return (a.video_title||a.video_id).localeCompare(b.video_title||b.video_id,'zh-CN')||new Date(b.published_at||0).getTime()-new Date(a.published_at||0).getTime()
     if(commentSort==='user')return (a.author_name||a.author_handle).localeCompare(b.author_name||b.author_handle,'zh-CN')||new Date(b.published_at||0).getTime()-new Date(a.published_at||0).getTime()
@@ -261,10 +270,11 @@ export default function DashboardPage(){
   },[filteredComments,commentSort])
   const syncComments=async()=>{setCommentWorking(true);try{const connected=accounts.filter(item=>item.status==='connected').map(item=>item.id);const result=await api.syncComments(connected,300);msg.success(`已同步并本地翻译 ${result.created+result.updated} 条评论`);setComments(await api.socialComments())}catch(error){msg.error((error as Error).message)}finally{setCommentWorking(false)}}
   const moveCalendar=(direction:number)=>setCalendarCursor(current=>calendarView==='week'?addDays(current,direction*7):new Date(current.getFullYear(),current.getMonth()+direction,1))
-  const selectedAccount=accounts.find(item=>item.id===selectedAccountId)
   const insightTotals=insights?.totals
   const netSubscribers=insightTotals?.subscribers_gained==null?null:insightTotals.subscribers_gained-(insightTotals.subscribers_lost||0)
-  const refreshSelected=()=>{if(!selectedAccountId)return;if(!accountDataRequested){setAccountDataRequested(true);return}void loadInsights(selectedAccountId,insightDays,true);void loadMedia(selectedAccountId,true)}
+  const refreshSelected=()=>{if(!selectedAccountId)return;if(!accountDataRequested){setAccountDataRequested(true);return}void loadInsights(selectedAccountId,insightDays,contentType,true);void loadMedia(selectedAccountId,true)}
+  const accountExport=selectedAccountId?exportHref(`/api/publish/accounts/${selectedAccountId}/insights.csv?days=${insightDays}&content_type=${contentType}`):undefined
+  const calendarExport=selectedAccountId?exportHref(`/api/publish/accounts/${selectedAccountId}/calendar.csv?start=${dateKey(visibleRange.start)}&end=${dateKey(addDays(visibleRange.end,-1))}`):undefined
 
   return <div className="workspace-page overview-page">{holder}
     <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load(true);if(accountDataRequested)refreshSelected()}}>刷新</Button></div>
@@ -274,7 +284,9 @@ export default function DashboardPage(){
       <div className="account-data-toolbar">
         <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))}/>
         <Segmented value={insightDays} onChange={value=>setInsightDays(value as InsightRange)} options={[{value:'all',label:'全部'},{value:'7',label:'7天'},{value:'28',label:'28天'},{value:'90',label:'90天'}]}/>
+        {selectedAccount?.platform==='youtube'&&<Segmented value={contentType} onChange={value=>setContentType(value as typeof contentType)} options={[{value:'all',label:'全部内容'},{value:'videos',label:'长视频'},{value:'shorts',label:'Shorts'}]}/>}
         <Button type={accountDataRequested?'default':'primary'} icon={<ReloadOutlined/>} loading={insightLoading||mediaLoading} disabled={!selectedAccountId} onClick={refreshSelected}>{accountDataRequested?'刷新数据':'加载平台数据'}</Button>
+        <Button icon={<DownloadOutlined/>} href={accountExport} disabled={!accountExport||!accountDataRequested}>导出数据表</Button>
         <Button type="link" onClick={()=>navigate('/management')}>管理账号 <ArrowRightOutlined/></Button>
       </div>
       {!accounts.length&&<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未连接账号"><Button type="primary" onClick={()=>navigate('/management')}>连接账号</Button></Empty>}
@@ -286,12 +298,12 @@ export default function DashboardPage(){
             {selectedAccount.profile_url&&<Button href={selectedAccount.profile_url} target="_blank" icon={<ExportOutlined/>}>打开主页</Button>}
           </div>
           {insightError?<div className="inline-error">{insightError}</div>:<div className="insight-metric-grid">
-            <InsightMetric label={insightDays==='all'?'全部播放':`近 ${insightDays} 天播放`} value={compact(insightTotals?.views)} sub={insightTotals?.channel_views!=null?`频道累计 ${fmt(insightTotals.channel_views)}`:undefined} muted={insightTotals?.views==null}/>
-            <InsightMetric label="缩略图点击率" value={percent(insightTotals?.ctr)} sub={insightTotals?.impressions!=null?`${fmt(insightTotals.impressions)} 次曝光`:undefined} muted={insightTotals?.ctr==null}/>
-            <InsightMetric label="观看时长" value={duration(insightTotals?.watch_time_seconds)} sub={insightTotals?.average_view_duration_seconds!=null?`平均 ${duration(Math.round(insightTotals.average_view_duration_seconds))}`:undefined} muted={insightTotals?.watch_time_seconds==null}/>
-            <InsightMetric label="广告收入" value={money(insightTotals?.estimated_revenue)} sub="USD" muted={insightTotals?.estimated_revenue==null}/>
-            <InsightMetric label="RPM" value={money(insightTotals?.rpm)} sub="每千次播放" muted={insightTotals?.rpm==null}/>
-            <InsightMetric label="当前订阅数" value={compact(insightTotals?.followers??selectedAccount.follower_count)} sub={netSubscribers==null?undefined:`周期净增 ${netSubscribers>=0?'+':''}${fmt(netSubscribers)}`}/>
+            <InsightMetric label={insightDays==='all'?'全部播放':`周期播放`} value={compact(insightTotals?.views)} sub={insightDays==='all'?(insightTotals?.channel_views!=null?`频道累计 ${fmt(insightTotals.channel_views)}`:undefined):changeText(insights?.changes.views)} muted={insightTotals?.views==null}/>
+            <InsightMetric label="缩略图点击率" value={percent(insightTotals?.ctr)} sub={insightTotals?.impressions==null?(insightDays==='all'?undefined:changeText(insights?.changes.ctr)):`${fmt(insightTotals.impressions)} 次曝光${insightDays==='all'?'':` · ${changeText(insights?.changes.ctr)}`}`} muted={insightTotals?.ctr==null}/>
+            <InsightMetric label="观看时长" value={duration(insightTotals?.watch_time_seconds)} sub={insightDays==='all'?(insightTotals?.average_view_duration_seconds!=null?`平均 ${duration(Math.round(insightTotals.average_view_duration_seconds))}`:undefined):`平均 ${duration(Math.round(insightTotals?.average_view_duration_seconds||0))} · ${changeText(insights?.changes.watch_time_seconds)}`} muted={insightTotals?.watch_time_seconds==null}/>
+            <InsightMetric label="广告收入" value={money(insightTotals?.estimated_revenue)} sub={insightDays==='all'?'USD':changeText(insights?.changes.estimated_revenue)} muted={insightTotals?.estimated_revenue==null}/>
+            <InsightMetric label="RPM" value={money(insightTotals?.rpm)} sub={insightDays==='all'?'每千次播放':changeText(insights?.changes.rpm)} muted={insightTotals?.rpm==null}/>
+            <InsightMetric label="当前订阅数" value={fmt(insightTotals?.followers??selectedAccount.follower_count)} sub={netSubscribers==null?undefined:`周期净增 ${netSubscribers>=0?'+':''}${fmt(netSubscribers)}${insightDays==='all'?'':` · ${changeText(insights?.changes.net_subscribers)}`}`}/>
             <InsightMetric label="公开视频" value={fmt(insightTotals?.video_count)} muted={insightTotals?.video_count==null}/>
             <InsightMetric label="数据区间" value={insights?`${insightDays==='all'?insights.range.start:insights.range.start.slice(5)} — ${insightDays==='all'?insights.range.end:insights.range.end.slice(5)}`:'—'} muted={!insights}/>
           </div>}
@@ -301,15 +313,15 @@ export default function DashboardPage(){
           <Card className="insight-chart-card" title="账号趋势" extra={<Segmented size="small" value={trendMetric} onChange={value=>setTrendMetric(value as TrendMetric)} options={(Object.keys(trendMeta) as TrendMetric[]).map(value=>({value,label:trendMeta[value].label}))}/>}>
             <TrendChart series={insights.series} metric={trendMetric}/>
           </Card>
-          <Card className="content-performance-card" title="视频播放表现" extra={<span className="cell-sub">最近读取的 {media.length} 条</span>}><ContentPerformance items={media}/></Card>
+          <Card className="content-performance-card" title="视频播放表现" extra={<span className="cell-sub">最近读取的 {accountMedia.length} 条</span>}><ContentPerformance items={accountMedia}/></Card>
         </div>}
 
         <Card className="table-card video-data-card account-media-table" title="最近视频详细数据" styles={{body:{padding:0}}}>
-          <Table loading={mediaLoading} rowKey="id" dataSource={media} pagination={{pageSize:8,hideOnSinglePage:true}} scroll={{x:1180}} locale={{emptyText:<Empty description="平台暂未返回视频"/>}} onRow={item=>({onClick:()=>item.url&&window.open(item.url,'_blank','noopener,noreferrer')})} columns={[
+          <Table loading={mediaLoading} rowKey="id" dataSource={accountMedia} pagination={{pageSize:8,hideOnSinglePage:true}} scroll={{x:1320}} locale={{emptyText:<Empty description="平台暂未返回该类型视频"/>}} onRow={item=>({onClick:()=>item.url&&window.open(item.url,'_blank','noopener,noreferrer')})} columns={[
             {title:'视频',dataIndex:'title',width:320,render:(title:string,item:PlatformMedia)=><div className="video-table-title">{item.thumbnail_url?<img src={item.thumbnail_url} alt=""/>:<span><VideoCameraOutlined/></span>}<b>{title||'未命名视频'}</b></div>},
             {title:'发布时间',dataIndex:'published_at',width:170,render:(value:string|null)=>value?new Date(value).toLocaleString('zh-CN'):'—'},
             {title:'播放量',dataIndex:'views',width:100,render:fmt},{title:'点赞',dataIndex:'likes',width:90,render:fmt},{title:'评论',dataIndex:'comments',width:90,render:fmt},
-            {title:'点击率',dataIndex:'ctr',width:100,render:percent},{title:'观看时长',dataIndex:'watch_time_seconds',width:140,render:duration},
+            {title:'点击率',dataIndex:'ctr',width:100,render:percent},{title:'平均观看时长',dataIndex:'average_view_duration_seconds',width:140,render:duration},{title:'总观看时长',dataIndex:'watch_time_seconds',width:140,render:duration},
             {title:'广告收入',dataIndex:'estimated_revenue',width:110,render:money},{title:'RPM',dataIndex:'rpm',width:100,render:money},{title:'新增订阅',dataIndex:'subscribers_gained',width:100,render:fmt},
           ]}/>
         </Card>
@@ -321,6 +333,7 @@ export default function DashboardPage(){
         <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))}/>
         <div className="calendar-navigation"><Button icon={<ArrowLeftOutlined/>} onClick={()=>moveCalendar(-1)}/><Button onClick={()=>setCalendarCursor(new Date())}>今天</Button><Button icon={<ArrowRightOutlined/>} onClick={()=>moveCalendar(1)}/><strong>{calendarView==='week'?`${startOfWeek(calendarCursor).toLocaleDateString('zh-CN',{month:'long',day:'numeric'})} — ${addDays(startOfWeek(calendarCursor),6).toLocaleDateString('zh-CN',{month:'long',day:'numeric'})}`:`${calendarCursor.getFullYear()} 年 ${calendarCursor.getMonth()+1} 月`}</strong></div>
         <Segmented value={calendarView} onChange={value=>setCalendarView(value as typeof calendarView)} options={[{value:'week',label:'周'},{value:'month',label:'月'}]}/>
+        <Button icon={<DownloadOutlined/>} href={calendarExport} disabled={!calendarExport}>导出排剧表</Button>
         <Button icon={<ReloadOutlined/>} loading={mediaLoading} disabled={!selectedAccountId} onClick={()=>selectedAccountId&&loadCalendar(selectedAccountId,true)}>刷新内容</Button>
       </div>
       <Spin spinning={mediaLoading}>
@@ -333,7 +346,7 @@ export default function DashboardPage(){
           {title:'视频',dataIndex:'title',width:300,render:(title:string,item:PlatformMedia)=><div className="video-table-title">{item.thumbnail_url?<img src={item.thumbnail_url} alt=""/>:<span><VideoCameraOutlined/></span>}<b>{title||'未命名视频'}</b></div>},
           {title:'发布时间',width:170,render:(_:unknown,item:PlatformMedia)=>calendarDate(item)?.toLocaleString('zh-CN')||'—'},
           {title:'播放量',dataIndex:'views',width:100,render:fmt},{title:'互动',width:120,render:(_:unknown,item:PlatformMedia)=>`${fmt(item.likes)} / ${fmt(item.comments)}`},
-          {title:'点击率',dataIndex:'ctr',width:100,render:percent},{title:'观看时长',dataIndex:'watch_time_seconds',width:140,render:duration},
+          {title:'点击率',dataIndex:'ctr',width:100,render:percent},{title:'平均观看时长',dataIndex:'average_view_duration_seconds',width:140,render:duration},{title:'总观看时长',dataIndex:'watch_time_seconds',width:140,render:duration},
           {title:'广告收入',dataIndex:'estimated_revenue',width:110,render:money},{title:'RPM',dataIndex:'rpm',width:100,render:money},{title:'新增订阅',dataIndex:'subscribers_gained',width:100,render:fmt},
         ]}/>
       </Card>
