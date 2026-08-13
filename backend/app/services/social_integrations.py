@@ -305,8 +305,14 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
         report_end = end
         previous_start = None if all_time else start - timedelta(days=selected_days or 0)
         query_start = previous_start or report_start
+        # YouTube Analytics requires a monthly report to start on the first
+        # day of a month.  Keep the real channel creation date in the response
+        # range, but align the upstream query so the API does not reject it.
+        if dimension == "month":
+            query_start = date(query_start.year, query_start.month, 1)
 
         daily: dict[str, dict[str, float | str | None]] = {}
+        available_groups: set[str] = set()
         groups = [
             ("核心观看数据", "views,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost"),
             ("曝光与点击率", "videoThumbnailImpressions,videoThumbnailImpressionsClickRate"),
@@ -317,11 +323,15 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
             if error:
                 unavailable.append(f"{label}：{error}")
                 continue
+            available_groups.add(label)
             for row in rows:
                 key = str(row.get(dimension) or "")
                 if key:
                     daily.setdefault(key, {"date": key}).update(row)
 
+        core_available = "核心观看数据" in available_groups
+        impression_available = "曝光与点击率" in available_groups
+        revenue_available = "广告收入" in available_groups
         series = []
         cursor = query_start
         while cursor <= report_end:
@@ -329,14 +339,14 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
             row = daily.get(key, {"date": key})
             series.append({
                 "date": f"{key}-01" if all_time else key,
-                "views": int(row.get("views") or 0),
-                "watch_time_seconds": round(float(row.get("estimatedMinutesWatched") or 0) * 60),
-                "average_view_duration_seconds": float(row["averageViewDuration"]) if row.get("averageViewDuration") is not None else None,
-                "impressions": int(row["videoThumbnailImpressions"]) if row.get("videoThumbnailImpressions") is not None else None,
-                "ctr": float(row["videoThumbnailImpressionsClickRate"]) if row.get("videoThumbnailImpressionsClickRate") is not None else None,
-                "estimated_revenue": float(row["estimatedRevenue"]) if row.get("estimatedRevenue") is not None else None,
-                "subscribers_gained": int(row.get("subscribersGained") or 0),
-                "subscribers_lost": int(row.get("subscribersLost") or 0),
+                "views": int(row.get("views") or 0) if core_available else None,
+                "watch_time_seconds": round(float(row.get("estimatedMinutesWatched") or 0) * 60) if core_available else None,
+                "average_view_duration_seconds": float(row["averageViewDuration"]) if core_available and row.get("averageViewDuration") is not None else None,
+                "impressions": int(row.get("videoThumbnailImpressions") or 0) if impression_available else None,
+                "ctr": float(row["videoThumbnailImpressionsClickRate"]) if impression_available and row.get("videoThumbnailImpressionsClickRate") is not None else None,
+                "estimated_revenue": float(row.get("estimatedRevenue") or 0) if revenue_available else None,
+                "subscribers_gained": int(row.get("subscribersGained") or 0) if core_available else None,
+                "subscribers_lost": int(row.get("subscribersLost") or 0) if core_available else None,
             })
             if all_time:
                 cursor = date(cursor.year + (1 if cursor.month == 12 else 0), 1 if cursor.month == 12 else cursor.month + 1, 1)
@@ -347,23 +357,23 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
         previous_series = []
         if previous_start:
             previous_series = [item for item in series if previous_start.isoformat() <= item["date"][:10] < start.isoformat()]
-        views = sum(item["views"] for item in current_series)
-        watch_time = sum(item["watch_time_seconds"] for item in current_series)
+        views = sum(int(item["views"] or 0) for item in current_series) if core_available else None
+        watch_time = sum(int(item["watch_time_seconds"] or 0) for item in current_series) if core_available else None
         impression_rows = [item for item in current_series if item["impressions"] is not None]
         impression_total = sum(int(item["impressions"] or 0) for item in impression_rows)
         weighted_ctr = sum(int(item["impressions"] or 0) * float(item["ctr"] or 0) for item in impression_rows)
         revenue_rows = [item for item in current_series if item["estimated_revenue"] is not None]
         revenue = sum(float(item["estimated_revenue"] or 0) for item in revenue_rows) if revenue_rows else None
-        previous_views = sum(int(item["views"]) for item in previous_series) if previous_series else None
-        previous_watch = sum(int(item["watch_time_seconds"]) for item in previous_series) if previous_series else None
+        previous_views = sum(int(item["views"] or 0) for item in previous_series) if core_available and previous_series else None
+        previous_watch = sum(int(item["watch_time_seconds"] or 0) for item in previous_series) if core_available and previous_series else None
         previous_impression_rows = [item for item in previous_series if item["impressions"] is not None]
         previous_impressions = sum(int(item["impressions"] or 0) for item in previous_impression_rows) if previous_impression_rows else None
         previous_ctr = (sum(int(item["impressions"] or 0) * float(item["ctr"] or 0) for item in previous_impression_rows) / previous_impressions) if previous_impressions else None
         previous_revenue_rows = [item for item in previous_series if item["estimated_revenue"] is not None]
         previous_revenue = sum(float(item["estimated_revenue"] or 0) for item in previous_revenue_rows) if previous_revenue_rows else None
-        previous_net_subscribers = (sum(int(item["subscribers_gained"]) - int(item["subscribers_lost"]) for item in previous_series) if previous_series else None)
-        current_net_subscribers = sum(int(item["subscribers_gained"]) - int(item["subscribers_lost"]) for item in current_series)
-        current_average = watch_time / views if views else None
+        previous_net_subscribers = (sum(int(item["subscribers_gained"] or 0) - int(item["subscribers_lost"] or 0) for item in previous_series) if core_available and previous_series else None)
+        current_net_subscribers = sum(int(item["subscribers_gained"] or 0) - int(item["subscribers_lost"] or 0) for item in current_series) if core_available else None
+        current_average = watch_time / views if watch_time is not None and views else None
         previous_average = previous_watch / previous_views if previous_watch is not None and previous_views else None
         current_rpm = revenue / views * 1000 if revenue is not None and views else None
         previous_rpm = previous_revenue / previous_views * 1000 if previous_revenue is not None and previous_views else None
@@ -384,8 +394,8 @@ def account_insights(account: Account, days: int | str = "all", force_refresh: b
                 "average_view_duration_seconds": current_average,
                 "estimated_revenue": revenue,
                 "rpm": current_rpm,
-                "subscribers_gained": sum(item["subscribers_gained"] for item in current_series),
-                "subscribers_lost": sum(item["subscribers_lost"] for item in current_series),
+                "subscribers_gained": sum(int(item["subscribers_gained"] or 0) for item in current_series) if core_available else None,
+                "subscribers_lost": sum(int(item["subscribers_lost"] or 0) for item in current_series) if core_available else None,
                 "followers": followers,
                 "video_count": int(stats.get("videoCount") or 0),
             },

@@ -75,11 +75,12 @@ const trendMeta:Record<TrendMetric,{label:string;format:(value:number)=>string}>
 }
 
 function TrendChart({series,metric}:{series:AccountInsightPoint[];metric:TrendMetric}){
-  const longRange=series.length>1&&new Date(series.at(-1)!.date).getTime()-new Date(series[0].date).getTime()>180*86400000
-  const points=series.map(item=>({
+  const availableSeries=series.filter(item=>item[metric]!=null)
+  const longRange=availableSeries.length>1&&new Date(availableSeries.at(-1)!.date).getTime()-new Date(availableSeries[0].date).getTime()>180*86400000
+  const points=availableSeries.map(item=>({
     label:item.date,
     axisLabel:longRange?item.date.slice(0,7):item.date.slice(5),
-    value:Number(item[metric]||0),
+    value:Number(item[metric]),
     details:[
       {label:'播放量',value:fmt(item.views)},
       {label:'展现量',value:fmt(item.impressions)},
@@ -90,7 +91,7 @@ function TrendChart({series,metric}:{series:AccountInsightPoint[];metric:TrendMe
       {label:'新增订阅',value:fmt(item.subscribers_gained)},
     ].filter(detail=>detail.label!==trendMeta[metric].label&&detail.value!=='—'),
   }))
-  return <div className="insight-chart-wrap"><SmoothLineChart points={points} seriesName={trendMeta[metric].label} valueFormat={trendMeta[metric].format} ariaLabel={`${trendMeta[metric].label}趋势图`}/></div>
+  return <div className="insight-chart-wrap"><SmoothLineChart points={points} seriesName={trendMeta[metric].label} valueFormat={trendMeta[metric].format} ariaLabel={`${trendMeta[metric].label}趋势图`} emptyText={`平台未返回${trendMeta[metric].label}数据`}/></div>
 }
 
 function ContentPerformance({items}:{items:PlatformMedia[]}){
@@ -192,7 +193,6 @@ export default function DashboardPage(){
   const [commentSort,setCommentSort]=useState<'latest'|'video'|'user'>('latest')
   const [commentAccount,setCommentAccount]=useState<number|'all'>('all')
   const [loading,setLoading]=useState(false)
-  const [accountDataRequested,setAccountDataRequested]=useState(false)
   const [mediaLoading,setMediaLoading]=useState(false)
   const [insightLoading,setInsightLoading]=useState(false)
   const [insightError,setInsightError]=useState('')
@@ -201,6 +201,7 @@ export default function DashboardPage(){
   const mediaCache=useRef(new Map<number,PlatformMedia[]>())
   const calendarCache=useRef(new Map<number,PlatformMedia[]>())
   const insightCache=useRef(new Map<string,AccountInsights>())
+  const autoRefreshedAccounts=useRef(new Set<number>())
   const commentsLoaded=useRef(false)
   const mediaRequest=useRef(0)
   const calendarRequest=useRef(0)
@@ -246,10 +247,15 @@ export default function DashboardPage(){
   useEffect(()=>{if(selectedAccount?.platform!=='youtube'&&contentType!=='all')setContentType('all')},[selectedAccount?.platform,contentType])
   useEffect(()=>{
     if(!selectedAccountId)return
-    if(activeSection==='accounts'&&accountDataRequested){void loadInsights(selectedAccountId,insightDays,contentType);void loadMedia(selectedAccountId)}
+    if(activeSection==='accounts'){
+      const firstLoad=!autoRefreshedAccounts.current.has(selectedAccountId)
+      if(firstLoad)autoRefreshedAccounts.current.add(selectedAccountId)
+      void loadInsights(selectedAccountId,insightDays,contentType,firstLoad)
+      void loadMedia(selectedAccountId,firstLoad)
+    }
     if(activeSection==='publishing')void loadCalendar(selectedAccountId)
     if(activeSection==='fans')void loadComments()
-  },[activeSection,selectedAccountId,insightDays,contentType,accountDataRequested])
+  },[activeSection,selectedAccountId,insightDays,contentType])
 
   const visibleRange=useMemo(()=>{
     if(calendarView==='week'){const start=startOfWeek(calendarCursor);return{start,end:addDays(start,7)}}
@@ -272,12 +278,12 @@ export default function DashboardPage(){
   const moveCalendar=(direction:number)=>setCalendarCursor(current=>calendarView==='week'?addDays(current,direction*7):new Date(current.getFullYear(),current.getMonth()+direction,1))
   const insightTotals=insights?.totals
   const netSubscribers=insightTotals?.subscribers_gained==null?null:insightTotals.subscribers_gained-(insightTotals.subscribers_lost||0)
-  const refreshSelected=()=>{if(!selectedAccountId)return;if(!accountDataRequested){setAccountDataRequested(true);return}void loadInsights(selectedAccountId,insightDays,contentType,true);void loadMedia(selectedAccountId,true)}
+  const refreshSelected=()=>{if(!selectedAccountId)return;void loadInsights(selectedAccountId,insightDays,contentType,true);void loadMedia(selectedAccountId,true)}
   const accountExport=selectedAccountId?exportHref(`/api/publish/accounts/${selectedAccountId}/insights.csv?days=${insightDays}&content_type=${contentType}`):undefined
   const calendarExport=selectedAccountId?exportHref(`/api/publish/accounts/${selectedAccountId}/calendar.csv?start=${dateKey(visibleRange.start)}&end=${dateKey(addDays(visibleRange.end,-1))}`):undefined
 
   return <div className="workspace-page overview-page">{holder}
-    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load(true);if(accountDataRequested)refreshSelected()}}>刷新</Button></div>
+    <div className="page-heading overview-page-heading"><Typography.Title level={2}>账号总览</Typography.Title><Button icon={<ReloadOutlined/>} loading={loading||insightLoading} onClick={()=>{void load(true);refreshSelected()}}>刷新</Button></div>
     <Segmented block className="overview-pager" value={activeSection} onChange={value=>setActiveSection(value as typeof activeSection)} options={[{value:'accounts',label:'账号数据'},{value:'publishing',label:'发布日历'},{value:'fans',label:'粉丝评论'}]}/>
 
     {activeSection==='accounts'&&<section className="overview-section overview-accounts-section">
@@ -285,12 +291,12 @@ export default function DashboardPage(){
         <Select className="account-filter" value={selectedAccountId} placeholder="选择账号" onChange={setSelectedAccountId} options={accounts.map(item=>({value:item.id,label:<PlatformOption platform={item.platform} label={item.name}/>}))}/>
         <Segmented value={insightDays} onChange={value=>setInsightDays(value as InsightRange)} options={[{value:'all',label:'全部'},{value:'7',label:'7天'},{value:'28',label:'28天'},{value:'90',label:'90天'}]}/>
         {selectedAccount?.platform==='youtube'&&<Segmented value={contentType} onChange={value=>setContentType(value as typeof contentType)} options={[{value:'all',label:'全部内容'},{value:'videos',label:'长视频'},{value:'shorts',label:'Shorts'}]}/>}
-        <Button type={accountDataRequested?'default':'primary'} icon={<ReloadOutlined/>} loading={insightLoading||mediaLoading} disabled={!selectedAccountId} onClick={refreshSelected}>{accountDataRequested?'刷新数据':'加载平台数据'}</Button>
-        <Button icon={<DownloadOutlined/>} href={accountExport} disabled={!accountExport||!accountDataRequested}>导出数据表</Button>
+        <Button icon={<ReloadOutlined/>} loading={insightLoading||mediaLoading} disabled={!selectedAccountId} onClick={refreshSelected}>刷新数据</Button>
+        <Button icon={<DownloadOutlined/>} href={accountExport} disabled={!accountExport}>导出数据表</Button>
         <Button type="link" onClick={()=>navigate('/management')}>管理账号 <ArrowRightOutlined/></Button>
       </div>
       {!accounts.length&&<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未连接账号"><Button type="primary" onClick={()=>navigate('/management')}>连接账号</Button></Empty>}
-      {selectedAccount&&!accountDataRequested?<Card><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="页面已就绪，点击后再读取平台官方数据"><Button type="primary" onClick={refreshSelected}>加载平台数据</Button></Empty></Card>:selectedAccount&&<Spin spinning={insightLoading}>
+      {selectedAccount&&<Spin spinning={insightLoading}>
         <Card className="account-insight-hero">
           <div className="account-insight-head">
             <Avatar size={58} src={selectedAccount.avatar_url} icon={<PlatformLogo platform={selectedAccount.platform} size={28}/>}/>
@@ -309,12 +315,12 @@ export default function DashboardPage(){
           </div>}
         </Card>
 
-        {insights&&<div className="account-visual-grid">
+        {insights&&<>
           <Card className="insight-chart-card" title="账号趋势" extra={<Segmented size="small" value={trendMetric} onChange={value=>setTrendMetric(value as TrendMetric)} options={(Object.keys(trendMeta) as TrendMetric[]).map(value=>({value,label:trendMeta[value].label}))}/>}>
             <TrendChart series={insights.series} metric={trendMetric}/>
           </Card>
-          <Card className="content-performance-card" title="视频播放表现" extra={<span className="cell-sub">最近读取的 {accountMedia.length} 条</span>}><ContentPerformance items={accountMedia}/></Card>
-        </div>}
+          <Card className="content-performance-card" title="视频播放表现" extra={<span className="cell-sub">{accountMedia.length} 条视频</span>}><ContentPerformance items={accountMedia}/></Card>
+        </>}
 
         <Card className="table-card video-data-card account-media-table" title="最近视频详细数据" styles={{body:{padding:0}}}>
           <Table loading={mediaLoading} rowKey="id" dataSource={accountMedia} pagination={{pageSize:8,hideOnSinglePage:true}} scroll={{x:1320}} locale={{emptyText:<Empty description="平台暂未返回该类型视频"/>}} onRow={item=>({onClick:()=>item.url&&window.open(item.url,'_blank','noopener,noreferrer')})} columns={[

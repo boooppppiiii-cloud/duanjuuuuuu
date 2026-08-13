@@ -94,6 +94,38 @@ def test_youtube_time_report_filters_official_creator_content_type(monkeypatch):
     assert rows == [{"day": "2026-08-10", "views": 25.0}]
 
 
+def test_youtube_all_time_monthly_query_aligns_to_month_start(monkeypatch):
+    social_integrations._account_insight_cache.clear()
+    report_calls = []
+    monkeypatch.setattr(social_integrations, "youtube_access_token", lambda account: "token")
+
+    def fake_get(url, **kwargs):
+        assert url.endswith("/channels")
+        return FakeResponse({"items": [{"snippet": {"publishedAt": "2025-01-03T00:00:00Z"}, "statistics": {"subscriberCount": "10", "viewCount": "99", "videoCount": "3"}}]})
+
+    def fake_report(token, start, end, metrics, dimension="day", content_type="all"):
+        report_calls.append((start, dimension))
+        key = start.strftime("%Y-%m")
+        if metrics.startswith("views,"):
+            return [{"month": key, "views": 25, "estimatedMinutesWatched": 5, "averageViewDuration": 12, "subscribersGained": 2, "subscribersLost": 0}], ""
+        if metrics.startswith("videoThumbnailImpressions"):
+            return [{"month": key, "videoThumbnailImpressions": 100, "videoThumbnailImpressionsClickRate": 5}], ""
+        return [{"month": key, "estimatedRevenue": 1}], ""
+
+    monkeypatch.setattr(social_integrations.httpx, "get", fake_get)
+    monkeypatch.setattr(social_integrations, "_youtube_time_report", fake_report)
+
+    result = social_integrations.account_insights(
+        Account(id=78, platform="youtube", name="Channel", account_type="creator", status="connected"),
+        "all", True, "all",
+    )
+
+    assert result["range"]["start"] == "2025-01-03"
+    assert all(start == date(2025, 1, 1) and dimension == "month" for start, dimension in report_calls)
+    assert result["totals"]["views"] == 25
+    assert result["totals"]["ctr"] == 5
+
+
 async def _read_stream(response):
     chunks = []
     async for chunk in response.body_iterator:
