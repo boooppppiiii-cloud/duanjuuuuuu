@@ -79,6 +79,7 @@ export type LocalHealth={status:string;ffmpeg_ready:boolean;workspace_root:strin
 
 export const NATIVE_FOLDER_PICKER_CAPABILITY='native_folder_picker_v3'
 export const META_DURATION_GUARD_CAPABILITY='meta_duration_guard_v1'
+export const META_METADATA_GUARD_CAPABILITY='meta_metadata_guard_v1'
 
 let cachedHealth:{value:LocalHealth;expiresAt:number}|undefined
 let healthRequest:Promise<LocalHealth>|undefined

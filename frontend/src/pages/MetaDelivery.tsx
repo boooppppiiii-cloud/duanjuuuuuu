@@ -4,7 +4,7 @@ import { useEffect,useMemo,useRef,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
 import { api,type Drama,type LegacyMetaSource,type MetaFactorySource,type MetaPackage,type MetaPreflight,type MetaSFSInput } from '../api'
 import { PlatformLogo } from '../components/PlatformBrand'
-import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,META_DURATION_GUARD_CAPABILITY,NATIVE_FOLDER_PICKER_CAPABILITY,type LocalWorkspace } from '../localWorkspace'
+import { localAssistantSupports,localAssistantUnavailable,localWorkspace as localClient,META_DURATION_GUARD_CAPABILITY,META_METADATA_GUARD_CAPABILITY,NATIVE_FOLDER_PICKER_CAPABILITY,type LocalWorkspace } from '../localWorkspace'
 import { LOCAL_ASSISTANT_DOWNLOAD_FILENAME,LOCAL_ASSISTANT_DOWNLOAD_URL,showLocalAssistantAccessPrompt,showLocalAssistantInstallPrompt } from '../components/LocalAssistantPrompt'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
@@ -12,6 +12,20 @@ const defaults={locale:'en_US',genres:['Drama'],release_date:new Date().toLocale
 const activePackageStatuses=new Set(['queued','building'])
 const unavailablePackageStatuses=new Set(['queued','building','failed','missing'])
 const LEGACY_SERVER_IMPORT_CAPABILITY='legacy_server_import_v1'
+const META_DESCRIPTION_MAX=500
+const suggestSeriesSlug=(title:string,id:number)=>{
+ const slug=title.trim().toLowerCase().replace(/_/g,'-').replace(/\s+/g,'-').replace(/[^a-z0-9-]+/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'')
+ return slug||`short-drama-${id}`
+}
+const prepareMetaDescription=(value:string)=>{
+ const normalized=value.replace(/\s+/g,' ').trim()
+ if(normalized.length<=META_DESCRIPTION_MAX)return normalized
+ const limited=normalized.slice(0,META_DESCRIPTION_MAX)
+ const sentence=Math.max(limited.lastIndexOf('. '),limited.lastIndexOf('! '),limited.lastIndexOf('? '))
+ const word=limited.lastIndexOf(' ')
+ const cut=sentence>=350?sentence+1:word>=450?word:META_DESCRIPTION_MAX
+ return limited.slice(0,cut).trim()
+}
 const formatSize=(bytes:number)=>bytes>=1024**3?`${(bytes/1024**3).toFixed(2)} GB`:bytes>=1024**2?`${(bytes/1024**2).toFixed(1)} MB`:`${Math.round(bytes/1024)} KB`
 const packageProgress=(item?:MetaPackage)=>Math.max(0,Math.min(100,Number(item?.validation_json?.progress??(item?.status==='ready'?100:0))))
 const packageStep=(item?:MetaPackage)=>String(item?.validation_json?.current_step|| (item?.status==='queued'?'等待本机处理':'正在生成'))
@@ -28,6 +42,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  const[action,setAction]=useState<string|null>(null)
  const[exportProgress,setExportProgress]=useState<{label:string;percent:number}|null>(null)
  const[legacyProgress,setLegacyProgress]=useState<{label:string;percent:number}|null>(null)
+ const[descriptionShortened,setDescriptionShortened]=useState<{from:number;to:number}|null>(null)
  const detectRequest=useRef(0)
  const[msg,ctx]=message.useMessage()
  const navigate=useNavigate()
@@ -65,7 +80,11 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
  },[packages.some(item=>activePackageStatuses.has(item.status))])
  useEffect(()=>{
    if(!drama)return
-   form.setFieldsValue({description:drama.description,genres:drama.genres,ai_content:drama.is_ai_generated,dubbed_content:drama.is_dubbed_content,locale:drama.language||'en_US'})
+   const sourceDescription=String(drama.description||'').replace(/\s+/g,' ').trim()
+   const description=prepareMetaDescription(sourceDescription)
+   setDescriptionShortened(sourceDescription.length>description.length?{from:sourceDescription.length,to:description.length}:null)
+   form.setFieldsValue({series_slug:suggestSeriesSlug(drama.title,drama.id),description,genres:drama.genres,ai_content:drama.is_ai_generated,dubbed_content:drama.is_dubbed_content,locale:drama.language||'en_US'})
+   form.setFields([{name:'series_slug',errors:[]},{name:'description',errors:[]}])
  },[drama?.id])
  useEffect(()=>{
    setCheck(undefined);setSource(undefined);setLegacySource(undefined);setLocalSource(undefined);setExportProgress(null);setLegacyProgress(null);setLocalIssue('')
@@ -82,7 +101,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
         if(isCurrent()){setLocalStatus(localAssistantUnavailable(error)?'offline':'error');setPackages([]);setLocalIssue(localAssistantUnavailable(error)?(error as Error).message:`本地助手响应异常：${(error as Error).message}`)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||!localAssistantSupports(health,META_DURATION_GUARD_CAPABILITY)){
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||!localAssistantSupports(health,META_DURATION_GUARD_CAPABILITY)||!localAssistantSupports(health,META_METADATA_GUARD_CAPABILITY)){
         if(isCurrent()){setLocalStatus('outdated');setPackages([]);setLocalIssue('当前本地助手版本过旧，需要更新后使用 Meta 官方投递')}
        return
      }
@@ -159,7 +178,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
        else{setLocalStatus('error');setLocalIssue(`本地助手响应异常：${(error as Error).message}`);msg.error((error as Error).message)}
        return
      }
-     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||!localAssistantSupports(health,META_DURATION_GUARD_CAPABILITY)){msg.destroy('local-access');setLocalStatus('outdated');setLocalIssue('当前本地助手缺少最新 Meta 时长修复能力，请安装新版后重试');showLocalWorkspaceHelp('update');return}
+     if(!localAssistantSupports(health,'meta_direct_local_v2')||!localAssistantSupports(health,NATIVE_FOLDER_PICKER_CAPABILITY)||!localAssistantSupports(health,META_DURATION_GUARD_CAPABILITY)||!localAssistantSupports(health,META_METADATA_GUARD_CAPABILITY)){msg.destroy('local-access');setLocalStatus('outdated');setLocalIssue('当前本地助手缺少最新 Meta 元数据校验能力，请安装新版后重试');showLocalWorkspaceHelp('update');return}
      if(health.picker_ready===false){msg.destroy('local-access');setLocalStatus('unavailable');setLocalIssue('本地助手未运行在当前 Windows 用户桌面，请双击桌面快捷方式后重试');msg.warning('请先启动当前用户桌面上的 Jushu Local Assistant');return}
      msg.destroy('local-access')
      setLocalStatus(fallbackStatus)
@@ -185,7 +204,7 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
      else{setLocalStatus(connected?'ready':fallbackStatus);if(text.includes('取消选择')){setLocalIssue('没有选择文件夹。请重新点击按钮，并在弹出的 Windows 窗口中完成选择。');msg.info('已取消选择文件夹')}else{setLocalIssue(text);msg.error(text)}}
    }finally{setAction(null)}
  }
- const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:values.description,locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
+ const body=(values:any):MetaSFSInput=>({drama_id:values.drama_id,series_slug:String(values.series_slug||'').trim(),description:String(values.description||'').trim(),locale:values.locale,genres:values.genres,release_date:values.release_date,cast_list:[],tags:[],geogating:[],ai_content:Boolean(values.ai_content),dubbed_content:Boolean(values.dubbed_content),include_episode_csv:false,include_thumbnails:false})
  const rememberPackage=(item:MetaPackage)=>setPackages(old=>[item,...old.filter(row=>row.id!==item.id)])
  const waitForPackage=async(id:number)=>{
    while(true){
@@ -248,8 +267,8 @@ export default function MetaDelivery({embedded=false}:{embedded?:boolean}){
     {drama&&(source?.ready?<Alert type="success" showIcon message={`已从本机读取 ${source.episode_count} 个${source.source_mode==='factory_meta_split'?'内容工厂 Meta 单集':'视频文件'}`} description={<Typography.Text ellipsis={{tooltip:source.files.join('、')}}>{source.files.join('、')}</Typography.Text>}/>:<Alert type="warning" showIcon message={localStatus==='offline'?'本地助手未连接':localStatus==='outdated'?'本地助手需要更新':'尚无本机可投递视频'} description={<Space><span>{localStatus==='offline'||localStatus==='outdated'?'处理本地助手后重新检测，或':'选择本地素材文件夹，或'}</span><Button type="link" onClick={()=>navigate(`/factory?drama=${drama.id}`)}>前往内容工厂生成 Meta 逐集切分</Button></Space>}/>) }
   </Card>
   <Card title="2. Meta 必填信息">
-    <Form.Item name="series_slug" label="英文文件夹名（可留空自动生成）"><Input placeholder="例如 boss-like-me"/></Form.Item>
-    <Form.Item name="description" label="剧情简介（来自剧目任务）" rules={[{required:true,message:'Meta 要求填写系列简介'}]}><Input.TextArea rows={3} disabled={Boolean(drama?.description)}/></Form.Item>
+    <Form.Item name="series_slug" label="英文文件夹名" extra="切换剧目时会根据当前剧名自动重新生成"><Input placeholder="例如 boss-like-me"/></Form.Item>
+    <Form.Item name="description" label="Meta 系列简介" extra={descriptionShortened?`原剧情简介为 ${descriptionShortened.from} 个字符，已自动精简为 ${descriptionShortened.to} 个，可继续手动修改。`:'Meta 要求不超过 500 个字符。'} rules={[{required:true,message:'Meta 要求填写系列简介'},{max:META_DESCRIPTION_MAX,message:'Meta 系列简介最多 500 个字符'}]}><Input.TextArea rows={4} maxLength={META_DESCRIPTION_MAX} showCount/></Form.Item>
     <div className="form-grid"><Form.Item name="locale" label="语种代码" rules={[{required:true,pattern:/^[a-z]{2}_[A-Z]{2}$/,message:'例如 en_US'}]}><Input/></Form.Item><Form.Item name="release_date" label="首发日期 MM/DD/YYYY" rules={[{required:true}]}><Input/></Form.Item></div>
     <Form.Item name="genres" label="题材分类（来自剧目任务）" rules={[{required:true}]}><Select mode="multiple" disabled={Boolean(drama?.genres.length)} options={genres.map(item=>({value:item,label:item}))}/></Form.Item>
     <Space size="large" wrap><Form.Item name="ai_content" valuePropName="checked" label="AI 标识（来自剧目任务）"><Switch disabled={Boolean(drama)}/></Form.Item><Form.Item name="dubbed_content" valuePropName="checked" label="配音标识（来自剧目任务）"><Switch disabled={Boolean(drama)}/></Form.Item></Space>

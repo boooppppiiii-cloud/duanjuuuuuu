@@ -32,6 +32,7 @@ META_MIN_DURATION_SECONDS = 60.0
 META_MAX_DURATION_SECONDS = 180.0
 META_REPAIRABLE_MIN_DURATION_SECONDS = 59.0
 META_REPAIR_TARGET_DURATION_SECONDS = 61.0
+META_DESCRIPTION_MAX_CHARACTERS = 500
 
 
 def _notify_progress(callback: ProgressCallback | None, progress: int, step: str) -> None:
@@ -132,7 +133,10 @@ def preflight(
     drama_dir = Path(drama.file_dir)
     sources, source_mode = delivery or delivery_sources(drama_dir)
     expected_total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
-    effective_description = drama.description.strip() or payload.description.strip()
+    # The library synopsis may be intentionally long. Meta's series CSV has a
+    # separate 500-character contract, so the delivery form value must take
+    # precedence instead of being silently replaced by the library value.
+    effective_description = payload.description.strip() or drama.description.strip()
     effective_genres = drama.genres or payload.genres
     slug = payload.series_slug.strip() or suggest_slug(drama.title, drama.id or 0)
     blockers: list[str] = []
@@ -152,6 +156,8 @@ def preflight(
         fixable.append(f"将使用内容工厂生成的 {len(sources)} 个 Meta 单集文件")
     if not effective_description:
         blockers.append("剧目任务缺少剧情简介")
+    elif len(effective_description) > META_DESCRIPTION_MAX_CHARACTERS:
+        blockers.append(f"Meta 系列简介最多 {META_DESCRIPTION_MAX_CHARACTERS} 个字符，当前为 {len(effective_description)} 个字符")
     if not effective_genres or any(item not in ALLOWED_GENRES for item in effective_genres):
         blockers.append("Genre 必须从 Meta 官方类型列表中选择")
     try:
@@ -352,7 +358,7 @@ def build_package(
         series_dir.mkdir(parents=True, exist_ok=False)
         sources, source_mode = delivery or delivery_sources(Path(drama.file_dir))
         total = len(sources) if source_mode == "factory_meta_split" else max(int(drama.total_episode_count or 0), 1)
-        description = drama.description.strip() or payload.description.strip()
+        description = payload.description.strip() or drama.description.strip()
         genres = drama.genres or payload.genres
         output_checks = []
         for index, source in enumerate(sources, 1):

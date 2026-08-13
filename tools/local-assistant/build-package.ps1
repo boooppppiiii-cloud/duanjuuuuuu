@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$output = Join-Path $projectRoot "frontend\public\downloads\Jushu-Local-Assistant-Windows-v7.zip"
+$output = Join-Path $projectRoot "frontend\public\downloads\Jushu-Local-Assistant-Windows-v8.zip"
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("jushu-local-package-" + [guid]::NewGuid().ToString("N"))
 
 try {

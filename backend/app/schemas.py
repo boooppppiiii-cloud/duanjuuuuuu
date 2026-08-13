@@ -532,7 +532,7 @@ class RecurringPublishRequest(BaseModel):
 class MetaSFSRequest(BaseModel):
     drama_id: int
     series_slug: str = ""
-    description: str = Field(min_length=1)
+    description: str = Field(min_length=1, max_length=500)
     locale: str = "en_US"
     genres: list[str] = Field(default_factory=lambda: ["Drama"])
     release_date: str
