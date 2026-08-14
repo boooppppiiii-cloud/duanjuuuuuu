@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import io
-import json
 from pathlib import Path
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -20,11 +18,8 @@ from ..models import (
     ExternalVideo,
     ExternalVideoMetric,
     MonitoredAccount,
-    MonitoredAccountDrama,
     PromotionDramaPool,
     RadarEvent,
-    RadarImportBatch,
-    RadarUnmatchedDrama,
     RightsCase,
     SearchQuery,
     SearchResult,
@@ -32,7 +27,7 @@ from ..models import (
     VideoMatchEvidence,
 )
 from ..services.auth import get_current_user
-from ..services.radar_accounts import import_accounts, preview_import, template_bytes
+from ..services.radar_accounts import normalize_account_name, normalize_profile_url
 from ..services.radar_evidence import build_evidence_package
 from ..services.radar_pool import deactivate_promotion_drama, ensure_promotion_drama
 from ..services.radar_search import query_suggestions, quota_status, scan_drama, sync_queries
@@ -41,17 +36,21 @@ from ..services.radar_search import query_suggestions, quota_status, scan_drama,
 router = APIRouter(prefix="/api/radar", tags=["传播雷达"])
 
 
+class AccountCreate(BaseModel):
+    platform: Literal["youtube", "facebook", "instagram", "tiktok"] = "youtube"
+    display_name: str = Field(min_length=1, max_length=200)
+    platform_account_id: str = Field(default="", max_length=255)
+    profile_url: str = Field(default="", max_length=500)
+    relationship_type: Literal["own_creator", "own_official"] = "own_creator"
+    notes: str = Field(default="", max_length=1000)
+
+
 class AccountUpdate(BaseModel):
+    platform: Literal["youtube", "facebook", "instagram", "tiktok"] | None = None
     display_name: str | None = None
     platform_account_id: str | None = None
     profile_url: str | None = None
-    relationship_type: str | None = None
-    authorization_status: str | None = None
-    company_name: str | None = None
-    allowed_full_series: bool | None = None
-    authorized_regions: list[str] | None = None
-    authorization_start: date | None = None
-    authorization_end: date | None = None
+    relationship_type: Literal["own_creator", "own_official"] | None = None
     notes: str | None = None
     active: bool | None = None
 
@@ -105,35 +104,48 @@ class FactoryHandoffCreate(BaseModel):
     reference_note: str = ""
 
 
-def _mapping(raw: str) -> dict[str, str]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-        return value if isinstance(value, dict) else {}
-    except json.JSONDecodeError as exc:
-        raise HTTPException(422, "字段映射不是有效 JSON") from exc
+def _apply_owned_account(row: MonitoredAccount, payload: AccountCreate | AccountUpdate) -> None:
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        if value is not None:
+            setattr(row, key, value.strip() if isinstance(value, str) else value)
+    row.display_name = row.display_name.strip()
+    row.platform_account_id = row.platform_account_id.strip()
+    row.profile_url = row.profile_url.strip()
+    row.handle = row.display_name.lstrip("@")
+    row.normalized_name = normalize_account_name(row.display_name)
+    row.normalized_profile_url = normalize_profile_url(row.profile_url)
+    row.authorization_status = "authorized"
+    row.allowed_full_series = True
+    row.authorized_regions = []
+    row.authorization_start = None
+    row.authorization_end = None
+    row.company_name = ""
+    row.source = "manual"
+    row.updated_at = datetime.utcnow()
 
 
-@router.get("/accounts/template.xlsx")
-def account_template(_: AppUser = Depends(get_current_user)):
-    return StreamingResponse(io.BytesIO(template_bytes()), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="radar-accounts-template.xlsx"'})
+def _account_duplicate(session: Session, row: MonitoredAccount, exclude_id: int | None = None) -> MonitoredAccount | None:
+    candidates = session.exec(select(MonitoredAccount).where(MonitoredAccount.platform == row.platform)).all()
+    for candidate in candidates:
+        if candidate.id == exclude_id:
+            continue
+        if row.platform_account_id and candidate.platform_account_id == row.platform_account_id:
+            return candidate
+        if row.normalized_profile_url and candidate.normalized_profile_url == row.normalized_profile_url:
+            return candidate
+    return None
 
 
-@router.post("/accounts/import-preview")
-async def account_import_preview(file: UploadFile = File(...), mapping: str = Form(""), _: AppUser = Depends(get_current_user)):
-    try:
-        return preview_import(file.filename or "accounts.xlsx", await file.read(), _mapping(mapping))
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-
-
-@router.post("/accounts/import")
-async def account_import(file: UploadFile = File(...), mapping: str = Form(""), user: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
-    try:
-        return import_accounts(session, file.filename or "accounts.xlsx", await file.read(), user.id, _mapping(mapping))
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+@router.post("/accounts", status_code=201)
+def create_account(payload: AccountCreate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    row = MonitoredAccount(platform=payload.platform, display_name=payload.display_name)
+    _apply_owned_account(row, payload)
+    if not row.platform_account_id and not row.profile_url:
+        raise HTTPException(422, "平台账号 ID 和账号主页至少填写一项")
+    if _account_duplicate(session, row):
+        raise HTTPException(409, "该监测账号已经存在")
+    session.add(row); session.commit(); session.refresh(row)
+    return {**row.model_dump(), "dramas": []}
 
 
 @router.get("/accounts")
@@ -145,13 +157,11 @@ def accounts(
     if platform: rows = [row for row in rows if row.platform == platform]
     if relationship_type: rows = [row for row in rows if row.relationship_type == relationship_type]
     if query:
-        needle = query.casefold(); rows = [row for row in rows if needle in row.display_name.casefold() or needle in row.company_name.casefold() or needle in row.platform_account_id.casefold()]
+        needle = query.casefold(); rows = [row for row in rows if needle in row.display_name.casefold() or needle in row.platform_account_id.casefold() or needle in row.profile_url.casefold()]
     total = len(rows); sliced = rows[(page - 1) * page_size:page * page_size]
     items = []
     for row in sliced:
-        links = session.exec(select(MonitoredAccountDrama).where(MonitoredAccountDrama.account_id == row.id)).all()
-        dramas = [session.get(Drama, link.drama_id) for link in links]
-        items.append({**row.model_dump(), "dramas": [{"id": drama.id, "title": drama.title} for drama in dramas if drama]})
+        items.append({**row.model_dump(), "dramas": []})
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
@@ -159,9 +169,14 @@ def accounts(
 def update_account(account_id: int, payload: AccountUpdate, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
     row = session.get(MonitoredAccount, account_id)
     if not row: raise HTTPException(404, "监测账号不存在")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(row, key, value)
-    row.updated_at = datetime.utcnow(); session.add(row); session.commit(); session.refresh(row); return row
+    _apply_owned_account(row, payload)
+    if not row.display_name:
+        raise HTTPException(422, "账号名称不能为空")
+    if not row.platform_account_id and not row.profile_url:
+        raise HTTPException(422, "平台账号 ID 和账号主页至少填写一项")
+    if _account_duplicate(session, row, row.id):
+        raise HTTPException(409, "该监测账号已经存在")
+    session.add(row); session.commit(); session.refresh(row); return {**row.model_dump(), "dramas": []}
 
 
 @router.delete("/accounts/{account_id}")
@@ -169,17 +184,6 @@ def delete_account(account_id: int, _: AppUser = Depends(get_current_user), sess
     row = session.get(MonitoredAccount, account_id)
     if not row: raise HTTPException(404, "监测账号不存在")
     row.active = False; row.updated_at = datetime.utcnow(); session.add(row); session.commit(); return {"ok": True}
-
-
-@router.get("/imports/history")
-def import_history(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
-    return session.exec(select(RadarImportBatch).order_by(RadarImportBatch.created_at.desc()).limit(50)).all()
-
-
-@router.get("/imports/unmatched-dramas")
-def unmatched_dramas(_: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
-    rows = session.exec(select(RadarUnmatchedDrama).where(RadarUnmatchedDrama.status == "pending").order_by(RadarUnmatchedDrama.created_at.desc())).all()
-    return rows
 
 
 @router.get("/dramas")

@@ -9,7 +9,7 @@ import RadarAccounts from './RadarAccounts'
 
 const compact=(value:number|null|undefined)=>value==null?'—':new Intl.NumberFormat('zh-CN',{notation:'compact',maximumFractionDigits:1}).format(value)
 const clock=(seconds:number)=>{const value=Math.max(0,Math.round(seconds));const hours=Math.floor(value/3600),minutes=Math.floor(value%3600/60),rest=value%60;return hours?`${hours}:${String(minutes).padStart(2,'0')}:${String(rest).padStart(2,'0')}`:`${minutes}:${String(rest).padStart(2,'0')}`}
-const identity:Record<string,[string,string]>={own_official:['自家官方','green'],own_creator:['自家达人','green'],authorized_partner:['授权合作方','cyan'],known_distributor:['其他分销方','blue'],unknown:['未知账号','default'],blocked:['历史风险账号','red']}
+const identity:Record<string,[string,string]>={own_official:['官方引流','green'],own_creator:['达人','green'],authorized_partner:['授权合作方','cyan'],known_distributor:['其他分销方','blue'],unknown:['未知账号','default'],blocked:['历史风险账号','red']}
 const classification:Record<string,string>={own:'我方内容',authorized:'已授权',external_promotion:'外部推广',suspected_full_reupload:'疑似全集转载',suspected_episode_reupload:'疑似连续分集',suspected_impersonation:'疑似冒充官方',suspected_external_redirect:'疑似外链截流',unknown:'未分类'}
 const riskValues=new Set(['suspected_full_reupload','suspected_episode_reupload','suspected_impersonation','suspected_external_redirect'])
 const sourceLabel:Record<string,string>={manual_confirmed:'已有名单确认',owned_publish:'账号实际发布',external_market:'外部市场补充'}

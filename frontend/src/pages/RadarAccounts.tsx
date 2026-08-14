@@ -1,30 +1,109 @@
-import { useEffect,useMemo,useState } from 'react'
-import { Button,Card,Input,Modal,Segmented,Select,Space,Switch,Table,Tag,Upload,message } from 'antd'
-import { DownloadOutlined,InboxOutlined,ReloadOutlined,UploadOutlined } from '@ant-design/icons'
-import { api,type MonitoredAccount,type RadarImportPreview } from '../api'
+import { useCallback,useEffect,useMemo,useState } from 'react'
+import { Button,Card,Form,Input,Modal,Select,Space,Switch,Table,Tag,message } from 'antd'
+import { EditOutlined,ExportOutlined,PlusOutlined,ReloadOutlined } from '@ant-design/icons'
+import { api,type MonitoredAccount } from '../api'
+import { PlatformLogo,PlatformOption } from '../components/PlatformBrand'
 
-const relation:Record<string,string>={own_official:'自家官方',own_creator:'自家达人',authorized_partner:'授权合作方',known_distributor:'其他分销方',unknown:'未知账号',blocked:'历史风险账号'}
-const auth:Record<string,string>={authorized:'已授权',partial:'部分授权',expired:'已过期',unknown:'未知',unauthorized:'未授权'}
+type AccountFormValue = {
+  platform:'youtube'|'facebook'|'instagram'|'tiktok'
+  display_name:string
+  platform_account_id:string
+  profile_url:string
+  relationship_type:'own_creator'|'own_official'
+  notes:string
+}
+
+const accountTypes={own_creator:'达人',own_official:'官方引流'} as const
+const platformOptions=['youtube','facebook','instagram','tiktok'].map(value=>({value,label:<PlatformOption platform={value}/>}))
+
 export default function RadarAccounts(){
- const[items,setItems]=useState<MonitoredAccount[]>([]);const[total,setTotal]=useState(0);const[query,setQuery]=useState('');const[platform,setPlatform]=useState('');const[page,setPage]=useState(1);const[file,setFile]=useState<File>();const[preview,setPreview]=useState<RadarImportPreview>();const[importing,setImporting]=useState(false);const[edit,setEdit]=useState<MonitoredAccount>();const[side,setSide]=useState<'accounts'|'history'|'unmatched'>('accounts');const[history,setHistory]=useState<Record<string,unknown>[]>([]);const[unmatched,setUnmatched]=useState<Record<string,unknown>[]>([]);const[messageApi,context]=message.useMessage()
- const load=()=>api.monitoredAccounts(`?page=${page}&page_size=20&platform=${platform}&query=${encodeURIComponent(query)}`).then(value=>{setItems(value.items);setTotal(value.total)}).catch(error=>void messageApi.error((error as Error).message))
- useEffect(()=>{load()},[page,platform]) // eslint-disable-line react-hooks/exhaustive-deps
- const openPreview=async(next:File)=>{setFile(next);try{setPreview(await api.radarImportPreview(next))}catch(error){messageApi.error((error as Error).message)}return Upload.LIST_IGNORE}
- const remap=async(field:string,header:string)=>{if(!file||!preview)return;const mapping={...preview.mapping};if(header)mapping[field]=header;else delete mapping[field];try{setPreview(await api.radarImportPreview(file,mapping))}catch(error){messageApi.error((error as Error).message)}}
- const confirm=async()=>{if(!file||!preview)return;setImporting(true);try{await api.radarImportAccounts(file,preview.mapping);messageApi.success('监测账号已导入');setPreview(undefined);setFile(undefined);load()}catch(error){messageApi.error((error as Error).message)}finally{setImporting(false)}}
- const loadSide=(value:typeof side)=>{setSide(value);if(value==='history')api.radarImportHistory().then(setHistory);if(value==='unmatched')api.radarUnmatchedDramas().then(setUnmatched)}
- const saveEdit=async()=>{if(!edit)return;try{await api.updateMonitoredAccount(edit.id,edit);messageApi.success('监测账号已更新');setEdit(undefined);load()}catch(error){messageApi.error((error as Error).message)}}
+ const[items,setItems]=useState<MonitoredAccount[]>([])
+ const[total,setTotal]=useState(0)
+ const[query,setQuery]=useState('')
+ const[platform,setPlatform]=useState('')
+ const[relationship,setRelationship]=useState('')
+ const[page,setPage]=useState(1)
+ const[loading,setLoading]=useState(false)
+ const[saving,setSaving]=useState(false)
+ const[editing,setEditing]=useState<MonitoredAccount|null>(null)
+ const[modalOpen,setModalOpen]=useState(false)
+ const[form]=Form.useForm<AccountFormValue>()
+ const[messageApi,context]=message.useMessage()
+
+ const load=useCallback(async(nextPage=page)=>{
+  setLoading(true)
+  try{
+   const params=new URLSearchParams({page:String(nextPage),page_size:'20'})
+   if(platform)params.set('platform',platform)
+   if(relationship)params.set('relationship_type',relationship)
+   if(query.trim())params.set('query',query.trim())
+   const value=await api.monitoredAccounts(`?${params}`)
+   setItems(value.items);setTotal(value.total)
+  }catch(error){messageApi.error((error as Error).message)}finally{setLoading(false)}
+ },[page,platform,query,relationship,messageApi])
+ useEffect(()=>{void load()},[page,platform,relationship]) // eslint-disable-line react-hooks/exhaustive-deps
+
+ const openCreate=()=>{
+  setEditing(null)
+  form.resetFields()
+  form.setFieldsValue({platform:'youtube',relationship_type:'own_creator',display_name:'',platform_account_id:'',profile_url:'',notes:''})
+  setModalOpen(true)
+ }
+ const openEdit=(row:MonitoredAccount)=>{
+  setEditing(row)
+  form.setFieldsValue({platform:row.platform as AccountFormValue['platform'],display_name:row.display_name,platform_account_id:row.platform_account_id||'',profile_url:row.profile_url||'',relationship_type:(row.relationship_type==='own_official'?'own_official':'own_creator'),notes:row.notes||''})
+  setModalOpen(true)
+ }
+ const save=async()=>{
+  const values=await form.validateFields()
+  if(!values.platform_account_id.trim()&&!values.profile_url.trim()){
+   messageApi.warning('平台账号 ID 和账号主页至少填写一项')
+   return
+  }
+  setSaving(true)
+  try{
+   if(editing)await api.updateMonitoredAccount(editing.id,values)
+   else await api.createMonitoredAccount(values)
+   messageApi.success(editing?'账号已更新':'账号已加入监测')
+   setModalOpen(false);setEditing(null);form.resetFields();await load(1);setPage(1)
+  }catch(error){messageApi.error((error as Error).message)}finally{setSaving(false)}
+ }
+ const setActive=async(row:MonitoredAccount,active:boolean)=>{
+  try{await api.updateMonitoredAccount(row.id,{active});messageApi.success(active?'已开始监测':'已停止监测');await load()}
+  catch(error){messageApi.error((error as Error).message)}
+ }
+
  const columns=useMemo(()=>[
-  {title:'账号',render:(_:unknown,row:MonitoredAccount)=><div className="radar-account-name"><b>{row.display_name}</b><span>{row.platform_account_id||row.profile_url||'未填写平台 ID'}</span></div>},
-  {title:'平台',dataIndex:'platform',width:100,render:(value:string)=><Tag>{value}</Tag>},
-  {title:'身份',dataIndex:'relationship_type',width:130,render:(value:string)=>relation[value]||value},
-  {title:'授权',dataIndex:'authorization_status',width:110,render:(value:string)=><Tag color={value==='authorized'?'green':value==='unauthorized'?'red':'default'}>{auth[value]||value}</Tag>},
-  {title:'负责剧目',render:(_:unknown,row:MonitoredAccount)=><Space wrap>{row.dramas.length?row.dramas.map(item=><Tag key={item.id}>{item.title}</Tag>):<span>未关联</span>}</Space>},
-  {title:'状态',width:90,render:(_:unknown,row:MonitoredAccount)=><Tag color={row.active?'green':'default'}>{row.active?'监测中':'已停用'}</Tag>},
-  {title:'操作',width:90,render:(_:unknown,row:MonitoredAccount)=><Button type="link" onClick={()=>setEdit(row)}>编辑</Button>},
- ],[])
- return <div className="radar-accounts">{context}<Segmented value={side} onChange={value=>loadSide(value as typeof side)} options={[{value:'accounts',label:'账号库'},{value:'history',label:'导入历史'},{value:'unmatched',label:'待匹配剧目'}]}/>{side==='accounts'?<><div className="radar-toolbar"><Space><Input.Search placeholder="搜索账号、ID 或公司" value={query} onChange={event=>setQuery(event.target.value)} onSearch={()=>{setPage(1);load()}}/><Select value={platform} onChange={value=>{setPlatform(value);setPage(1)}} options={[{value:'',label:'全部平台'},...['youtube','facebook','instagram','tiktok'].map(value=>({value,label:value}))]}/></Space><Space><Button href="/api/radar/accounts/template.xlsx" icon={<DownloadOutlined/>}>下载模板</Button><Upload accept=".xlsx,.csv" showUploadList={false} beforeUpload={openPreview}><Button type="primary" icon={<UploadOutlined/>}>导入账号表</Button></Upload><Button icon={<ReloadOutlined/>} onClick={load}/></Space></div><Card><Table rowKey="id" dataSource={items} columns={columns} pagination={{current:page,pageSize:20,total,showSizeChanger:false,onChange:setPage}}/></Card></>:side==='history'?<Card><Table rowKey="id" dataSource={history} columns={[{title:'文件',dataIndex:'filename'},{title:'行数',dataIndex:'row_count'},{title:'新增',dataIndex:'created_count'},{title:'更新',dataIndex:'updated_count'},{title:'忽略',dataIndex:'ignored_count'},{title:'待匹配',dataIndex:'unmatched_count'},{title:'导入时间',dataIndex:'created_at',render:(value:string)=>new Date(value).toLocaleString('zh-CN')}]}/></Card>:<Card><Table rowKey="id" dataSource={unmatched} columns={[{title:'原表行',dataIndex:'row_number'},{title:'无法匹配的剧名',dataIndex:'raw_name'},{title:'状态',dataIndex:'status',render:(value:string)=><Tag>{value==='pending'?'待匹配':value}</Tag>},{title:'导入时间',dataIndex:'created_at',render:(value:string)=>new Date(value).toLocaleString('zh-CN')}]}/></Card>}
-  <Modal open={Boolean(preview)} width={920} title="确认导入监测账号" okText="确认导入" cancelText="取消" confirmLoading={importing} onOk={confirm} onCancel={()=>setPreview(undefined)}><div className="radar-import-summary"><b>{preview?.row_count??0} 行</b><Tag color="green">有效 {preview?.valid_count??0}</Tag><Tag color={(preview?.invalid_count??0)>0?'red':'default'}>需修正 {preview?.invalid_count??0}</Tag></div><div className="radar-mapping-grid">{preview?.fields.map(item=><label key={item.value}><span>{item.label}</span><Select allowClear value={preview.mapping[item.value]} placeholder="未映射" onChange={value=>void remap(item.value,value)} options={preview.headers.map(header=>({value:header,label:header}))}/></label>)}</div><Table rowKey="row_number" size="small" scroll={{x:900}} pagination={{pageSize:8}} dataSource={preview?.rows||[]} columns={[{title:'行',dataIndex:'row_number',width:55},{title:'平台',dataIndex:'platform'},{title:'账号名称',dataIndex:'display_name'},{title:'账号 ID',dataIndex:'platform_account_id'},{title:'账号类型',dataIndex:'relationship_type'},{title:'负责剧目',dataIndex:'dramas',render:(value:string[])=>value?.join('、')},{title:'校验',dataIndex:'errors',render:(value:string[])=><span className={value?.length?'radar-import-error':''}>{value?.join('；')||'通过'}</span>}]}/>{preview?.invalid_count?<div className="radar-import-hint"><InboxOutlined/> 含错误的行将被忽略，其余数据可直接导入。</div>:null}</Modal>
-  <Modal open={Boolean(edit)} title="编辑监测账号" okText="保存" cancelText="取消" onOk={saveEdit} onCancel={()=>setEdit(undefined)}>{edit&&<div className="radar-edit-form"><label>账号名称<Input value={edit.display_name} onChange={event=>setEdit({...edit,display_name:event.target.value})}/></label><label>账号类型<Select value={edit.relationship_type} onChange={value=>setEdit({...edit,relationship_type:value})} options={Object.entries(relation).map(([value,label])=>({value,label}))}/></label><label>授权状态<Select value={edit.authorization_status} onChange={value=>setEdit({...edit,authorization_status:value})} options={Object.entries(auth).map(([value,label])=>({value,label}))}/></label><label>授权地区<Select mode="tags" value={edit.authorized_regions} onChange={value=>setEdit({...edit,authorized_regions:value})}/></label><label className="radar-edit-toggle"><span>允许发布完整剧</span><Switch checked={edit.allowed_full_series} onChange={value=>setEdit({...edit,allowed_full_series:value})}/></label><label className="radar-edit-toggle"><span>启用监测</span><Switch checked={edit.active} onChange={value=>setEdit({...edit,active:value})}/></label><label>备注<Input.TextArea rows={3} value={edit.notes} onChange={event=>setEdit({...edit,notes:event.target.value})}/></label></div>}</Modal>
+  {title:'账号',render:(_:unknown,row:MonitoredAccount)=><div className="radar-account-identity"><span className="radar-account-logo"><PlatformLogo platform={row.platform} size={22}/></span><div className="radar-account-name"><b>{row.display_name}</b><span>{row.platform_account_id||row.profile_url}</span></div></div>},
+  {title:'类型',dataIndex:'relationship_type',width:120,render:(value:string)=><Tag color={value==='own_official'?'cyan':'green'}>{accountTypes[value as keyof typeof accountTypes]||'达人'}</Tag>},
+  {title:'账号主页',width:110,render:(_:unknown,row:MonitoredAccount)=>row.profile_url?<Button size="small" href={row.profile_url} target="_blank" icon={<ExportOutlined/>}>打开</Button>:<span className="cell-sub">未填写</span>},
+  {title:'监测状态',width:110,render:(_:unknown,row:MonitoredAccount)=><Switch checked={row.active} checkedChildren="监测中" unCheckedChildren="已停止" onChange={value=>void setActive(row,value)}/>},
+  {title:'操作',width:80,render:(_:unknown,row:MonitoredAccount)=><Button type="text" icon={<EditOutlined/>} onClick={()=>openEdit(row)}>编辑</Button>},
+ ],[]) // eslint-disable-line react-hooks/exhaustive-deps
+
+ return <div className="radar-accounts">{context}
+  <div className="radar-toolbar radar-account-toolbar">
+   <Space wrap>
+    <Input.Search allowClear placeholder="搜索账号名称、ID 或主页" value={query} onChange={event=>setQuery(event.target.value)} onSearch={()=>{setPage(1);void load(1)}}/>
+    <Select value={platform} onChange={value=>{setPlatform(value);setPage(1)}} options={[{value:'',label:'全部平台'},...platformOptions]}/>
+    <Select value={relationship} onChange={value=>{setRelationship(value);setPage(1)}} options={[{value:'',label:'全部类型'},{value:'own_creator',label:'达人'},{value:'own_official',label:'官方引流'}]}/>
+   </Space>
+   <Space><Button icon={<ReloadOutlined/>} onClick={()=>void load()}/><Button type="primary" icon={<PlusOutlined/>} onClick={openCreate}>添加账号</Button></Space>
+  </div>
+  <Card className="radar-account-list-card">
+   <Table rowKey="id" loading={loading} dataSource={items} columns={columns} pagination={{current:page,pageSize:20,total,showSizeChanger:false,showTotal:value=>`共 ${value} 个账号`,onChange:setPage}}/>
+  </Card>
+  <Modal open={modalOpen} title={editing?'编辑监测账号':'添加监测账号'} okText="保存" cancelText="取消" confirmLoading={saving} onOk={()=>void save()} onCancel={()=>{setModalOpen(false);setEditing(null);form.resetFields()}} destroyOnHidden>
+   <Form form={form} layout="vertical" className="radar-account-form">
+    <div className="radar-account-form-grid">
+     <Form.Item name="platform" label="平台" rules={[{required:true,message:'请选择平台'}]}><Select options={platformOptions}/></Form.Item>
+     <Form.Item name="relationship_type" label="账号类型" rules={[{required:true,message:'请选择账号类型'}]}><Select options={[{value:'own_creator',label:'达人'},{value:'own_official',label:'官方引流'}]}/></Form.Item>
+    </div>
+    <Form.Item name="display_name" label="账号名称" rules={[{required:true,whitespace:true,message:'请输入账号名称'}]}><Input maxLength={200} placeholder="例如 MiniDrama Hub"/></Form.Item>
+    <Form.Item name="platform_account_id" label="平台账号 ID"><Input maxLength={255} placeholder="例如 YouTube Channel ID"/></Form.Item>
+    <Form.Item name="profile_url" label="账号主页"><Input maxLength={500} placeholder="https://..."/></Form.Item>
+    <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={1000}/></Form.Item>
+   </Form>
+  </Modal>
  </div>
 }

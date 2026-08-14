@@ -156,6 +156,18 @@ def create_db_and_tables() -> None:
             for name, definition in additions.items():
                 if name not in existing:
                     connection.execute(text(f"ALTER TABLE socialcomment ADD COLUMN {name} {definition}"))
+    if settings.database_url.startswith("sqlite") and "monitoredaccount" in inspect(engine).get_table_names():
+        # 监测账号现只维护我方达人和官方引流账号；旧导入记录统一按我方账号处理。
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE monitoredaccount SET relationship_type = 'own_creator' "
+                "WHERE relationship_type NOT IN ('own_creator', 'own_official')"
+            ))
+            connection.execute(text(
+                "UPDATE monitoredaccount SET authorization_status = 'authorized', "
+                "allowed_full_series = 1, authorized_regions = '[]', "
+                "authorization_start = NULL, authorization_end = NULL"
+            ))
     # Per-user operational records were introduced after the original shared MVP.
     # Existing rows are claimed by the developer account during auth bootstrap.
     private_tables = ("clip", "factoryjob", "generatedasset", "post", "publishjob", "metadeliverypackage")

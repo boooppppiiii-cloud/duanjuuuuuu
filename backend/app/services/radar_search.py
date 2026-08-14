@@ -191,7 +191,7 @@ def ensure_owned_monitored_account(session: Session, platform: str, account_id: 
     row.profile_url = profile_url or row.profile_url
     row.normalized_profile_url = normalize_profile_url(row.profile_url)
     row.normalized_name = normalize_account_name(row.display_name)
-    row.relationship_type = "own_official"; row.authorization_status = "authorized"; row.active = True; row.updated_at = datetime.utcnow()
+    row.relationship_type = "own_official"; row.authorization_status = "authorized"; row.allowed_full_series = True; row.active = True; row.updated_at = datetime.utcnow()
     session.add(row); session.flush(); return row
 
 

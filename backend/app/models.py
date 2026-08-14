@@ -403,10 +403,10 @@ class MonitoredAccount(SQLModel, table=True):
     normalized_profile_url: str = Field(default="", index=True)
     normalized_name: str = Field(default="", index=True)
     avatar_url: str = ""
-    relationship_type: str = Field(default="unknown", index=True)
-    authorization_status: str = Field(default="unknown", index=True)
+    relationship_type: str = Field(default="own_creator", index=True)
+    authorization_status: str = Field(default="authorized", index=True)
     company_name: str = ""
-    allowed_full_series: bool = False
+    allowed_full_series: bool = True
     authorized_regions: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     authorization_start: Optional[date] = None
     authorization_end: Optional[date] = None

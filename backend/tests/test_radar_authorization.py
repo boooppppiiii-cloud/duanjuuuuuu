@@ -20,3 +20,25 @@ def test_authorization_is_drama_region_time_and_full_series_specific(tmp_path):
         assert authorization_for(session, account, drama2.id, "US", datetime.utcnow(), False)["authorization_status"] == "unknown"
         unknown = authorization_for(session, None, drama1.id, "US", datetime.utcnow(), True)
         assert unknown == {"relationship_type": "unknown", "authorization_status": "unknown", "authorized": False, "reason": "未匹配监测账号"}
+
+
+def test_owned_accounts_are_authorized_for_every_drama_and_full_series(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'radar-owned-auth.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        drama = Drama(title="Any Drama", file_dir="any")
+        creator = MonitoredAccount(
+            platform="youtube",
+            platform_account_id="UC-CREATOR",
+            display_name="Creator",
+            relationship_type="own_creator",
+            authorization_status="unknown",
+        )
+        session.add(drama); session.add(creator); session.commit(); session.refresh(drama); session.refresh(creator)
+        result = authorization_for(session, creator, drama.id, "GB", datetime.utcnow(), True)
+        assert result == {
+            "relationship_type": "own_creator",
+            "authorization_status": "authorized",
+            "authorized": True,
+            "reason": "自有账号",
+        }

@@ -70,7 +70,6 @@ export type RadarEvent = {id:number;drama_id:number;external_video_id:number|nul
 export type PromotionDrama = {id:number;drama_id:number;drama_title:string;active:boolean;sources:string[];priority:'normal'|'low';pinned:boolean;note:string;last_scanned_at:string|null;next_scan_at:string|null}
 export type RadarQuota = {quota_day:string;search_calls:number;search_limit:number;used_units:number;unit_budget:number;scan_count:number;failed_scan_count:number}
 export type RightsCase = {id:number;drama_id:number;external_video_id:number;case_status:string;rights_owner:string;authorization_review:string;evidence_ready:boolean;notes:string;created_at:string;drama_title:string;video_title:string;video_url:string;channel_name:string;classification:string}
-export type RadarImportPreview = {filename:string;headers:string[];fields:{value:string;label:string}[];mapping:Record<string,string>;row_count:number;valid_count:number;invalid_count:number;rows:(Record<string,unknown>&{row_number:number;errors:string[]})[]}
 
 async function responseError(response: Response, fallback='请求失败') {
   try {
@@ -136,12 +135,9 @@ export const api = {
   radarEvents: (limit=10,status='') => request<RadarEvent[]>(`/api/radar/events?limit=${limit}${status?`&status=${encodeURIComponent(status)}`:''}`,{cacheTtlMs:30_000}),
   updateRadarEvent: (eventId:number,status:string,resolution_note='') => request<RadarEvent>(`/api/radar/events/${eventId}`,{method:'PUT',body:JSON.stringify({status,resolution_note})}),
   monitoredAccounts: (filters='') => request<{items:MonitoredAccount[];total:number;page:number;page_size:number}>(`/api/radar/accounts${filters}`),
+  createMonitoredAccount: (body:object) => request<MonitoredAccount>('/api/radar/accounts',{method:'POST',body:JSON.stringify(body)}),
   updateMonitoredAccount: (id:number,body:object) => request<MonitoredAccount>(`/api/radar/accounts/${id}`,{method:'PUT',body:JSON.stringify(body)}),
   disableMonitoredAccount: (id:number) => request<{ok:boolean}>(`/api/radar/accounts/${id}`,{method:'DELETE'}),
-  radarImportPreview: (file:File,mapping:Record<string,string>={}) => {const body=new FormData();body.append('file',file);body.append('mapping',JSON.stringify(mapping));return request<RadarImportPreview>('/api/radar/accounts/import-preview',{method:'POST',body,headers:{}})},
-  radarImportAccounts: (file:File,mapping:Record<string,string>) => {const body=new FormData();body.append('file',file);body.append('mapping',JSON.stringify(mapping));return request<Record<string,unknown>>('/api/radar/accounts/import',{method:'POST',body,headers:{}})},
-  radarImportHistory: () => request<Record<string,unknown>[]>('/api/radar/imports/history'),
-  radarUnmatchedDramas: () => request<Record<string,unknown>[]>('/api/radar/imports/unmatched-dramas'),
   promotionPool: () => request<PromotionDrama[]>('/api/radar/promotion-pool'),
   upsertPromotionDrama: (dramaId:number,body:object={source:'manual_confirmed'}) => request<PromotionDrama>(`/api/radar/promotion-pool/${dramaId}`,{method:'PUT',body:JSON.stringify(body)}),
   removePromotionDrama: (dramaId:number) => request<{ok:boolean}>(`/api/radar/promotion-pool/${dramaId}`,{method:'DELETE'}),
