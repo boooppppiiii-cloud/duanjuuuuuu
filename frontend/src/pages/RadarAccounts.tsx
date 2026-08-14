@@ -1,6 +1,6 @@
 import { useCallback,useEffect,useMemo,useState } from 'react'
-import { Button,Card,Form,Input,Modal,Select,Space,Switch,Table,Tag,message } from 'antd'
-import { EditOutlined,ExportOutlined,PlusOutlined,ReloadOutlined } from '@ant-design/icons'
+import { Button,Card,Form,Input,Modal,Popconfirm,Select,Space,Switch,Table,Tag,message } from 'antd'
+import { DeleteOutlined,EditOutlined,ExportOutlined,PlusOutlined,ReloadOutlined } from '@ant-design/icons'
 import { api,type MonitoredAccount } from '../api'
 import { PlatformLogo,PlatformOption } from '../components/PlatformBrand'
 
@@ -25,6 +25,7 @@ export default function RadarAccounts(){
  const[page,setPage]=useState(1)
  const[loading,setLoading]=useState(false)
  const[saving,setSaving]=useState(false)
+ const[removing,setRemoving]=useState<number>()
  const[editing,setEditing]=useState<MonitoredAccount|null>(null)
  const[modalOpen,setModalOpen]=useState(false)
  const[form]=Form.useForm<AccountFormValue>()
@@ -72,14 +73,23 @@ export default function RadarAccounts(){
   try{await api.updateMonitoredAccount(row.id,{active});messageApi.success(active?'已开始监测':'已停止监测');await load()}
   catch(error){messageApi.error((error as Error).message)}
  }
+ const remove=async(row:MonitoredAccount)=>{
+  setRemoving(row.id)
+  try{
+   await api.disableMonitoredAccount(row.id)
+   messageApi.success('账号已从监测列表移除')
+   if(items.length===1&&page>1)setPage(page-1)
+   else await load()
+  }catch(error){messageApi.error((error as Error).message)}finally{setRemoving(undefined)}
+ }
 
  const columns=useMemo(()=>[
   {title:'账号',render:(_:unknown,row:MonitoredAccount)=><div className="radar-account-identity"><span className="radar-account-logo"><PlatformLogo platform={row.platform} size={22}/></span><div className="radar-account-name"><b>{row.display_name}</b><span>{row.platform_account_id||row.profile_url}</span></div></div>},
   {title:'类型',dataIndex:'relationship_type',width:120,render:(value:string)=><Tag color={value==='own_official'?'cyan':'green'}>{accountTypes[value as keyof typeof accountTypes]||'达人'}</Tag>},
   {title:'账号主页',width:110,render:(_:unknown,row:MonitoredAccount)=>row.profile_url?<Button size="small" href={row.profile_url} target="_blank" icon={<ExportOutlined/>}>打开</Button>:<span className="cell-sub">未填写</span>},
   {title:'监测状态',width:110,render:(_:unknown,row:MonitoredAccount)=><Switch checked={row.active} checkedChildren="监测中" unCheckedChildren="已停止" onChange={value=>void setActive(row,value)}/>},
-  {title:'操作',width:80,render:(_:unknown,row:MonitoredAccount)=><Button type="text" icon={<EditOutlined/>} onClick={()=>openEdit(row)}>编辑</Button>},
- ],[]) // eslint-disable-line react-hooks/exhaustive-deps
+  {title:'操作',width:160,render:(_:unknown,row:MonitoredAccount)=><Space size={2}><Button type="text" icon={<EditOutlined/>} onClick={()=>openEdit(row)}>编辑</Button><Popconfirm title="移除这个监测账号？" description="移除后不再参与后续识别，历史记录仍会保留。" okText="移除" cancelText="取消" okButtonProps={{danger:true}} onConfirm={()=>void remove(row)}><Button type="text" danger loading={removing===row.id} icon={<DeleteOutlined/>}>移除</Button></Popconfirm></Space>},
+ ],[removing]) // eslint-disable-line react-hooks/exhaustive-deps
 
  return <div className="radar-accounts">{context}
   <div className="radar-toolbar radar-account-toolbar">

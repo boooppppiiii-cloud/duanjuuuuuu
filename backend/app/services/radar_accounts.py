@@ -318,7 +318,7 @@ def authorization_for(
     session: Session, account: MonitoredAccount | None, drama_id: int, region: str,
     published_at: datetime | None, full_series: bool = False,
 ) -> dict[str, Any]:
-    if not account:
+    if not account or not account.active or account.source == "removed":
         return {"relationship_type": "unknown", "authorization_status": "unknown", "authorized": False, "reason": "未匹配监测账号"}
     link = session.exec(select(MonitoredAccountDrama).where(
         MonitoredAccountDrama.account_id == account.id, MonitoredAccountDrama.drama_id == drama_id,

@@ -403,7 +403,7 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .overview-page>.overview-pager { width:min(100%,430px); justify-self:start; }
 .factory-page>.factory-pager { width:min(100%,430px); justify-self:start; }
 .local-library>.library-pager,.publishing-center>.publishing-pager,.unified-publish>.publishing-pager { width:min(100%,430px); justify-self:start; }
-.library-filter-bar { display:grid; grid-template-columns:minmax(220px,1fr) minmax(150px,210px) minmax(150px,210px) auto; align-items:center; gap:10px; min-height:42px; padding:10px; border:1px solid var(--line); border-radius:14px; background:#fff; }
+.library-filter-bar { display:grid; grid-template-columns:minmax(220px,2fr) repeat(3,minmax(135px,1fr)) auto; align-items:center; gap:10px; min-height:42px; padding:10px; border:1px solid var(--line); border-radius:14px; background:#fff; }
 .library-filter-bar>span { justify-self:end; padding-right:4px; color:var(--muted); font-size:10px; }
 .local-library .local-drama-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:14px; margin-top:0; }
 .drama-task-card { height:100%; margin:0!important; overflow:hidden; cursor:pointer; }
@@ -417,6 +417,9 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .drama-card-info>.ant-typography { display:block; overflow:hidden; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
 .drama-card-meta { display:flex; min-height:20px; align-items:center; gap:4px; overflow:hidden; }
 .drama-card-meta .ant-tag { flex:0 0 auto; margin:0; }
+.drama-card-monitoring { display:flex; min-width:0; align-items:center; justify-content:space-between; gap:5px; }
+.drama-card-monitoring .ant-tag { min-width:0; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.drama-card-monitoring .ant-btn { flex:0 0 auto; height:24px; padding-inline:6px; color:var(--lime-deep); font-size:10px; }
 .drama-card-progress { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:7px; }
 .drama-card-progress .ant-progress { margin:0; line-height:1; }
 .drama-card-progress>span { color:var(--muted); font-size:9px; font-variant-numeric:tabular-nums; }
@@ -693,3 +696,28 @@ input:focus-visible,textarea:focus-visible{outline:0!important;outline-offset:0!
 .radar-pool-panel{display:grid;gap:12px;padding:14px;border:1px solid var(--line);border-radius:16px;background:#fff}.radar-pool-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}.radar-pool-toolbar>div{display:grid;gap:2px}.radar-pool-toolbar small{color:var(--muted);font-size:9px}.radar-pool-toolbar>.ant-select{min-width:300px}.radar-quota-strip{display:flex;align-items:center;gap:18px;padding:9px 12px;border-radius:10px;background:var(--mint-soft);font-size:10px}.radar-quota-strip .ant-tag{margin-left:auto}.radar-pool-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.radar-pool-grid .ant-card-body{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.radar-pool-grid .ant-card-body>div{display:grid;gap:7px;min-width:0}.radar-pool-grid small{color:var(--muted);font-size:8px}.radar-pool-note{margin-bottom:12px}.radar-handoff-fields{display:grid;grid-template-columns:minmax(200px,1fr) 130px 130px auto;gap:8px}.radar-evidence-fields{display:grid;grid-template-columns:1fr auto;gap:8px}
 @media(max-width:1100px){.radar-pool-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.radar-handoff-fields{grid-template-columns:1fr 1fr}}
 @media(max-width:700px){.radar-pool-toolbar{align-items:stretch;flex-direction:column}.radar-pool-toolbar>.ant-select{width:100%;min-width:0}.radar-quota-strip{align-items:flex-start;flex-direction:column;gap:6px}.radar-quota-strip .ant-tag{margin-left:0}.radar-pool-grid{grid-template-columns:1fr}.radar-handoff-fields,.radar-evidence-fields{grid-template-columns:1fr}}
+
+/* Platform dynamics: simple, action-first daily summary */
+.radar-today{display:grid;gap:12px}
+.radar-today-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.radar-today-summary>div{display:flex;align-items:center;gap:14px;min-height:94px;padding:16px 18px;text-align:left;border:1px solid var(--line);border-radius:16px;background:#fff}
+.radar-today-summary>div>span{display:grid;gap:2px}
+.radar-today-summary svg{padding:9px;border-radius:12px;font-size:36px}
+.radar-today-summary b{font-size:27px;line-height:1}
+.radar-today-summary small{color:var(--muted);font-size:11px;font-weight:700}
+.radar-today-summary .is-risk svg{color:#c84c43;background:#fff0ee}
+.radar-today-summary .is-positive svg{color:#5f9430;background:#efffdd}
+.radar-today-summary .is-opportunity svg{color:#397f79;background:#e6fbf7}
+.radar-today .radar-events-list{gap:8px}
+.radar-today .radar-events-list .ant-card{overflow:hidden}
+.radar-today .radar-events-list .ant-card-body{grid-template-columns:84px minmax(0,1fr) auto;gap:14px;padding:11px 14px}
+.radar-today .radar-events-list .ant-card.is-risk{border-left:4px solid #e06a61}
+.radar-today .radar-events-list .ant-card.is-positive{border-left:4px solid #8fc657}
+.radar-today .radar-events-list .ant-card.is-opportunity{border-left:4px solid #5eb9ad}
+.radar-today .radar-event-thumb{width:84px;height:50px}
+.radar-today .radar-events-list .ant-card-body>div:nth-child(2){display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:4px 8px;min-width:0}
+.radar-today .radar-events-list .ant-tag{width:max-content;margin:0}
+.radar-today .radar-events-list b{overflow:hidden;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.radar-today .radar-events-list strong{grid-column:1/-1;overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:1000px){.library-filter-bar{grid-template-columns:repeat(2,minmax(0,1fr))}.library-filter-bar>span{justify-self:start}}
+@media(max-width:700px){.radar-today-summary{grid-template-columns:1fr}.radar-today-summary>div{min-height:72px}.radar-today .radar-events-list .ant-card-body{grid-template-columns:72px minmax(0,1fr)}.radar-today .radar-event-thumb{width:72px;height:48px}}

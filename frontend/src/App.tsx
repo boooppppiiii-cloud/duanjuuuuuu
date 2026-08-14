@@ -29,9 +29,9 @@ const MetaDelivery=lazy(loadMetaDelivery)
 const DeveloperAnalytics=lazy(loadDeveloperAnalytics)
 const Radar=lazy(loadRadar)
 const nav=[
+ {key:'radar',icon:<RadarChartOutlined/>,label:'平台动态'},
  {key:'home',icon:<DashboardOutlined/>,label:'首页'},
  {key:'dramas',icon:<FolderOpenOutlined/>,label:'剧库'},
- {key:'radar',icon:<RadarChartOutlined/>,label:'传播雷达'},
  {key:'factory',icon:<ExperimentOutlined/>,label:'内容工厂'},
  {key:'publishing',icon:<SendOutlined/>,label:'一键发布'},
  {key:'management',icon:<SettingOutlined/>,label:'管理'},

@@ -142,7 +142,13 @@ def create_account(payload: AccountCreate, _: AppUser = Depends(get_current_user
     _apply_owned_account(row, payload)
     if not row.platform_account_id and not row.profile_url:
         raise HTTPException(422, "平台账号 ID 和账号主页至少填写一项")
-    if _account_duplicate(session, row):
+    duplicate = _account_duplicate(session, row)
+    if duplicate and duplicate.source == "removed":
+        _apply_owned_account(duplicate, payload)
+        duplicate.active = True
+        session.add(duplicate); session.commit(); session.refresh(duplicate)
+        return {**duplicate.model_dump(), "dramas": []}
+    if duplicate:
         raise HTTPException(409, "该监测账号已经存在")
     session.add(row); session.commit(); session.refresh(row)
     return {**row.model_dump(), "dramas": []}
@@ -153,7 +159,9 @@ def accounts(
     platform: str = "", relationship_type: str = "", query: str = "", page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
     _: AppUser = Depends(get_current_user), session: Session = Depends(get_session),
 ):
-    rows = session.exec(select(MonitoredAccount).order_by(MonitoredAccount.updated_at.desc())).all()
+    rows = session.exec(select(MonitoredAccount).where(
+        MonitoredAccount.source != "removed",
+    ).order_by(MonitoredAccount.updated_at.desc())).all()
     if platform: rows = [row for row in rows if row.platform == platform]
     if relationship_type: rows = [row for row in rows if row.relationship_type == relationship_type]
     if query:
@@ -183,7 +191,10 @@ def update_account(account_id: int, payload: AccountUpdate, _: AppUser = Depends
 def delete_account(account_id: int, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
     row = session.get(MonitoredAccount, account_id)
     if not row: raise HTTPException(404, "监测账号不存在")
-    row.active = False; row.updated_at = datetime.utcnow(); session.add(row); session.commit(); return {"ok": True}
+    row.active = False
+    row.source = "removed"
+    row.updated_at = datetime.utcnow()
+    session.add(row); session.commit(); return {"ok": True}
 
 
 @router.get("/dramas")

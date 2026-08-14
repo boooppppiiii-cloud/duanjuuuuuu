@@ -166,16 +166,19 @@ def _match_account(session: Session, channel_id: str, channel_name: str, channel
     if channel_id:
         row = session.exec(select(MonitoredAccount).where(
             MonitoredAccount.platform == "youtube", MonitoredAccount.platform_account_id == channel_id,
+            MonitoredAccount.active == True,  # noqa: E712
         )).first()
         if row: return row
     normalized_url = normalize_profile_url(channel_url)
     if normalized_url:
         row = session.exec(select(MonitoredAccount).where(
             MonitoredAccount.platform == "youtube", MonitoredAccount.normalized_profile_url == normalized_url,
+            MonitoredAccount.active == True,  # noqa: E712
         )).first()
         if row: return row
     return session.exec(select(MonitoredAccount).where(
         MonitoredAccount.platform == "youtube", MonitoredAccount.normalized_name == normalize_account_name(channel_name),
+        MonitoredAccount.active == True,  # noqa: E712
     )).first()
 
 

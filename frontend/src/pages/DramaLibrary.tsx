@@ -1,8 +1,8 @@
 import { useEffect,useMemo,useState } from 'react'
 import { Button,Card,Collapse,Empty,Form,Input,InputNumber,message,Modal,Progress,Segmented,Select,Space,Spin,Switch,Tag,Typography } from 'antd'
-import { CloudDownloadOutlined,FolderOpenOutlined,PictureOutlined,PlusOutlined,ReloadOutlined } from '@ant-design/icons'
+import { CloudDownloadOutlined,FolderOpenOutlined,PictureOutlined,PlusOutlined,RadarChartOutlined,ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { api,type CloudAsset,Drama,ScanLog } from '../api'
+import { api,type CloudAsset,Drama,type PromotionDrama,ScanLog } from '../api'
 import { theaterOptions } from '../options'
 
 const genres=['Action','Adventure','Animated','Comedy','Crime','Documentary','Drama','Family','Fantasy','Historical','Horror','Musical','Mystery','Noir','Reality','Romance','Science fiction','Sports','Thriller','Western']
@@ -18,12 +18,15 @@ const cardCoverKind=(item:Drama):'vertical'|'square'|'horizontal'|undefined=>ite
 export default function DramaLibrary(){
  const[items,setItems]=useState<Drama[]>([])
  const[cloud,setCloud]=useState<CloudAsset[]>([])
+ const[promotionPool,setPromotionPool]=useState<PromotionDrama[]>([])
  const[loading,setLoading]=useState(true)
  const[logs,setLogs]=useState<ScanLog[]>([])
  const[view,setView]=useState<'tasks'|'cloud'>('tasks')
  const[query,setQuery]=useState('')
  const[language,setLanguage]=useState<string>()
  const[theater,setTheater]=useState<string>()
+ const[poolFilter,setPoolFilter]=useState<'all'|'active'>('all')
+ const[poolBusy,setPoolBusy]=useState<number>()
  const[createOpen,setCreateOpen]=useState(false)
  const[registerOpen,setRegisterOpen]=useState(false)
  const[createForm]=Form.useForm()
@@ -32,12 +35,22 @@ export default function DramaLibrary(){
  const[msg,context]=message.useMessage()
  const localRuntime=['localhost','127.0.0.1','::1'].includes(window.location.hostname)
 
- const load=async()=>{try{const[dramas,assets]=await Promise.all([api.list(),api.cloudAssets()]);setItems(dramas);setCloud(assets)}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
+ const load=async()=>{try{const[dramas,assets,pool]=await Promise.all([api.list(),api.cloudAssets(),api.promotionPool()]);setItems(dramas);setCloud(assets);setPromotionPool(pool)}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
  useEffect(()=>{void load()},[])
  const scan=async()=>{setLoading(true);try{const result=await api.scan();setLogs(result.logs);await load();msg.success('共享剧库已同步')}catch(e){msg.error((e as Error).message)}finally{setLoading(false)}}
  const createTask=async(values:{title:string;theater:string;description:string;total_episode_count:number;genres:string[];language:string;is_ai_generated:boolean;is_dubbed_content:boolean})=>{try{const item=await api.createDramaTask(values);msg.success('剧目任务已建立');setCreateOpen(false);createForm.resetFields();await load();navigate(`/factory?drama=${item.id}`)}catch(e){msg.error((e as Error).message)}}
  const register=async(values:{title:string;theater:string;absolute_path:string;source_note:string})=>{try{await api.registerDrama(values.title,values.theater,values.absolute_path,values.source_note);msg.success('已有素材已登记');setRegisterOpen(false);registerForm.resetFields();await load()}catch(e){msg.error((e as Error).message)}}
- const filteredItems=useMemo(()=>{const keyword=query.trim().toLocaleLowerCase();return items.filter(item=>(!keyword||item.title.toLocaleLowerCase().includes(keyword))&&(!language||item.language===language)&&(!theater||item.theater===theater))},[items,query,language,theater])
+ const activePromotionIds=useMemo(()=>new Set(promotionPool.filter(item=>item.active).map(item=>item.drama_id)),[promotionPool])
+ const filteredItems=useMemo(()=>{const keyword=query.trim().toLocaleLowerCase();return items.filter(item=>(!keyword||item.title.toLocaleLowerCase().includes(keyword))&&(!language||item.language===language)&&(!theater||item.theater===theater)&&(poolFilter==='all'||activePromotionIds.has(item.id)))},[items,query,language,theater,poolFilter,activePromotionIds])
+ const togglePromotion=async(dramaId:number,active:boolean)=>{
+  setPoolBusy(dramaId)
+  try{
+   if(active)await api.upsertPromotionDrama(dramaId,{source:'manual_confirmed'})
+   else await api.removePromotionDrama(dramaId)
+   setPromotionPool(await api.promotionPool())
+   msg.success(active?'已加入推广剧目池':'已移出推广剧目池')
+  }catch(e){msg.error((e as Error).message)}finally{setPoolBusy(undefined)}
+ }
  const availableLanguages=useMemo(()=>Array.from(new Set(items.map(item=>item.language).filter(Boolean))).sort().map(value=>({value,label:`${languageLabel(value)} · ${value}`})),[items])
  const logColor:Record<string,string>={imported:'green',updated:'blue',skipped:'orange',info:'default'}
 
@@ -45,12 +58,12 @@ export default function DramaLibrary(){
   <div className="page-heading page-heading-rich"><Typography.Title level={2}>剧库</Typography.Title><Space wrap>{localRuntime&&<Button icon={<FolderOpenOutlined/>} onClick={()=>setRegisterOpen(true)}>登记已有素材</Button>}<Button icon={<ReloadOutlined/>} onClick={scan}>{localRuntime?'同步素材目录':'刷新共享剧库'}</Button><Button type="primary" icon={<PlusOutlined/>} onClick={()=>setCreateOpen(true)}>新建剧目任务</Button></Space></div>
   <Segmented block className="overview-pager library-pager" value={view} onChange={value=>setView(value as typeof view)} options={[{value:'tasks',label:`剧目任务 ${items.length}`},{value:'cloud',label:`云剧库 ${cloud.length}`}]}/>
   {!!logs.length&&<Collapse className="scan-logs" items={[{key:'logs',label:`本次同步记录（${logs.length} 条）`,children:logs.map((entry,index)=><div className="scan-log-line" key={index}><Tag color={logColor[entry.status]}>{entry.status}</Tag><code>{entry.path}</code><span>{entry.message}</span></div>)}]}/>}
-  {view==='tasks'&&<div className="library-filter-bar"><Input.Search allowClear value={query} onChange={event=>setQuery(event.target.value)} placeholder="搜索剧目名称"/><Select allowClear value={theater} onChange={setTheater} placeholder="全部剧场" options={theaterOptions}/><Select allowClear value={language} onChange={setLanguage} placeholder="全部语种" options={availableLanguages}/><span>{filteredItems.length} 部剧目</span></div>}
+  {view==='tasks'&&<div className="library-filter-bar"><Input.Search allowClear value={query} onChange={event=>setQuery(event.target.value)} placeholder="搜索剧目名称"/><Select allowClear value={theater} onChange={setTheater} placeholder="全部剧场" options={theaterOptions}/><Select allowClear value={language} onChange={setLanguage} placeholder="全部语种" options={availableLanguages}/><Select value={poolFilter} onChange={setPoolFilter} options={[{value:'all',label:'全部剧目'},{value:'active',label:'推广剧目池'}]}/><span>{filteredItems.length} 部剧目</span></div>}
   <Spin spinning={loading}>{view==='tasks'?(items.length?(filteredItems.length?<div className="local-drama-grid">{filteredItems.map(item=>{
     const progress=Math.min(100,Math.round((item.episode_count/Math.max(1,item.total_episode_count))*100))
     const kind=cardCoverKind(item)
     return <Card key={item.id} hoverable className="drama-task-card" role="link" tabIndex={0} aria-label={`打开 ${item.title} 的剧目资料`} onClick={()=>navigate(`/dramas/${item.id}`)} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();navigate(`/dramas/${item.id}`)}}} cover={<div className="drama-card-cover">{kind?<img src={`/api/dramas/${item.id}/covers/${kind}`} alt=""/>:<PictureOutlined/>}<span>{item.episode_count}/{item.total_episode_count} 集</span></div>}>
-      <div className="drama-card-info"><Typography.Text strong ellipsis={{tooltip:item.title}}>{item.title}</Typography.Text><div className="drama-card-meta">{item.theater&&<Tag color="green">#{item.theater.replace(/^#+/,'').replace(/\s+/g,'')}</Tag>}<Tag>{languageLabel(item.language)}</Tag>{item.genres[0]&&<Tag>{item.genres[0]}</Tag>}</div><div className="drama-card-progress"><Progress percent={progress} showInfo={false} size="small"/><span>{progress}%</span></div></div>
+      <div className="drama-card-info"><Typography.Text strong ellipsis={{tooltip:item.title}}>{item.title}</Typography.Text><div className="drama-card-meta">{item.theater&&<Tag color="green">#{item.theater.replace(/^#+/,'').replace(/\s+/g,'')}</Tag>}<Tag>{languageLabel(item.language)}</Tag>{item.genres[0]&&<Tag>{item.genres[0]}</Tag>}</div><div className="drama-card-monitoring"><Tag color={activePromotionIds.has(item.id)?'green':'default'} icon={<RadarChartOutlined/>}>{activePromotionIds.has(item.id)?'推广监测中':'未加入推广池'}</Tag><Button size="small" type="text" loading={poolBusy===item.id} onClick={event=>{event.stopPropagation();void togglePromotion(item.id,!activePromotionIds.has(item.id))}} onKeyDown={event=>event.stopPropagation()}>{activePromotionIds.has(item.id)?'移出':'加入'}</Button></div><div className="drama-card-progress"><Progress percent={progress} showInfo={false} size="small"/><span>{progress}%</span></div></div>
     </Card>
   })}</div>:<Card className="library-empty"><Empty description="没有符合条件的剧目"><Button onClick={()=>{setQuery('');setLanguage(undefined);setTheater(undefined)}}>清除筛选</Button></Empty></Card>):!loading&&<Card className="library-empty"><Empty description="还没有剧目任务"><Button type="primary" onClick={()=>setCreateOpen(true)}>新建第一个任务</Button></Empty></Card>):(
     cloud.length?<div className="cloud-library-grid">{cloud.map(asset=>{const drama=items.find(item=>item.id===asset.drama_id);const kind=drama&&cardCoverKind(drama);return <Card key={asset.id} className="cloud-asset-card" cover={<div className="cloud-asset-cover">{kind?<img src={`/api/dramas/${asset.drama_id}/covers/${kind}`} alt=""/>:<PictureOutlined/>}<Tag>{asset.kind==='hook_full'?'高能片头版':asset.kind==='clean_full'?'净化完整版':'Meta 单集'}</Tag></div>}>
