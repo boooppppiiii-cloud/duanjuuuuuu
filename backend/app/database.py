@@ -170,7 +170,7 @@ def create_db_and_tables() -> None:
             ))
     # Per-user operational records were introduced after the original shared MVP.
     # Existing rows are claimed by the developer account during auth bootstrap.
-    private_tables = ("clip", "factoryjob", "generatedasset", "post", "publishjob", "metadeliverypackage")
+    private_tables = ("clip", "factoryjob", "factoryanalysistask", "generatedasset", "post", "publishjob", "metadeliverypackage")
     if settings.database_url.startswith("sqlite"):
         table_names = set(inspect(engine).get_table_names())
         for table_name in private_tables:

@@ -360,12 +360,12 @@ app.include_router(meta_sfs_router)
 @app.get("/api/local/health")
 def health():
     picker = folder_picker_environment()
-    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "legacy_server_import_v1", "factory_cancel_v1", "factory_sensitive_policy_v3", "factory_analysis_worker_v1", "local_storage_manager_v1", "factory_model_proxy_v1", "meta_duration_guard_v1", "meta_metadata_guard_v1", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
+    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "legacy_server_import_v1", "factory_cancel_v1", "factory_sensitive_policy_v3", "factory_analysis_worker_v1", "factory_task_history_v1", "local_storage_manager_v1", "factory_model_proxy_v1", "meta_duration_guard_v1", "meta_metadata_guard_v1", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
     return {
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.12.0",
+        "version": "1.13.0",
         "picker_backend": "IFileOpenDialog",
         "picker_ready": picker.ready,
         "picker_reason": picker.reason,
@@ -497,6 +497,8 @@ def import_shared_analysis(drama_id: int, payload: dict):
         if local_names != analysis_names:
             raise HTTPException(409, "共享识别结果与当前本地文件名不一致，请重新识别")
         imported = dict(payload)
+        imported.pop("task_id", None)
+        imported.pop("owner_user_id", None)
         imported["drama_id"] = drama_id
         imported["title"] = drama.title
         imported["reused_from_cloud"] = True

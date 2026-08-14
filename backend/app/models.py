@@ -182,6 +182,25 @@ class FactoryJob(SQLModel, table=True):
     owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
 
 
+class FactoryAnalysisTask(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
+    status: str = Field(default="queued", index=True)
+    progress: int = 0
+    current_step: str = "等待开始识别"
+    error_message: str = ""
+    storage_mode: str = "server"
+    source_files: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    episode_count: int = 0
+    completed_episode_count: int = 0
+    provider: str = ""
+    model: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    completed_at: Optional[datetime] = None
+
+
 class GeneratedAsset(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     factory_job_id: int = Field(foreign_key="factoryjob.id", index=True)

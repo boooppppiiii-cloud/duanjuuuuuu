@@ -1,4 +1,4 @@
-import type { Drama,FactoryAnalysis,FactoryAnalysisAccess,FactoryJob,FactoryOutputMode,GeneratedAsset,LegacyMetaSource,MetaFactorySource,MetaPackage,MetaPackageFiles,MetaPreflight,MetaSFSInput } from './api'
+import type { Drama,FactoryAnalysis,FactoryAnalysisAccess,FactoryJob,FactoryOutputMode,FactoryTaskHistory,GeneratedAsset,LegacyMetaSource,MetaFactorySource,MetaPackage,MetaPackageFiles,MetaPreflight,MetaSFSInput } from './api'
 
 export const LOCAL_WORKSPACE_ORIGIN='http://127.0.0.1:17862'
 
@@ -130,6 +130,9 @@ export const localWorkspace={
   analyzeFactory:(dramaId:number,access:FactoryAnalysisAccess)=>localRequest<FactoryAnalysis>(`/api/factory/${dramaId}/analyze`,{
     method:'POST',body:JSON.stringify({proxy_origin:window.location.origin,proxy_token:access.token}),
   }),
+  factoryTaskHistory:()=>localRequest<FactoryTaskHistory[]>('/api/factory/task-history'),
+  deleteFactoryAnalysis:(dramaId:number)=>localRequest<{deleted:boolean;task_id:number|null;removed_hooks:number}>(`/api/factory/${dramaId}/analysis`,{method:'DELETE'}),
+  deleteFactoryAnalysisTask:(taskId:number)=>localRequest<{deleted:boolean;task_id:number}>(`/api/factory/analysis-tasks/${taskId}`,{method:'DELETE'}),
   reviewFactoryAnalysis:(dramaId:number,body:{episode:string;kind:'high_energy'|'sensitive';start:number;end:number;decision:'approved'|'rejected'|'pending';new_start?:number;new_end?:number})=>localRequest<FactoryAnalysis>(`/api/factory/${dramaId}/analysis/review`,{method:'PATCH',body:JSON.stringify(body)}),
   startFactoryProcessing:(dramaId:number,body:{max_duration_seconds:number;hook_duration_seconds:number;publish_variant_count:number;remove_sensitive:boolean;compression_profile:'balanced'|'small';output_modes:FactoryOutputMode[];hooks_per_variant:number;hook_ids:number[]})=>localRequest<FactoryJob>(`/api/factory/${dramaId}/process`,{method:'POST',body:JSON.stringify(body)}),
   factoryJobs:(dramaId:number)=>localRequest<FactoryJob[]>(`/api/factory/${dramaId}/jobs`),

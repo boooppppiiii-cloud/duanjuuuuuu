@@ -683,7 +683,9 @@ def analyze_drama(
         )
     else:
         provider, provider_model = "test", "injected"
-    previous = read_analysis(folder) if resume else None
+    current = read_analysis(folder) or {}
+    task_id = current.get("task_id")
+    previous = current if resume else None
     if previous and int(previous.get("analysis_version", 0)) != ANALYSIS_VERSION:
         previous = None
         resume = False
@@ -693,6 +695,7 @@ def analyze_drama(
         completed_before_load = len((previous or {}).get("episodes", []))
         write_analysis(folder, {
             **(previous or {}),
+            "task_id": task_id,
             "status": "processing",
             "progress": max(1, int((previous or {}).get("progress", 1))),
             "current_step": "正在加载本地语音识别模型（首次运行需下载，后续自动复用）",
@@ -748,7 +751,8 @@ def analyze_drama(
 
     def checkpoint(progress: float, step: str) -> dict[str, Any]:
         return write_analysis(folder, {
-            **(previous or {}), "status": "processing", "progress": min(99, max(1, round(progress))),
+            **(previous or {}), "task_id": task_id,
+            "status": "processing", "progress": min(99, max(1, round(progress))),
             "current_step": step, "error_message": "", "drama_id": drama_id, "title": title,
             "source": f"local_whisper+ffmpeg+{provider}", "provider": provider, "model": provider_model,
             "episodes": ordered_results(), "episode_count": len(videos), "source_files": [video.name for video in videos],
@@ -839,6 +843,7 @@ def analyze_drama(
 
     result = {
         "status": "completed", "progress": 100, "current_step": "识别完成", "error_message": "",
+        "task_id": task_id,
         "drama_id": drama_id, "title": title, "source": f"local_whisper+ffmpeg+{provider}",
         "provider": provider, "model": provider_model, "generated_at": utc_timestamp(),
         "episode_count": len(episode_results), "source_files": [video.name for video in videos],

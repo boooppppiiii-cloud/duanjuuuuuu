@@ -9,6 +9,22 @@ class _Rows:
 
 
 class _Session:
+    row = None
+
+    def add(self, row):
+        if getattr(row, "id", None) is None:
+            row.id = 91
+        self.row = row
+
+    def get(self, _model, row_id):
+        return self.row if self.row and self.row.id == row_id else None
+
+    def flush(self):
+        return None
+
+    def commit(self):
+        return None
+
     def exec(self, _statement):
         return _Rows()
 
@@ -41,7 +57,7 @@ def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
         user=SimpleNamespace(id=23),
     )
 
-    assert result == {"status": "queued", "progress": 0, "is_active": True}
+    assert result == {"status": "queued", "progress": 0, "task_id": 91, "is_active": True}
     assert started["started"] is True
     assert started["target"] is factory._run_analysis_as_user
     assert started["name"] == "factory-analysis-7"

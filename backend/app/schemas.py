@@ -316,6 +316,24 @@ class FactoryJobView(BaseModel):
     completed_at: Optional[datetime]
 
 
+class FactoryTaskHistoryView(BaseModel):
+    key: str
+    task_id: int
+    task_type: Literal["analysis", "processing"]
+    drama_id: int
+    drama_title: str
+    status: str
+    progress: int
+    current_step: str
+    error_message: str
+    storage_mode: str
+    source_count: int
+    output_count: int
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime]
+
+
 class GeneratedAssetView(BaseModel):
     id: int
     factory_job_id: int

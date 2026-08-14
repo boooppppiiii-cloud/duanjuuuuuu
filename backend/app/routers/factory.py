@@ -19,8 +19,8 @@ from sqlmodel import Session, select
 
 from ..config import get_settings
 from ..database import get_session
-from ..models import AppUser, Clip, CloudAsset, Drama, EmotionWord, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
-from ..schemas import CloudAssetView, FactoryAnalysisFrameRequest, FactoryAnalysisReviewRequest, FactoryAnalysisStartRequest, FactoryAnalysisWindowRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, GeneratedAssetView, HookAssetView
+from ..models import AppUser, Clip, CloudAsset, Drama, EmotionWord, FactoryAnalysisTask, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
+from ..schemas import CloudAssetView, FactoryAnalysisFrameRequest, FactoryAnalysisReviewRequest, FactoryAnalysisStartRequest, FactoryAnalysisWindowRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, FactoryTaskHistoryView, GeneratedAssetView, HookAssetView
 from ..services.factory_multimodal import FactoryAIUnavailableError, FrameSample, analyze_window, provider_name
 from ..services.script_analysis import ANALYSIS_VERSION, add_manual_sensitive, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review, write_analysis
 from ..services.drama_library import episode_files
@@ -111,6 +111,61 @@ def get_drama(drama_id: int, session: Session) -> Drama:
     return drama
 
 
+def _local_workspace_mode() -> bool:
+    return os.getenv("JUSHU_LOCAL_WORKSPACE", "").strip() == "1"
+
+
+def _analysis_task_for_payload(
+    session: Session, drama: Drama, user: AppUser, payload: dict, *, create: bool = True,
+) -> FactoryAnalysisTask | None:
+    task = None
+    try:
+        task_id = int(payload.get("task_id") or 0)
+    except (TypeError, ValueError):
+        task_id = 0
+    if task_id:
+        candidate = session.get(FactoryAnalysisTask, task_id)
+        if candidate and candidate.drama_id == drama.id and candidate.owner_user_id == user.id:
+            task = candidate
+    if task is None and create:
+        # Shared cloud results must not silently become a private task for every viewer.
+        may_backfill = _local_workspace_mode() or int(payload.get("synced_by_user_id") or 0) == user.id
+        if not task_id and not may_backfill:
+            return None
+        task = FactoryAnalysisTask(drama_id=int(drama.id), owner_user_id=int(user.id))
+        session.add(task)
+        session.flush()
+        payload["task_id"] = task.id
+    if task is None:
+        return None
+    status = str(payload.get("status") or task.status)
+    task.status = status
+    task.progress = max(0, min(100, int(payload.get("progress") or 0)))
+    task.current_step = str(payload.get("current_step") or "")[:500]
+    task.error_message = str(payload.get("error_message") or "")[-2000:]
+    task.storage_mode = "local_workspace" if _local_workspace_mode() else "server"
+    task.source_files = [str(item)[:500] for item in (payload.get("source_files") or [])[:5000]]
+    task.episode_count = int(payload.get("episode_count") or drama.episode_count or 0)
+    task.completed_episode_count = len(payload.get("episodes") or [])
+    task.provider = str(payload.get("provider") or "")[:120]
+    task.model = str(payload.get("model") or "")[:200]
+    task.updated_at = datetime.utcnow()
+    if status in {"completed", "failed"}:
+        task.completed_at = task.completed_at or datetime.utcnow()
+    else:
+        task.completed_at = None
+    session.add(task)
+    return task
+
+
+def _delete_analysis_files(folder: Path) -> None:
+    for name in ("factory_analysis.json", "manual_sensitive.json"):
+        (folder / name).unlink(missing_ok=True)
+    frame_dir = folder / "analysis_frames"
+    if frame_dir.is_dir():
+        shutil.rmtree(frame_dir)
+
+
 @router.post("/analysis-access")
 def create_analysis_access(user: AppUser = Depends(get_current_user)):
     settings = get_settings()
@@ -161,7 +216,11 @@ def analyze_local_window(payload: FactoryAnalysisWindowRequest, authorization: s
 
 
 @router.get("/{drama_id}/analysis")
-def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
+def get_script_analysis(
+    drama_id: int,
+    session: Session = Depends(get_session),
+    user: AppUser = Depends(get_current_user),
+):
     drama = get_drama(drama_id, session)
     result = read_analysis(Path(drama.file_dir))
     settings = get_settings()
@@ -189,6 +248,11 @@ def get_script_analysis(drama_id: int, session: Session = Depends(get_session)):
         "sampled_frame_count": 0,
         "api_call_count": 0,
     }
+    if result:
+        task = _analysis_task_for_payload(session, drama, user, base)
+        if task:
+            write_analysis(Path(drama.file_dir), base)
+            session.commit()
     requires_reanalysis = bool(
         base.get("status") == "completed"
         and (base.get("provider") not in {"gemini", "qwen"} or int(base.get("analysis_version", 0)) != ANALYSIS_VERSION)
@@ -216,6 +280,8 @@ def import_local_analysis(
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 25 * 1024 * 1024:
         raise HTTPException(413, "识别结果超过 25MB，请减少冗余脚本后重试")
     cleaned = dict(payload)
+    cleaned.pop("task_id", None)
+    cleaned.pop("owner_user_id", None)
     cleaned["drama_id"] = drama_id
     cleaned["title"] = drama.title
     cleaned["storage_mode"] = "local_workspace"
@@ -267,6 +333,18 @@ def run_script_analysis(
         queued_resume_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
         if resume else queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
     )
+    task = _analysis_task_for_payload(session, drama, user, result)
+    if not task:
+        task = FactoryAnalysisTask(
+            drama_id=int(drama.id), owner_user_id=int(user.id),
+            storage_mode="local_workspace" if _local_workspace_mode() else "server",
+        )
+        session.add(task)
+        session.flush()
+        result["task_id"] = task.id
+        _analysis_task_for_payload(session, drama, user, result)
+    write_analysis(Path(drama.file_dir), result)
+    session.commit()
     # The local assistant must keep the analysis alive after the HTTP response has
     # completed. FastAPI response background tasks could be lost when the browser
     # retried or the helper request was cancelled, leaving a permanent "queued"
@@ -280,6 +358,108 @@ def run_script_analysis(
     ).start()
     record_usage("内容识别", user_id=user.id, event_kind="feature", cache_hit=False, details={"drama_id": drama_id, "resume": resume})
     return {**result, "is_active": True}
+
+
+@router.get("/task-history", response_model=list[FactoryTaskHistoryView])
+def task_history(
+    session: Session = Depends(get_session),
+    user: AppUser = Depends(get_current_user),
+):
+    dramas = {int(row.id): row for row in session.exec(select(Drama)).all()}
+    # Refresh the current analysis record before presenting history.
+    for drama in dramas.values():
+        payload = read_analysis(Path(drama.file_dir))
+        if payload:
+            _analysis_task_for_payload(session, drama, user, payload)
+            if payload.get("task_id"):
+                write_analysis(Path(drama.file_dir), payload)
+    session.commit()
+    rows: list[FactoryTaskHistoryView] = []
+    analysis_tasks = session.exec(
+        select(FactoryAnalysisTask)
+        .where(FactoryAnalysisTask.owner_user_id == user.id)
+        .order_by(FactoryAnalysisTask.created_at.desc())
+    ).all()
+    for task in analysis_tasks:
+        drama = dramas.get(task.drama_id)
+        if not drama:
+            continue
+        rows.append(FactoryTaskHistoryView(
+            key=f"analysis:{task.id}", task_id=int(task.id), task_type="analysis",
+            drama_id=task.drama_id, drama_title=drama.title, status=task.status,
+            progress=task.progress, current_step=task.current_step,
+            error_message=task.error_message, storage_mode=task.storage_mode,
+            source_count=len(task.source_files), output_count=task.completed_episode_count,
+            created_at=task.created_at, updated_at=task.updated_at,
+            completed_at=task.completed_at,
+        ))
+    processing_tasks = session.exec(
+        select(FactoryJob)
+        .where(FactoryJob.owner_user_id == user.id)
+        .order_by(FactoryJob.created_at.desc())
+    ).all()
+    for task in processing_tasks:
+        drama = dramas.get(task.drama_id)
+        if not drama:
+            continue
+        updated_at = task.completed_at or task.started_at or task.created_at
+        rows.append(FactoryTaskHistoryView(
+            key=f"processing:{task.id}", task_id=int(task.id), task_type="processing",
+            drama_id=task.drama_id, drama_title=drama.title, status=task.status,
+            progress=task.progress, current_step=task.current_step,
+            error_message=task.error_message,
+            storage_mode="local_workspace" if _local_workspace_mode() else "server",
+            source_count=len(task.source_files),
+            output_count=task.clean_count + task.publish_count + task.meta_count,
+            created_at=task.created_at, updated_at=updated_at,
+            completed_at=task.completed_at,
+        ))
+    return sorted(rows, key=lambda row: row.updated_at, reverse=True)
+
+
+@router.delete("/{drama_id}/analysis")
+def delete_current_analysis(
+    drama_id: int,
+    session: Session = Depends(get_session),
+    user: AppUser = Depends(get_current_user),
+):
+    drama = get_drama(drama_id, session)
+    if factory_analysis_pipeline.is_active(drama_id):
+        raise HTTPException(409, "识别仍在运行，请等待当前步骤停止后再删除")
+    payload = read_analysis(Path(drama.file_dir)) or {}
+    task = _analysis_task_for_payload(session, drama, user, payload, create=False)
+    if task:
+        session.delete(task)
+    stale_hooks = session.exec(select(HookAsset).where(
+        HookAsset.drama_id == drama_id,
+        HookAsset.source == "analysis",
+        HookAsset.use_count == 0,
+    )).all()
+    for hook in stale_hooks:
+        session.delete(hook)
+    _delete_analysis_files(Path(drama.file_dir))
+    session.commit()
+    return {"deleted": True, "task_id": task.id if task else None, "removed_hooks": len(stale_hooks)}
+
+
+@router.delete("/analysis-tasks/{task_id}")
+def delete_analysis_task(
+    task_id: int,
+    session: Session = Depends(get_session),
+    user: AppUser = Depends(get_current_user),
+):
+    task = session.get(FactoryAnalysisTask, task_id)
+    if not task or task.owner_user_id != user.id:
+        raise HTTPException(404, "识别任务不存在")
+    if task.status in {"queued", "processing"} and factory_analysis_pipeline.is_active(task.drama_id):
+        raise HTTPException(409, "识别仍在运行，请等待当前步骤停止后再删除")
+    drama = get_drama(task.drama_id, session)
+    payload = read_analysis(Path(drama.file_dir)) or {}
+    if int(payload.get("task_id") or 0) == task_id:
+        _delete_analysis_files(Path(drama.file_dir))
+    session.delete(task)
+    session.commit()
+    return {"deleted": True, "task_id": task_id}
 
 
 @router.patch("/{drama_id}/analysis/review")
