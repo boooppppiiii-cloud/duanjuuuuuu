@@ -51,6 +51,30 @@ def test_ai_disclosure_cannot_be_created_or_updated_false(tmp_path: Path):
             update_job(job.id, PublishJobUpdateRequest(ai_disclosure=False), session)
 
 
+def test_non_youtube_publish_does_not_require_horizontal_cover(tmp_path: Path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'platform-cover.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        drama, _, post, account = seed(session, tmp_path)
+        drama.cover_horizontal_path = ""
+        session.add(drama); session.commit()
+        job = create_job(PublishJobCreateRequest(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={}), session)
+        assert job.account_id == account.id
+        assert job.publish_options == {}
+
+
+def test_youtube_publish_requires_horizontal_cover(tmp_path: Path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'youtube-cover.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        drama, _, post, account = seed(session, tmp_path)
+        drama.cover_horizontal_path = ""
+        account.platform = "youtube"
+        session.add(drama); session.add(account); session.commit()
+        with pytest.raises(HTTPException, match="YouTube"):
+            create_job(PublishJobCreateRequest(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={}), session)
+
+
 def test_disconnected_account_is_blocked_without_fake_success(monkeypatch, tmp_path: Path):
     import app.services.publisher as module
     engine = create_engine(f"sqlite:///{tmp_path / 'blocked.db'}")
@@ -83,9 +107,10 @@ def test_platform_response_is_required_for_success(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(module, "finalize_video", lambda *args: Path(args[1]))
     monkeypatch.setitem(module.CHANNEL_REGISTRY, "facebook", VerifiedChannel)
     with Session(engine) as session:
-        _, _, post, account = seed(session, tmp_path)
-        account.platform = "facebook"; session.add(account)
-        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={"cover_kind": "horizontal"})
+        drama, _, post, account = seed(session, tmp_path)
+        drama.cover_horizontal_path = ""
+        account.platform = "facebook"; session.add(drama); session.add(account)
+        job = PublishJob(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={})
         session.add(job); session.commit(); session.refresh(job)
         result = execute_publish_job(session, job)
         assert result.status == "published"
