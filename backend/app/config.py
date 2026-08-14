@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     radar_youtube_daily_quota_budget: int = 5000
     radar_youtube_queries_per_drama: int = 3
     radar_daily_scan_hour: int = 4
+    radar_content_analysis_model: str = "gemini-2.5-flash"
+    radar_content_analysis_daily_video_limit: int = 3
+    radar_content_analysis_daily_minutes_limit: int = 360
+    radar_content_analysis_auto_rank_limit: int = 5
+    radar_content_analysis_timeout_seconds: int = 180
     radar_approved_redirect_domains: str = "dramabox.com,flickreels.com,shortmax.com,goodshort.com,moboreels.com,starshort.com,youtube.com,youtu.be"
     youtube_channel_ids: str = ""
     public_api_origin: str = "http://127.0.0.1:8000"

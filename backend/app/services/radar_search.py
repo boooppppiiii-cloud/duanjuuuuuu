@@ -30,12 +30,129 @@ from ..models import (
 )
 from .radar_accounts import authorization_for, normalize_account_name, normalize_profile_url
 from .radar_pool import ensure_promotion_drama
+from .radar_content_analysis import (
+    CONTENT_STRUCTURE_METHOD,
+    ContentStructureDecision,
+    analyze_youtube_content,
+    classification_for_structure,
+    normalize_content_structure,
+)
 from .radar_scoring import GROWTH_ABSOLUTE_MIN, GROWTH_RATE_MIN, RANK_CHANGE_THRESHOLD, classify_candidate, episode_like
 
 
 SCAN_LOCK = threading.Lock()
 DEFAULT_QUERY_SUFFIXES = ["", "full movie", "full episodes", "complete series", "episode 1", "ending", "where to watch"]
 DAILY_SCAN_INTERVAL = timedelta(days=1)
+
+
+def _content_structure_evidence(session: Session, external_video_id: int) -> VideoMatchEvidence | None:
+    return session.exec(select(VideoMatchEvidence).where(
+        VideoMatchEvidence.external_video_id == external_video_id,
+        VideoMatchEvidence.match_method == CONTENT_STRUCTURE_METHOD,
+    ).order_by(VideoMatchEvidence.created_at.desc())).first()
+
+
+def _content_structure_budget(session: Session) -> tuple[int, int]:
+    """Return today's analyzed video count and total source minutes.
+
+    One external video is counted once even if it appeared under multiple drama
+    queries. Failed attempts count for the day as well, preventing retry storms.
+    """
+    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = session.exec(select(VideoMatchEvidence).where(
+        VideoMatchEvidence.match_method == CONTENT_STRUCTURE_METHOD,
+        VideoMatchEvidence.created_at >= day_start,
+    )).all()
+    video_ids = {row.external_video_id for row in rows}
+    seconds = 0
+    for video_id in video_ids:
+        video = session.get(ExternalVideo, video_id)
+        seconds += video.duration_seconds if video else 0
+    return len(video_ids), (seconds + 59) // 60
+
+
+def _verification_payload(evidence: VideoMatchEvidence) -> dict[str, Any]:
+    return {**(evidence.evidence_json or {}), "analysis_status": evidence.analysis_status}
+
+
+def _verify_content_structure(
+    session: Session,
+    settings: Any,
+    external: ExternalVideo,
+    drama_id: int,
+    scan_cache: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    """Verify continuity/repetition from the actual public video, with cache and a hard daily budget."""
+    if external.id in scan_cache:
+        return scan_cache[external.id]
+    existing = _content_structure_evidence(session, external.id)
+    if existing and existing.analysis_status == "completed":
+        payload = _verification_payload(existing)
+        scan_cache[external.id] = payload
+        return payload
+    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    if existing and existing.created_at >= day_start and existing.analysis_status in {"failed", "deferred", "unavailable"}:
+        payload = _verification_payload(existing)
+        scan_cache[external.id] = payload
+        return payload
+
+    video_limit = max(0, int(getattr(settings, "radar_content_analysis_daily_video_limit", 3)))
+    minute_limit = max(0, int(getattr(settings, "radar_content_analysis_daily_minutes_limit", 360)))
+    used_videos, used_minutes = _content_structure_budget(session)
+    source_minutes = max(1, (external.duration_seconds + 59) // 60)
+    if used_videos >= video_limit or used_minutes + source_minutes > minute_limit:
+        payload = {
+            "structure": "uncertain", "confidence": 0.0, "continuous_story_ratio": 0.0,
+            "repetition_ratio": 0.0, "reason": "已达到今日内容核验额度，已排队等待下一扫描日。",
+            "sequence_evidence": [], "repetition_evidence": [], "analysis_status": "deferred",
+        }
+        session.add(VideoMatchEvidence(
+            external_video_id=external.id, drama_id=drama_id, match_method=CONTENT_STRUCTURE_METHOD,
+            matched_seconds=external.duration_seconds, evidence_json=payload, analysis_status="deferred",
+        ))
+        session.flush()
+        scan_cache[external.id] = payload
+        return payload
+    if not getattr(settings, "gemini_api_key", ""):
+        payload = {
+            "structure": "uncertain", "confidence": 0.0, "continuous_story_ratio": 0.0,
+            "repetition_ratio": 0.0, "reason": "内容结构核验模型尚未配置。",
+            "sequence_evidence": [], "repetition_evidence": [], "analysis_status": "unavailable",
+        }
+        session.add(VideoMatchEvidence(
+            external_video_id=external.id, drama_id=drama_id, match_method=CONTENT_STRUCTURE_METHOD,
+            matched_seconds=external.duration_seconds, evidence_json=payload, analysis_status="unavailable",
+        ))
+        session.flush()
+        scan_cache[external.id] = payload
+        return payload
+    try:
+        decision = analyze_youtube_content(settings, external.video_url, external.title, external.duration_seconds)
+        payload = {**decision.evidence, "analysis_status": "completed"}
+        session.add(VideoMatchEvidence(
+            external_video_id=external.id, drama_id=drama_id, match_method=CONTENT_STRUCTURE_METHOD,
+            confidence=decision.confidence, matched_seconds=external.duration_seconds,
+            coverage_ratio=decision.continuous_story_ratio,
+            is_full_series_candidate=decision.structure == "true_full_series",
+            evidence_json=payload, analysis_status="completed",
+        ))
+    except Exception as exc:
+        payload = {
+            "structure": "uncertain", "confidence": 0.0, "continuous_story_ratio": 0.0,
+            "repetition_ratio": 0.0, "reason": f"本次内容核验未完成：{str(exc)[:300]}",
+            "sequence_evidence": [], "repetition_evidence": [], "analysis_status": "failed",
+        }
+        session.add(VideoMatchEvidence(
+            external_video_id=external.id, drama_id=drama_id, match_method=CONTENT_STRUCTURE_METHOD,
+            matched_seconds=external.duration_seconds, evidence_json=payload, analysis_status="failed",
+        ))
+    session.flush()
+    scan_cache[external.id] = payload
+    return payload
+
+
+def _decision_from_payload(payload: dict[str, Any]) -> ContentStructureDecision:
+    return normalize_content_structure(payload)
 
 
 def _quota_day(now: datetime | None = None) -> str:
@@ -295,6 +412,8 @@ def _event(session: Session, drama: Drama, video: ExternalVideo, result: SearchR
     title = f"新视频进入《{drama.title}》标准监测前五"
     if video.classification == "suspected_full_reupload" and result.rank <= 3:
         event_type = "suspected_full_top_three"; severity = "high"; title = f"《{drama.title}》疑似全集进入标准监测前三"
+    elif video.classification == "suspected_compilation_reupload" and result.rank <= 3:
+        event_type = "suspected_compilation_top_three"; severity = "high"; title = f"《{drama.title}》发现疑似重复或片段拼接视频"
     elif video.classification == "suspected_external_redirect":
         event_type = "suspected_external_redirect"; severity = "high"; title = f"《{drama.title}》出现疑似外链截流"
     elif video.classification == "suspected_impersonation":
@@ -312,6 +431,10 @@ def _event(session: Session, drama: Drama, video: ExternalVideo, result: SearchR
         RadarEvent.event_type == event_type, RadarEvent.status.in_(["new", "watching"]),
     )).first()
     evidence = {"rank": result.rank, "previous_rank": result.previous_rank, "view_growth": view_growth, "thumbnail_url": result.thumbnail_url, "video_url": result.video_url, "platform": "youtube", "classification": video.classification}
+    content_evidence = _content_structure_evidence(session, video.id)
+    if content_evidence:
+        evidence["content_structure"] = content_evidence.evidence_json.get("structure", "uncertain")
+        evidence["content_structure_confidence"] = content_evidence.confidence
     if existing:
         existing.last_detected_at = datetime.utcnow(); existing.evidence_json = evidence; session.add(existing); return
     session.add(RadarEvent(drama_id=drama.id, external_video_id=video.id, event_type=event_type, severity=severity, title=title, summary=f"{result.channel_name} 发布的视频当前位于第 {result.rank} 位。", evidence_json=evidence))
@@ -359,6 +482,7 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
             if channel_id and episode_like(item.get("snippet", {}).get("title", "")):
                 episode_counts[channel_id] = episode_counts.get(channel_id, 0) + 1
         snapshots: list[int] = []
+        content_structure_cache: dict[int, dict[str, Any]] = {}
         for query in queries:
             previous = session.exec(select(SearchSnapshot).where(
                 SearchSnapshot.query_id == query.id, SearchSnapshot.collection_status == "success",
@@ -393,13 +517,34 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
                 external.published_at=published_at; external.duration_seconds=duration_seconds; external.last_seen_at=now
                 external.current_views=int(stats.get("viewCount", 0)); external.current_likes=int(stats.get("likeCount", 0)); external.current_comments=int(stats.get("commentCount", 0))
                 external.matched_account_id=account.id if account else None
+                session.add(external); session.flush()
                 decision = classify_candidate(
                     title=external.title, description=external.description, channel_name=external.channel_name,
                     duration_seconds=duration_seconds, authorized=authorization["authorized"], relationship_type=authorization["relationship_type"],
                     approved_domains=settings.radar_approved_redirect_domain_list, same_channel_episode_count=episode_counts.get(channel_id, 0),
                 )
+                final_classification = decision.classification
+                final_score = decision.score
+                final_reasons = decision.reasons
+                auto_rank_limit = max(0, int(getattr(settings, "radar_content_analysis_auto_rank_limit", 5)))
+                if (
+                    external.review_status != "reviewed"
+                    and decision.classification == "suspected_full_reupload"
+                    and rank <= auto_rank_limit
+                ):
+                    structure_payload = _verify_content_structure(
+                        session, settings, external, drama_id, content_structure_cache,
+                    )
+                    if structure_payload.get("analysis_status") == "completed":
+                        final_classification, final_score, final_reasons = classification_for_structure(
+                            _decision_from_payload(structure_payload),
+                        )
+                    else:
+                        final_classification = "full_verification_pending"
+                        final_score = 30
+                        final_reasons = [str(structure_payload.get("reason") or "等待内容结构核验")]
                 if external.review_status != "reviewed":
-                    external.classification = decision.classification
+                    external.classification = final_classification
                 session.add(external); session.flush()
                 result = SearchResult(
                     snapshot_id=snapshot.id, drama_id=drama_id, platform_video_id=video_id, rank=rank, previous_rank=previous_ranks.get(video_id),
@@ -414,7 +559,7 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
                 view_growth = max(0, external.current_views - previous_metric.views) if previous_metric else None
                 _event(session, drama, external, result, view_growth, previous_metric.views if previous_metric else None)
                 if decision.score and not session.exec(select(VideoMatchEvidence).where(VideoMatchEvidence.external_video_id == external.id, VideoMatchEvidence.drama_id == drama_id, VideoMatchEvidence.match_method == "metadata_rules")).first():
-                    session.add(VideoMatchEvidence(external_video_id=external.id, drama_id=drama_id, match_method="metadata_rules", confidence=decision.score / 100, matched_seconds=duration_seconds, is_full_series_candidate=decision.classification == "suspected_full_reupload", evidence_json={"risk_score": decision.score, "reasons": decision.reasons}, analysis_status="completed"))
+                    session.add(VideoMatchEvidence(external_video_id=external.id, drama_id=drama_id, match_method="metadata_rules", confidence=decision.score / 100, matched_seconds=duration_seconds, is_full_series_candidate=decision.classification == "suspected_full_reupload", evidence_json={"risk_score": decision.score, "reasons": decision.reasons, "final_risk_score": final_score, "final_reasons": final_reasons}, analysis_status="completed"))
         profile.last_scanned_at = now; profile.next_scan_at = now + DAILY_SCAN_INTERVAL; profile.scan_interval_hours = 24; profile.last_error = ""; profile.consecutive_failures = 0
         pool.last_scanned_at = now; pool.next_scan_at = now + DAILY_SCAN_INTERVAL; pool.updated_at = now
         session.add(profile); session.add(pool); session.commit()

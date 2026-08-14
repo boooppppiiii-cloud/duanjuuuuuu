@@ -14,8 +14,10 @@ from app.models import (
     SearchQuery,
     SearchResult,
     SearchSnapshot,
+    VideoMatchEvidence,
 )
 from app.services import radar_search
+from app.services.radar_content_analysis import CONTENT_STRUCTURE_METHOD, ContentStructureDecision
 
 
 class FakeCall:
@@ -78,6 +80,41 @@ class TheaterFakeChannels:
 class TheaterFakeYouTube(FakeYouTube):
     def videos(self): return TheaterFakeVideos()
     def channels(self): return TheaterFakeChannels()
+
+
+class FullCandidateSearch:
+    def list(self, **kwargs):
+        return FakeCall({"items": [{"id": {"videoId": "full-video"}}]})
+
+
+class FullCandidateVideos:
+    def list(self, **kwargs):
+        return FakeCall({"items": [{
+            "id": "full-video",
+            "snippet": {
+                "title": "Radar Drama Full Movie Complete Series", "description": "",
+                "channelId": "UC-UNKNOWN", "channelTitle": "Unknown Uploads",
+                "publishedAt": "2026-08-01T10:00:00Z", "tags": ["drama"],
+                "thumbnails": {"high": {"url": "https://img/full-video.jpg"}},
+            },
+            "contentDetails": {"duration": "PT1H"},
+            "statistics": {"viewCount": "3000", "likeCount": "20", "commentCount": "3"},
+            "status": {"privacyStatus": "public"},
+        }]})
+
+
+class FullCandidateChannels:
+    def list(self, **kwargs):
+        return FakeCall({"items": [{
+            "id": "UC-UNKNOWN", "snippet": {"title": "Unknown Uploads", "thumbnails": {}},
+            "statistics": {"subscriberCount": "100"},
+        }]})
+
+
+class FullCandidateYouTube(FakeYouTube):
+    def search(self): return FullCandidateSearch()
+    def videos(self): return FullCandidateVideos()
+    def channels(self): return FullCandidateChannels()
 
 
 def test_official_youtube_scan_saves_real_snapshots_and_matches_account(monkeypatch, tmp_path):
@@ -148,3 +185,42 @@ def test_theater_brand_match_recognizes_official_traffic_account(monkeypatch, tm
         rows = session.exec(select(SearchResult)).all()
         assert rows and all(row.relationship_type == "own_official" for row in rows)
         assert all(row.authorization_status == "authorized" for row in rows)
+
+
+def test_scan_relabels_fake_full_video_as_repeated_compilation(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'content-verified-scan.db'}")
+    SQLModel.metadata.create_all(engine)
+    settings = SimpleNamespace(
+        youtube_api_key="real-key", gemini_api_key="gemini-key",
+        radar_youtube_queries_per_drama=1, radar_youtube_daily_search_limit=60,
+        radar_youtube_daily_quota_budget=5000, radar_approved_redirect_domain_list=["youtube.com"],
+        radar_content_analysis_auto_rank_limit=5, radar_content_analysis_daily_video_limit=3,
+        radar_content_analysis_daily_minutes_limit=360,
+    )
+    monkeypatch.setattr(radar_search, "get_settings", lambda: settings)
+    monkeypatch.setattr(radar_search, "build", lambda *args, **kwargs: FullCandidateYouTube())
+    monkeypatch.setattr(radar_search, "analyze_youtube_content", lambda *args: ContentStructureDecision(
+        "repeated_compilation", .91, .28, .52, "前后出现相同剧情块",
+        {"structure": "repeated_compilation", "confidence": .91, "continuous_story_ratio": .28,
+         "repetition_ratio": .52, "reason": "前后出现相同剧情块", "sequence_evidence": [],
+         "repetition_evidence": ["03:00 与 37:00 重复"]},
+    ))
+    with Session(engine) as session:
+        user = AppUser(email="dev@example.com", password_hash="x", is_developer=True)
+        drama = Drama(title="Radar Drama", file_dir="radar")
+        session.add(user); session.add(drama); session.commit(); session.refresh(user); session.refresh(drama)
+        session.add(DramaSearchProfile(drama_id=drama.id, enabled=True, official_title=drama.title))
+        session.add(PromotionDramaPool(drama_id=drama.id, sources=["manual_confirmed"]))
+        session.add(SearchQuery(drama_id=drama.id, query_text=drama.title, enabled=True))
+        session.commit()
+
+        radar_search.scan_drama(session, drama.id, user)
+
+        video = session.exec(select(ExternalVideo)).one()
+        assert video.classification == "suspected_compilation_reupload"
+        content = session.exec(select(VideoMatchEvidence).where(
+            VideoMatchEvidence.match_method == CONTENT_STRUCTURE_METHOD,
+        )).one()
+        assert content.evidence_json["structure"] == "repeated_compilation"
+        event = session.exec(select(RadarEvent)).one()
+        assert event.event_type == "suspected_compilation_top_three"

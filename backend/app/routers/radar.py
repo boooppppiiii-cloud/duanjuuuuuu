@@ -30,6 +30,7 @@ from ..services.auth import get_current_user
 from ..services.radar_accounts import authorization_for, normalize_account_name, normalize_profile_url
 from ..services.radar_evidence import build_evidence_package
 from ..services.radar_pool import deactivate_promotion_drama, ensure_promotion_drama
+from ..services.radar_content_analysis import CONTENT_STRUCTURE_METHOD
 from ..services.radar_search import _recognize_theater_official, query_suggestions, quota_status, scan_drama, sync_queries
 
 
@@ -332,7 +333,28 @@ def search_live(drama_id: int, query_id: int | None = None, snapshot_id: int | N
             theater_matches_updated = True
         latest_metric = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video.id).order_by(ExternalVideoMetric.captured_at.desc())).first() if video else None
         previous_metric = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video.id, ExternalVideoMetric.id != latest_metric.id).order_by(ExternalVideoMetric.captured_at.desc())).first() if video and latest_metric else None
-        items.append({**result.model_dump(), "external_video_id": video.id if video else None, "classification": video.classification if video else "unknown", "review_status": video.review_status if video else "pending", "view_growth": max(0, latest_metric.views - previous_metric.views) if latest_metric and previous_metric else None})
+        content_evidence = session.exec(select(VideoMatchEvidence).where(
+            VideoMatchEvidence.external_video_id == video.id,
+            VideoMatchEvidence.match_method == CONTENT_STRUCTURE_METHOD,
+        ).order_by(VideoMatchEvidence.created_at.desc())).first() if video else None
+        content_payload = content_evidence.evidence_json if content_evidence else {}
+        items.append({
+            **result.model_dump(),
+            "external_video_id": video.id if video else None,
+            "classification": video.classification if video else "unknown",
+            "review_status": video.review_status if video else "pending",
+            "view_growth": max(0, latest_metric.views - previous_metric.views) if latest_metric and previous_metric else None,
+            "content_structure": content_payload.get("structure", "not_analyzed"),
+            "content_analysis_status": content_evidence.analysis_status if content_evidence else "not_analyzed",
+            "content_structure_confidence": content_evidence.confidence if content_evidence else 0,
+            "continuous_story_ratio": content_payload.get("continuous_story_ratio", 0),
+            "repetition_ratio": content_payload.get("repetition_ratio", 0),
+            "content_structure_reason": content_payload.get("reason", ""),
+            "content_structure_evidence": {
+                "sequence": content_payload.get("sequence_evidence", []),
+                "repetition": content_payload.get("repetition_evidence", []),
+            },
+        })
     if theater_matches_updated:
         session.commit()
     counts = {"own": 0, "authorized": 0, "unknown": 0, "risk": 0}
@@ -350,7 +372,19 @@ def video_detail(video_id: int, _: AppUser = Depends(get_current_user), session:
     if not video: raise HTTPException(404, "外部视频不存在")
     metrics = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video_id).order_by(ExternalVideoMetric.captured_at)).all()
     appearances = session.exec(select(SearchResult).where(SearchResult.platform_video_id == video.platform_video_id).order_by(SearchResult.created_at.desc())).all()
-    return {**video.model_dump(), "metrics": metrics, "appearances": appearances}
+    content_evidence = session.exec(select(VideoMatchEvidence).where(
+        VideoMatchEvidence.external_video_id == video_id,
+        VideoMatchEvidence.match_method == CONTENT_STRUCTURE_METHOD,
+    ).order_by(VideoMatchEvidence.created_at.desc())).first()
+    return {
+        **video.model_dump(), "metrics": metrics, "appearances": appearances,
+        "content_analysis": ({
+            **content_evidence.evidence_json,
+            "analysis_status": content_evidence.analysis_status,
+            "confidence": content_evidence.confidence,
+            "created_at": content_evidence.created_at,
+        } if content_evidence else None),
+    }
 
 
 @router.put("/videos/{video_id}/classification")
@@ -393,8 +427,9 @@ def events(status: str = "", limit: int = Query(10, ge=1, le=100), _: AppUser = 
     if status: statement = statement.where(RadarEvent.status == status)
     rows = session.exec(statement.order_by(RadarEvent.last_detected_at.desc()).limit(200)).all()
     priority = {
-        "suspected_full_top_three": 0, "suspected_impersonation": 1, "owned_rank_drop": 2,
-        "new_top_five": 3, "shared_plot_growth": 4, "owned_top_three": 5, "authorized_top_three": 6,
+        "suspected_full_top_three": 0, "suspected_compilation_top_three": 1,
+        "suspected_impersonation": 2, "owned_rank_drop": 3,
+        "new_top_five": 4, "shared_plot_growth": 5, "owned_top_three": 6, "authorized_top_three": 7,
     }
     rows = sorted(rows, key=lambda row: (priority.get(row.event_type, 99), -row.last_detected_at.timestamp()))[:limit]
     output = []
