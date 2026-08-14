@@ -15,11 +15,16 @@ const assetLabels:Record<GeneratedAsset['kind'],{text:string;color:string}>={cle
 type FactoryOutputRow=GeneratedAsset&{meta_folder?:boolean;meta_episode_count?:number;meta_assets?:GeneratedAsset[]}
 const reviewLabel:Record<string,{text:string;color:string}>={pending:{text:'待复核',color:'gold'},approved:{text:'已采用',color:'green'},rejected:{text:'已排除',color:'default'}}
 const sensitiveReviewLabel:Record<string,{text:string;color:string}>={pending:{text:'默认移除',color:'gold'},approved:{text:'已标记移除',color:'red'},rejected:{text:'已保留',color:'green'}}
-const riskScoreLabel:Record<string,string>={body_focus:'人体聚焦',action:'动作',dialogue_context:'语境',expression_audio:'表情氛围',scene_context:'场景'}
+const riskScoreLabel:Record<string,string>={body_focus:'人体聚焦',action:'动作',dialogue_context:'语境',expression_audio:'表情氛围',scene_context:'场景',religious_context:'宗教语境'}
 const FACTORY_CANCEL_CAPABILITY='factory_cancel_v1'
 const FACTORY_MODEL_PROXY_CAPABILITY='factory_model_proxy_v1'
-const FACTORY_SENSITIVE_POLICY_CAPABILITY='factory_sensitive_policy_v2'
+const FACTORY_SENSITIVE_POLICY_CAPABILITY='factory_sensitive_policy_v3'
 const FACTORY_ANALYSIS_WORKER_CAPABILITY='factory_analysis_worker_v1'
+
+function ReligiousContextTags({row}:{row:ScriptSegment}){
+  if(!row.religions?.length&&!row.taboo_types?.length)return null
+  return <span className="factory-religion-tags">{row.religions?.map(value=><Tag color="purple" key={`faith-${value}`}>{value}</Tag>)}{row.taboo_types?.map(value=><Tag key={`taboo-${value}`}>{value}</Tag>)}</span>
+}
 
 export default function ContentFactory(){
   const[params]=useSearchParams();const navigate=useNavigate()
@@ -127,7 +132,7 @@ export default function ContentFactory(){
               <Slider range min={0} max={Math.max(.2,activeEpisode.duration)} step={.1} value={editRange} disabled={reviewSaving} tooltip={{formatter:value=>clock(value??0)}} onChange={value=>{const next=value as [number,number];const changed=Math.abs(next[0]-editRange[0])>=Math.abs(next[1]-editRange[1])?next[0]:next[1];setEditRange(next);seekVideo(changed)}} onChangeComplete={value=>saveSensitiveRange(value as number[])}/>
             </div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本集未识别到敏感片段"/>}
             {activeSensitive.length>0&&<div className="factory-sensitive-list">{activeSensitive.map((row,index)=><article key={`${row.start}-${row.end}-${index}`} className={index===sensitiveIndex?'is-active':''}>
-              <button type="button" className="factory-sensitive-summary" onClick={()=>chooseSensitive(index)}><span><b>{clock(row.start)}–{clock(row.end)}</b><Tag color={(row.overall_risk_score??0)>=60?'red':'gold'}>风险 {row.overall_risk_score??Math.round((row.confidence??0)*100)}</Tag><Tag color={sensitiveReviewLabel[row.review_status??'pending'].color}>{sensitiveReviewLabel[row.review_status??'pending'].text}</Tag></span><small>{Object.entries(row.sensitive).flatMap(([kind,words])=>words.map(word=>`${kind}：${word}`)).join('；')||row.text}</small>{row.risk_scores&&<span className="factory-risk-scores">{Object.entries(row.risk_scores).filter(([,score])=>(score??0)>0).map(([key,score])=><em key={key}>{riskScoreLabel[key]??key} {score}</em>)}</span>}</button>
+              <button type="button" className="factory-sensitive-summary" onClick={()=>chooseSensitive(index)}><span><b>{clock(row.start)}–{clock(row.end)}</b><Tag color={(row.overall_risk_score??0)>=60?'red':'gold'}>风险 {row.overall_risk_score??Math.round((row.confidence??0)*100)}</Tag><Tag color={sensitiveReviewLabel[row.review_status??'pending'].color}>{sensitiveReviewLabel[row.review_status??'pending'].text}</Tag></span><small>{Object.entries(row.sensitive).flatMap(([kind,words])=>words.map(word=>`${kind}：${word}`)).join('；')||row.text}</small><ReligiousContextTags row={row}/>{row.risk_scores&&<span className="factory-risk-scores">{Object.entries(row.risk_scores).filter(([,score])=>(score??0)>0).map(([key,score])=><em key={key}>{riskScoreLabel[key]??key} {score}</em>)}</span>}</button>
               <div className="factory-sensitive-actions"><Button size="small" danger disabled={row.review_status==='approved'} onClick={()=>reviewCandidate(activeEpisode.episode,'sensitive',row,'approved')}>标记移除</Button><Button size="small" disabled={row.review_status==='rejected'} onClick={()=>reviewCandidate(activeEpisode.episode,'sensitive',row,'rejected')}>保留</Button></div>
             </article>)}</div>}
             <Collapse className="factory-script-collapse" items={[{key:'script',label:`展开本集脚本详情（${activeEpisode.segments.length} 段）`,children:<Table size="small" rowKey={row=>`${activeEpisode.episode}-${row.start}`} dataSource={activeEpisode.segments} columns={segmentColumns} pagination={false} scroll={{x:760}}/>}]}/>
@@ -139,7 +144,7 @@ export default function ContentFactory(){
         {sensitive.length?<div className="factory-sensitive-list factory-sensitive-overview">{sensitive.map((row,index)=><article key={`${row.episode}-${row.start}-${row.end}-${index}`}>
           <button type="button" className="factory-sensitive-summary" onClick={()=>openSensitive(row.episode,row)}>
             <span><b>{row.episode} · {clock(row.start)}–{clock(row.end)}</b><Tag color={(row.overall_risk_score??0)>=60?'red':'gold'}>风险 {row.overall_risk_score??Math.round((row.confidence??0)*100)}</Tag><Tag color={sensitiveReviewLabel[row.review_status??'pending'].color}>{sensitiveReviewLabel[row.review_status??'pending'].text}</Tag></span>
-            <small>{Object.entries(row.sensitive).flatMap(([kind,words])=>words.map(word=>`${kind}：${word}`)).join('；')||row.text||'未提供风险说明'}</small>
+            <small>{Object.entries(row.sensitive).flatMap(([kind,words])=>words.map(word=>`${kind}：${word}`)).join('；')||row.text||'未提供风险说明'}</small><ReligiousContextTags row={row}/>
             {row.risk_scores&&<span className="factory-risk-scores">{Object.entries(row.risk_scores).filter(([,score])=>(score??0)>0).map(([key,score])=><em key={key}>{riskScoreLabel[key]??key} {score}</em>)}</span>}
           </button>
           <div className="factory-sensitive-actions"><Button size="small" danger disabled={row.review_status==='approved'} onClick={()=>reviewCandidate(row.episode,'sensitive',row,'approved')}>标记移除</Button><Button size="small" disabled={row.review_status==='rejected'} onClick={()=>reviewCandidate(row.episode,'sensitive',row,'rejected')}>保留</Button></div>

@@ -21,12 +21,13 @@ from .hook_recommender import loudness_peaks, media_duration
 
 
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
-ANALYSIS_VERSION = 5
+ANALYSIS_VERSION = 6
 MAX_HIGH_ENERGY_CANDIDATES = 10
 MIN_HIGH_ENERGY_SECONDS = 15.0
 MAX_HIGH_ENERGY_SECONDS = 30.0
-RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context")
+RISK_SCORE_KEYS = ("body_focus", "action", "dialogue_context", "expression_audio", "scene_context", "religious_context")
 SEXUAL_CATEGORIES = {"软色情", "低俗擦边", "暴露", "裸露", "性暗示", "色情", "性行为", "性暴力"}
+RELIGIOUS_CATEGORIES = {"宗教禁忌", "宗教亵渎", "宗教仇恨"}
 SEXUAL_SIGNAL_TERMS = {
     "比基尼", "泳装", "情趣内衣", "内衣", "低领", "暴露", "裸露", "裸体", "裸上身", "赤裸",
     "床戏", "性爱", "软色情", "低俗擦边", "性暗示", "性行为", "性暴力", "裙底", "胸部", "臀部",
@@ -38,6 +39,7 @@ SEXUAL_SCENE_MERGE_GAP = 15.0
 SENSITIVE_TERMS = {
     "暴力": ["杀", "打死", "砍", "枪", "血", "尸体", "绑架", "虐待", "暴力"],
     "色情": ["裸", "床戏", "性侵", "强奸", "色情", "胸部", "脱衣", "性行为"],
+    "宗教禁忌": ["亵渎宗教", "焚烧经书", "侮辱信徒", "强迫改教", "宗教仇恨"],
 }
 
 
@@ -75,7 +77,7 @@ def _normalize_analysis_reasons(payload: dict[str, Any]) -> bool:
             for row in episode.get(collection, []) or []:
                 if not isinstance(row, dict):
                     continue
-                for field in ("energy_reasons", "evidence"):
+                for field in ("energy_reasons", "evidence", "religions", "taboo_types"):
                     if field in row:
                         normalized = _reason_list(row.get(field))
                         if normalized != row.get(field):
@@ -269,6 +271,8 @@ def _merge_sensitive_candidates(
         review_states = {str(previous.get("review_status") or "pending"), str(row.get("review_status") or "pending")}
         previous["review_status"] = "approved" if "approved" in review_states else "pending" if "pending" in review_states else "rejected"
         previous["evidence"] = _merge_text_values(previous.get("evidence"), row.get("evidence"))
+        previous["religions"] = _merge_text_values(previous.get("religions"), row.get("religions"))
+        previous["taboo_types"] = _merge_text_values(previous.get("taboo_types"), row.get("taboo_types"))
         frames = list(dict.fromkeys([*(previous.get("frame_files") or []), *(row.get("frame_files") or [])]))
         previous["frame_files"] = frames if len(frames) <= 2 else [frames[0], frames[-1]]
         combined_manual = [*_manual_ranges(previous), *_manual_ranges(row)]
@@ -598,6 +602,8 @@ def _model_candidates(
         start, end = bounds
         category = str(raw.get("category") or "其他")
         reasons = _reason_list(raw.get("reasons"))
+        religions = _reason_list(raw.get("religions"))
+        taboo_types = _reason_list(raw.get("taboo_types"))
         try:
             confidence = min(1.0, max(0.0, float(raw.get("confidence", 0))))
         except (TypeError, ValueError):
@@ -617,6 +623,7 @@ def _model_candidates(
             overall_risk_score = round(max(risk_scores.values()))
         probe = {"sensitive": {category: reasons}, "evidence": reasons, "risk_scores": risk_scores}
         sexual_signal = _is_sexual_candidate(probe)
+        religious_signal = category in RELIGIOUS_CATEGORIES or risk_scores["religious_context"] > 0 or bool(religions or taboo_types)
         threshold = 10 if sexual_signal else 30
         if "overall_risk_score" in raw and overall_risk_score < threshold:
             continue
@@ -628,7 +635,9 @@ def _model_candidates(
             "confidence": round(confidence, 2),
             "overall_risk_score": overall_risk_score,
             "risk_scores": risk_scores,
-            "review_status": "approved" if sexual_signal or overall_risk_score >= 60 or confidence >= 0.75 else "pending",
+            "religions": religions,
+            "taboo_types": taboo_types,
+            "review_status": "pending" if religious_signal and overall_risk_score < 60 else "approved" if sexual_signal or overall_risk_score >= 60 or confidence >= 0.75 else "pending",
             "evidence": reasons, "frame_files": _candidate_frames(frames, start, end), "source": source,
         })
     return high_energy, sensitive

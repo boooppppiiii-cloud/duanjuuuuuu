@@ -41,6 +41,70 @@ def test_prompt_requires_contextual_soft_sexual_review():
     assert "男性裸露上半身" in prompt
     assert "低俗擦边" in prompt
     assert "完整 15-30 秒范围" in prompt
+    assert "religious_context" in prompt
+    assert "宗教禁忌必须跨信仰考虑" in prompt
+    assert "不得将某种服饰、食物、祈祷" in prompt
+
+
+def test_religious_taboo_candidate_keeps_faith_and_evidence_metadata():
+    _, sensitive = script_analysis._model_candidates({
+        "sensitive": [{
+            "start": 4,
+            "end": 12,
+            "category": "宗教禁忌",
+            "confidence": .82,
+            "overall_risk_score": 78,
+            "risk_scores": {"religious_context": 78, "dialogue_context": 65, "scene_context": 70},
+            "religions": ["伊斯兰教"],
+            "taboo_types": ["强迫违反饮食/仪式"],
+            "reasons": ["人物在明确拒绝后被强迫饮酒，台词以宗教信仰为羞辱目标"],
+            "frame_indices": [],
+        }],
+    }, [], [], 0, 20, "gemini")
+
+    assert len(sensitive) == 1
+    risk = sensitive[0]
+    assert risk["sensitive"]["宗教禁忌"]
+    assert risk["risk_scores"]["religious_context"] == 78
+    assert risk["religions"] == ["伊斯兰教"]
+    assert risk["taboo_types"] == ["强迫违反饮食/仪式"]
+    assert risk["review_status"] == "approved"
+
+
+def test_ambiguous_religious_context_is_kept_for_manual_review():
+    _, sensitive = script_analysis._model_candidates({
+        "sensitive": [{
+            "start": 4,
+            "end": 12,
+            "category": "宗教禁忌",
+            "confidence": .9,
+            "overall_risk_score": 45,
+            "risk_scores": {"religious_context": 45},
+            "religions": ["基督宗教"],
+            "taboo_types": ["场所/葬仪冒犯"],
+            "reasons": ["场所和动作存在冒犯嫌疑，但证据不足"],
+        }],
+    }, [], [], 0, 20, "gemini")
+
+    assert len(sensitive) == 1
+    assert sensitive[0]["review_status"] == "pending"
+
+
+def test_normal_religious_expression_below_threshold_is_not_reported():
+    _, sensitive = script_analysis._model_candidates({
+        "sensitive": [{
+            "start": 4,
+            "end": 12,
+            "category": "宗教禁忌",
+            "confidence": .9,
+            "overall_risk_score": 20,
+            "risk_scores": {"religious_context": 20},
+            "religions": ["佛教"],
+            "reasons": ["人物正常进入寺庙参拜，无侮辱或破坏行为"],
+        }],
+    }, [], [], 0, 20, "gemini")
+
+    assert sensitive == []
 
 
 def test_revealing_clothing_is_treated_as_high_recall_sexual_risk():
