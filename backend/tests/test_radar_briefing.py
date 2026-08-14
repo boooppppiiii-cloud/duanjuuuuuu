@@ -50,6 +50,10 @@ def test_briefing_uses_real_media_traffic_and_comments(monkeypatch, tmp_path):
     assert result["yesterday"]["views"] == 2400
     assert result["traffic_source"]["label"] == "YouTube 搜索"
     assert result["traffic_source"]["share"] == 70.0
+    assert [item["label"] for item in result["traffic_sources"]] == ["YouTube 搜索", "推荐视频"]
+    assert result["week"]["publish_count"] == 1
+    assert result["week"]["average_views"] == 2400
+    assert result["week"]["engagement_leader"]["video_id"] == "video-1"
     assert result["full_episode_requests"]["count"] == 1
     assert result["full_episode_requests"]["items"][0]["account_name"] == "Drama Hub"
 

@@ -537,8 +537,28 @@ def briefing(refresh: bool = False, _: AppUser = Depends(get_current_user), sess
             "url": item.get("url") or "", "thumbnail_url": item.get("thumbnail_url") or "",
             "published_at": published.isoformat(), "views": int(item.get("views") or 0),
             "likes": int(item.get("likes") or 0), "comments": int(item.get("comments") or 0),
+            "subscribers_gained": int(item.get("subscribers_gained") or 0),
             "views_per_hour": round(speed, 1), "metric_label": "近 7 日播放增速最快",
         }
+
+    week_items = []
+    for speed, published, item in recent:
+        views = int(item.get("views") or 0)
+        likes = int(item.get("likes") or 0)
+        comments_count = int(item.get("comments") or 0)
+        week_items.append({
+            "account_id": item["account_id"], "account_name": item["account_name"], "platform": item["platform"],
+            "video_id": str(item.get("id") or ""), "title": item.get("title") or "未命名视频",
+            "url": item.get("url") or "", "thumbnail_url": item.get("thumbnail_url") or "",
+            "published_at": published.isoformat(), "views": views, "likes": likes, "comments": comments_count,
+            "subscribers_gained": int(item.get("subscribers_gained") or 0),
+            "views_per_hour": round(speed, 1),
+            "engagement_rate": round((likes + comments_count) / views * 100, 2) if views else 0,
+        })
+    week_items.sort(key=lambda item: item["published_at"], reverse=True)
+    engagement_leader = max(week_items, key=lambda item: item["engagement_rate"], default=None)
+    subscriber_candidates = [item for item in week_items if item["subscribers_gained"] > 0]
+    subscriber_leader = max(subscriber_candidates, key=lambda item: item["subscribers_gained"], default=None)
 
     yesterday_items = []
     for item in media_rows:
@@ -551,6 +571,7 @@ def briefing(refresh: bool = False, _: AppUser = Depends(get_current_user), sess
             "url": item.get("url") or "", "thumbnail_url": item.get("thumbnail_url") or "",
             "published_at": published.isoformat(), "views": int(item.get("views") or 0),
             "likes": int(item.get("likes") or 0), "comments": int(item.get("comments") or 0),
+            "subscribers_gained": int(item.get("subscribers_gained") or 0),
         })
     yesterday_items.sort(key=lambda item: item["views"], reverse=True)
 
@@ -561,15 +582,16 @@ def briefing(refresh: bool = False, _: AppUser = Depends(get_current_user), sess
         bucket["views"] += int(item.get("views") or 0)
         bucket["watch_time_seconds"] += int(item.get("watch_time_seconds") or 0)
     traffic_total = sum(item["views"] for item in traffic_by_source.values())
-    traffic_source = None
+    traffic_sources = []
     if traffic_by_source and traffic_total:
-        top = max(traffic_by_source.values(), key=lambda item: item["views"])
-        traffic_source = {
-            **top,
-            "label": _traffic_label(top["source"]),
-            "share": round(top["views"] / traffic_total * 100, 1),
-            "range_start": traffic_start.isoformat(), "range_end": traffic_end.isoformat(),
-        }
+        for item in sorted(traffic_by_source.values(), key=lambda row: row["views"], reverse=True)[:3]:
+            traffic_sources.append({
+                **item,
+                "label": _traffic_label(item["source"]),
+                "share": round(item["views"] / traffic_total * 100, 1),
+                "range_start": traffic_start.isoformat(), "range_end": traffic_end.isoformat(),
+            })
+    traffic_source = traffic_sources[0] if traffic_sources else None
 
     comments = session.exec(
         select(SocialComment).order_by(SocialComment.published_at.desc(), SocialComment.id.desc()).limit(1000)
@@ -612,6 +634,20 @@ def briefing(refresh: bool = False, _: AppUser = Depends(get_current_user), sess
             "items": yesterday_items[:4],
         },
         "traffic_source": traffic_source,
+        "traffic_sources": traffic_sources,
+        "week": {
+            "publish_count": len(week_items),
+            "active_accounts": len({item["account_id"] for item in week_items}),
+            "views": sum(item["views"] for item in week_items),
+            "likes": sum(item["likes"] for item in week_items),
+            "comments": sum(item["comments"] for item in week_items),
+            "average_views": round(sum(item["views"] for item in week_items) / len(week_items)) if week_items else 0,
+            "engagement_rate": round(
+                (sum(item["likes"] + item["comments"] for item in week_items) / sum(item["views"] for item in week_items) * 100), 2
+            ) if sum(item["views"] for item in week_items) else 0,
+            "engagement_leader": engagement_leader,
+            "subscriber_leader": subscriber_leader,
+        },
         "full_episode_requests": {"count": len(full_episode_comments), "items": comment_payload},
         "alerts": alerts,
         "coverage": {

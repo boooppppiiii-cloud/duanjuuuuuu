@@ -30,7 +30,7 @@ const DeveloperAnalytics=lazy(loadDeveloperAnalytics)
 const Radar=lazy(loadRadar)
 const nav=[
  {key:'radar',icon:<RadarChartOutlined/>,label:'平台动态'},
- {key:'home',icon:<DashboardOutlined/>,label:'首页'},
+ {key:'home',icon:<DashboardOutlined/>,label:'账号总览'},
  {key:'dramas',icon:<FolderOpenOutlined/>,label:'剧库'},
  {key:'factory',icon:<ExperimentOutlined/>,label:'内容工厂'},
  {key:'publishing',icon:<SendOutlined/>,label:'一键发布'},
