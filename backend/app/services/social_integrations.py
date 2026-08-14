@@ -21,6 +21,7 @@ ACCOUNT_INSIGHT_CACHE_TTL = 300
 ACCOUNT_MEDIA_CACHE_TTL = 300
 _account_insight_cache: dict[tuple[int, str, str], tuple[float, dict[str, Any]]] = {}
 _account_media_cache: dict[tuple[int, int], tuple[float, list[dict[str, Any]]]] = {}
+_youtube_traffic_cache: dict[tuple[int, str, str], tuple[float, list[dict[str, Any]]]] = {}
 
 
 def _business_today() -> date:
@@ -264,6 +265,47 @@ def _youtube_time_report(token: str, start: date, end: date, metrics: str, dimen
             if value is not None
         })
     return rows, ""
+
+
+def youtube_traffic_sources(account: Account, start: date, end: date, force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Return the channel's real YouTube Analytics traffic-source rows."""
+    if account.platform != "youtube":
+        return []
+    cache_key = (int(account.id or 0), start.isoformat(), end.isoformat())
+    cached = _youtube_traffic_cache.get(cache_key)
+    if not force_refresh and cached and monotonic() - cached[0] < ACCOUNT_INSIGHT_CACHE_TTL:
+        return cached[1]
+    token = youtube_access_token(account)
+    response = httpx.get(
+        "https://youtubeanalytics.googleapis.com/v2/reports",
+        params={
+            "ids": "channel==MINE",
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "dimensions": "insightTrafficSourceType",
+            "metrics": "views,estimatedMinutesWatched",
+            "sort": "-views",
+            "maxResults": 25,
+        },
+        headers=bearer_headers(token),
+        timeout=30,
+    )
+    _raise(response, "YouTube Analytics")
+    payload = response.json()
+    headers = [str(item.get("name") or "") for item in payload.get("columnHeaders", [])]
+    rows: list[dict[str, Any]] = []
+    for values in payload.get("rows", []):
+        row = dict(zip(headers, values))
+        source = str(row.get("insightTrafficSourceType") or "")
+        if not source:
+            continue
+        rows.append({
+            "source": source,
+            "views": int(float(row.get("views") or 0)),
+            "watch_time_seconds": round(float(row.get("estimatedMinutesWatched") or 0) * 60),
+        })
+    _youtube_traffic_cache[cache_key] = (monotonic(), rows)
+    return rows
 
 
 def _change_rate(current: float | int | None, previous: float | int | None) -> float | None:

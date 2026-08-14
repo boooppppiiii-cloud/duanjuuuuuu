@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from time import monotonic
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -13,6 +16,7 @@ from ..database import get_session
 from ..config import get_settings
 from ..models import (
     AppUser,
+    Account,
     Drama,
     DramaSearchProfile,
     ExternalVideo,
@@ -25,6 +29,7 @@ from ..models import (
     SearchResult,
     SearchSnapshot,
     VideoMatchEvidence,
+    SocialComment,
 )
 from ..services.auth import get_current_user
 from ..services.radar_accounts import authorization_for, normalize_account_name, normalize_profile_url
@@ -32,9 +37,52 @@ from ..services.radar_evidence import build_evidence_package
 from ..services.radar_pool import deactivate_promotion_drama, ensure_promotion_drama
 from ..services.radar_content_analysis import CONTENT_STRUCTURE_METHOD
 from ..services.radar_search import _recognize_theater_official, query_suggestions, quota_status, scan_drama, sync_queries
+from ..services.social_integrations import list_platform_media, youtube_traffic_sources
 
 
 router = APIRouter(prefix="/api/radar", tags=["传播雷达"])
+_BRIEFING_TTL_SECONDS = 300
+_briefing_cache: tuple[float, dict[str, Any]] | None = None
+_BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _platform_time(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(_BUSINESS_TZ)
+
+
+def _traffic_label(source: str) -> str:
+    return {
+        "SHORTS": "Shorts 信息流",
+        "YT_SEARCH": "YouTube 搜索",
+        "RELATED_VIDEO": "推荐视频",
+        "BROWSE": "浏览功能",
+        "SUBSCRIBER": "订阅信息流",
+        "NOTIFICATION": "通知",
+        "EXT_URL": "外部网站",
+        "PLAYLIST": "播放列表",
+        "END_SCREEN": "片尾画面",
+        "HASHTAGS": "话题标签",
+        "ADVERTISING": "广告推广",
+        "NO_LINK_OTHER": "其他 YouTube 功能",
+    }.get(source, source.replace("_", " ").title())
+
+
+def _full_episode_request(comment: SocialComment) -> bool:
+    text = f"{comment.text_original} {comment.text_zh}".lower()
+    phrases = (
+        "全集", "完整版", "完整剧", "哪里看", "在哪看", "后续在哪", "下一集",
+        "full episode", "full episodes", "full series", "complete series", "complete episode",
+        "where can i watch", "where to watch", "watch the full", "all episodes", "next episode",
+    )
+    return any(phrase in text for phrase in phrases)
 
 
 class AccountCreate(BaseModel):
@@ -419,6 +467,161 @@ def send_video_to_factory(video_id: int, payload: FactoryHandoffCreate, _: AppUs
     params = {"drama": drama.id, "radar_video": video.id, "episode": payload.episode, "start": payload.source_start, "end": payload.source_end, "reference": video.title}
     from urllib.parse import urlencode
     return {"ok": True, "handoff_id": evidence.id, "factory_url": f"/factory?{urlencode(params)}", "source_video_url": video.video_url}
+
+
+@router.get("/briefing")
+def briefing(refresh: bool = False, _: AppUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    """Team-shared daily operating brief built only from real platform and comment data."""
+    global _briefing_cache
+    if not refresh and _briefing_cache and monotonic() - _briefing_cache[0] < _BRIEFING_TTL_SECONDS:
+        return _briefing_cache[1]
+
+    now = datetime.now(_BUSINESS_TZ)
+    yesterday = now.date() - timedelta(days=1)
+    traffic_end = now.date() - timedelta(days=2)
+    traffic_start = traffic_end - timedelta(days=6)
+    accounts = session.exec(
+        select(Account)
+        .where(Account.status == "connected", Account.removed_at.is_(None))
+        .order_by(Account.id)
+    ).all()
+    account_names = {int(item.id or 0): item.name for item in accounts}
+    media_rows: list[dict[str, Any]] = []
+    traffic_rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    def load_account(account: Account) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+        account_errors: list[str] = []
+        try:
+            media = list_platform_media(account, 50, refresh)
+        except Exception as exc:
+            media = []
+            account_errors.append(str(exc))
+        traffic: list[dict[str, Any]] = []
+        if account.platform == "youtube":
+            try:
+                traffic = youtube_traffic_sources(account, traffic_start, traffic_end, refresh)
+            except Exception as exc:
+                account_errors.append(str(exc))
+        return media, traffic, account_errors
+
+    if accounts:
+        with ThreadPoolExecutor(max_workers=min(4, len(accounts))) as executor:
+            jobs = {executor.submit(load_account, account): account for account in accounts}
+            for future in as_completed(jobs):
+                account = jobs[future]
+                media, traffic, account_errors = future.result()
+                media_rows.extend({
+                    **item,
+                    "account_id": account.id,
+                    "account_name": account.name,
+                    "platform": account.platform,
+                } for item in media)
+                traffic_rows.extend({**item, "account_id": account.id, "account_name": account.name} for item in traffic)
+                if account_errors:
+                    errors.append({"account_id": account.id, "account_name": account.name, "messages": account_errors})
+
+    recent = []
+    for item in media_rows:
+        published = _platform_time(item.get("published_at"))
+        if not published or published > now or published < now - timedelta(days=7):
+            continue
+        age_hours = max(1.0, (now - published).total_seconds() / 3600)
+        recent.append((float(item.get("views") or 0) / age_hours, published, item))
+    fastest = None
+    if recent:
+        speed, published, item = max(recent, key=lambda row: row[0])
+        fastest = {
+            "account_id": item["account_id"], "account_name": item["account_name"], "platform": item["platform"],
+            "video_id": str(item.get("id") or ""), "title": item.get("title") or "未命名视频",
+            "url": item.get("url") or "", "thumbnail_url": item.get("thumbnail_url") or "",
+            "published_at": published.isoformat(), "views": int(item.get("views") or 0),
+            "likes": int(item.get("likes") or 0), "comments": int(item.get("comments") or 0),
+            "views_per_hour": round(speed, 1), "metric_label": "近 7 日播放增速最快",
+        }
+
+    yesterday_items = []
+    for item in media_rows:
+        published = _platform_time(item.get("published_at"))
+        if not published or published.date() != yesterday:
+            continue
+        yesterday_items.append({
+            "account_id": item["account_id"], "account_name": item["account_name"], "platform": item["platform"],
+            "video_id": str(item.get("id") or ""), "title": item.get("title") or "未命名视频",
+            "url": item.get("url") or "", "thumbnail_url": item.get("thumbnail_url") or "",
+            "published_at": published.isoformat(), "views": int(item.get("views") or 0),
+            "likes": int(item.get("likes") or 0), "comments": int(item.get("comments") or 0),
+        })
+    yesterday_items.sort(key=lambda item: item["views"], reverse=True)
+
+    traffic_by_source: dict[str, dict[str, Any]] = {}
+    for item in traffic_rows:
+        source = str(item.get("source") or "")
+        bucket = traffic_by_source.setdefault(source, {"source": source, "views": 0, "watch_time_seconds": 0})
+        bucket["views"] += int(item.get("views") or 0)
+        bucket["watch_time_seconds"] += int(item.get("watch_time_seconds") or 0)
+    traffic_total = sum(item["views"] for item in traffic_by_source.values())
+    traffic_source = None
+    if traffic_by_source and traffic_total:
+        top = max(traffic_by_source.values(), key=lambda item: item["views"])
+        traffic_source = {
+            **top,
+            "label": _traffic_label(top["source"]),
+            "share": round(top["views"] / traffic_total * 100, 1),
+            "range_start": traffic_start.isoformat(), "range_end": traffic_end.isoformat(),
+        }
+
+    comments = session.exec(
+        select(SocialComment).order_by(SocialComment.published_at.desc(), SocialComment.id.desc()).limit(1000)
+    ).all()
+    full_episode_comments = [item for item in comments if _full_episode_request(item)]
+    comment_payload = [{
+        "id": item.id, "platform": item.platform, "account_id": item.account_id,
+        "account_name": account_names.get(int(item.account_id or 0), ""),
+        "author_name": item.author_name or item.author_handle or "观众",
+        "text": item.text_zh or item.text_original, "text_original": item.text_original,
+        "video_title": item.video_title, "video_url": item.video_url,
+        "published_at": item.published_at.isoformat() if item.published_at else None,
+        "like_count": item.like_count,
+    } for item in full_episode_comments[:5]]
+
+    alert_rows = session.exec(
+        select(RadarEvent)
+        .where(RadarEvent.severity == "high", RadarEvent.status.in_(["new", "watching"]))
+        .order_by(RadarEvent.last_detected_at.desc())
+        .limit(4)
+    ).all()
+    alerts = []
+    for item in alert_rows:
+        drama = session.get(Drama, item.drama_id)
+        video = session.get(ExternalVideo, item.external_video_id) if item.external_video_id else None
+        alerts.append({
+            **item.model_dump(), "drama_title": drama.title if drama else "",
+            "thumbnail_url": video.thumbnail_url if video else item.evidence_json.get("thumbnail_url", ""),
+            "video_url": video.video_url if video else item.evidence_json.get("video_url", ""),
+        })
+
+    result = {
+        "generated_at": now.isoformat(),
+        "fastest_growth": fastest,
+        "yesterday": {
+            "date": yesterday.isoformat(), "publish_count": len(yesterday_items),
+            "views": sum(item["views"] for item in yesterday_items),
+            "likes": sum(item["likes"] for item in yesterday_items),
+            "comments": sum(item["comments"] for item in yesterday_items),
+            "items": yesterday_items[:4],
+        },
+        "traffic_source": traffic_source,
+        "full_episode_requests": {"count": len(full_episode_comments), "items": comment_payload},
+        "alerts": alerts,
+        "coverage": {
+            "connected_accounts": len(accounts), "media_count": len(media_rows),
+            "traffic_range_start": traffic_start.isoformat(), "traffic_range_end": traffic_end.isoformat(),
+            "errors": errors,
+        },
+    }
+    _briefing_cache = (monotonic(), result)
+    return result
 
 
 @router.get("/events")

@@ -68,6 +68,16 @@ export type RadarSnapshot = {id:number;drama_id:number;query_id:number;platform:
 export type RadarResult = {id:number;snapshot_id:number;external_video_id:number|null;platform_video_id:string;rank:number;previous_rank:number|null;title:string;description:string;video_url:string;embed_url:string;thumbnail_url:string;channel_id:string;channel_name:string;channel_url:string;channel_avatar_url:string;channel_subscribers:number|null;published_at:string|null;duration_seconds:number;views:number;likes:number;comments:number;tags:string[];matched_account_id:number|null;relationship_type:string;authorization_status:string;classification:string;review_status:string;view_growth:number|null;content_structure:'true_full_series'|'repeated_compilation'|'fragment_compilation'|'single_excerpt'|'uncertain'|'not_analyzed';content_analysis_status:string;content_structure_confidence:number;continuous_story_ratio:number;repetition_ratio:number;content_structure_reason:string;content_structure_evidence:{sequence:string[];repetition:string[]}}
 export type RadarLive = {drama:{id:number;title:string};query:RadarQuery|null;snapshot:RadarSnapshot|null;results:RadarResult[];summary:{own:number;authorized:number;unknown:number;risk:number;first_owner:string};standard_notice:string;stale:boolean}
 export type RadarEvent = {id:number;drama_id:number;external_video_id:number|null;event_type:string;severity:string;title:string;summary:string;evidence_json:Record<string,unknown>;status:string;first_detected_at:string;last_detected_at:string;drama_title:string;thumbnail_url:string;video_url:string}
+export type BriefingMedia = {account_id:number;account_name:string;platform:string;video_id:string;title:string;url:string;thumbnail_url:string;published_at:string;views:number;likes:number;comments:number;views_per_hour?:number;metric_label?:string}
+export type PlatformBriefing = {
+  generated_at:string;
+  fastest_growth:BriefingMedia|null;
+  yesterday:{date:string;publish_count:number;views:number;likes:number;comments:number;items:BriefingMedia[]};
+  traffic_source:{source:string;label:string;views:number;watch_time_seconds:number;share:number;range_start:string;range_end:string}|null;
+  full_episode_requests:{count:number;items:{id:number;platform:string;account_id:number|null;account_name:string;author_name:string;text:string;text_original:string;video_title:string;video_url:string;published_at:string|null;like_count:number}[]};
+  alerts:RadarEvent[];
+  coverage:{connected_accounts:number;media_count:number;traffic_range_start:string;traffic_range_end:string;errors:{account_id:number;account_name:string;messages:string[]}[]};
+}
 export type PromotionDrama = {id:number;drama_id:number;drama_title:string;active:boolean;sources:string[];priority:'normal'|'low';pinned:boolean;note:string;last_scanned_at:string|null;next_scan_at:string|null}
 export type RadarQuota = {quota_day:string;search_calls:number;search_limit:number;used_units:number;unit_budget:number;scan_count:number;failed_scan_count:number}
 export type RightsCase = {id:number;drama_id:number;external_video_id:number;case_status:string;rights_owner:string;authorization_review:string;evidence_ready:boolean;notes:string;created_at:string;drama_title:string;video_title:string;video_url:string;channel_name:string;classification:string}
@@ -134,6 +144,7 @@ export const api = {
   radarVideo: (videoId:number) => request<Record<string,unknown>&{metrics:{captured_at:string;views:number;likes:number;comments:number;search_rank:number|null}[];appearances:RadarResult[]}>(`/api/radar/videos/${videoId}`),
   classifyRadarVideo: (videoId:number,classification:string,note='') => request<Record<string,unknown>>(`/api/radar/videos/${videoId}/classification`,{method:'PUT',body:JSON.stringify({classification,note})}),
   radarEvents: (limit=10,status='') => request<RadarEvent[]>(`/api/radar/events?limit=${limit}${status?`&status=${encodeURIComponent(status)}`:''}`,{cacheTtlMs:30_000}),
+  platformBriefing: (refresh=false) => request<PlatformBriefing>(`/api/radar/briefing${refresh?'?refresh=true':''}`,{cacheTtlMs:300_000,forceRefresh:refresh}),
   updateRadarEvent: (eventId:number,status:string,resolution_note='') => request<RadarEvent>(`/api/radar/events/${eventId}`,{method:'PUT',body:JSON.stringify({status,resolution_note})}),
   monitoredAccounts: (filters='') => request<{items:MonitoredAccount[];total:number;page:number;page_size:number}>(`/api/radar/accounts${filters}`),
   createMonitoredAccount: (body:object) => request<MonitoredAccount>('/api/radar/accounts',{method:'POST',body:JSON.stringify(body)}),
