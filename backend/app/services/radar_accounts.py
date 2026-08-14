@@ -325,6 +325,8 @@ def authorization_for(
     )).first()
     relationship = (link.relationship_override if link and link.relationship_override else account.relationship_type) or "unknown"
     status = (link.authorization_status_override if link and link.authorization_status_override else account.authorization_status) or "unknown"
+    if account.source == "theater_match" and not link:
+        return {"relationship_type": "unknown", "authorization_status": "unknown", "authorized": False, "reason": "剧场官方账号与当前剧目的剧场不匹配"}
     if relationship in {"own_official", "own_creator"}:
         return {"relationship_type": relationship, "authorization_status": "authorized", "authorized": True, "reason": "自有账号"}
     if not link:

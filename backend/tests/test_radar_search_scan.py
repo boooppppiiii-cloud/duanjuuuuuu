@@ -56,6 +56,30 @@ class FakeYouTube:
     def channels(self): return FakeChannels()
 
 
+class TheaterFakeVideos(FakeVideos):
+    def list(self, **kwargs):
+        payload = super().list(**kwargs).payload
+        for item in payload["items"]:
+            item["snippet"]["channelId"] = "UC-DRAMABOX"
+            item["snippet"]["channelTitle"] = "DramaBox - Stream Drama Shorts"
+        return FakeCall(payload)
+
+
+class TheaterFakeChannels:
+    def list(self, **kwargs):
+        assert kwargs["id"] == "UC-DRAMABOX"
+        return FakeCall({"items": [{
+            "id": "UC-DRAMABOX",
+            "snippet": {"title": "DramaBox - Stream Drama Shorts", "thumbnails": {"default": {"url": "https://img/dramabox.jpg"}}},
+            "statistics": {"subscriberCount": "15300000"},
+        }]})
+
+
+class TheaterFakeYouTube(FakeYouTube):
+    def videos(self): return TheaterFakeVideos()
+    def channels(self): return TheaterFakeChannels()
+
+
 def test_official_youtube_scan_saves_real_snapshots_and_matches_account(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'scan.db'}")
     SQLModel.metadata.create_all(engine)
@@ -95,3 +119,32 @@ def test_missing_youtube_key_creates_no_fake_snapshot(monkeypatch, tmp_path):
         except RuntimeError as exc:
             assert "YOUTUBE_API_KEY" in str(exc)
         assert session.exec(select(SearchSnapshot)).first() is None
+
+
+def test_theater_brand_match_recognizes_official_traffic_account(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'theater-match.db'}")
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(radar_search, "get_settings", lambda: SimpleNamespace(youtube_api_key="real-key", radar_youtube_queries_per_drama=3, radar_youtube_daily_search_limit=60, radar_youtube_daily_quota_budget=5000, radar_approved_redirect_domain_list=["youtube.com"]))
+    monkeypatch.setattr(radar_search, "build", lambda *args, **kwargs: TheaterFakeYouTube())
+    with Session(engine) as session:
+        user = AppUser(email="dev@example.com", password_hash="x", is_developer=True)
+        drama = Drama(title="Brand Match Drama", theater="DramaBox", file_dir="brand-match")
+        session.add(user); session.add(drama); session.commit(); session.refresh(user); session.refresh(drama)
+        session.add(DramaSearchProfile(drama_id=drama.id, enabled=True, official_title=drama.title))
+        session.add(PromotionDramaPool(drama_id=drama.id, sources=["manual_confirmed"]))
+        session.add(SearchQuery(drama_id=drama.id, query_text=drama.title, enabled=True))
+        session.commit()
+
+        radar_search.scan_drama(session, drama.id, user)
+
+        account = session.exec(select(MonitoredAccount).where(MonitoredAccount.platform_account_id == "UC-DRAMABOX")).one()
+        assert account.relationship_type == "own_official"
+        assert account.source == "theater_match"
+        link = session.exec(select(MonitoredAccountDrama).where(
+            MonitoredAccountDrama.account_id == account.id,
+            MonitoredAccountDrama.drama_id == drama.id,
+        )).one()
+        assert link.relationship_override == "own_official"
+        rows = session.exec(select(SearchResult)).all()
+        assert rows and all(row.relationship_type == "own_official" for row in rows)
+        assert all(row.authorization_status == "authorized" for row in rows)

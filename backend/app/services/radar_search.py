@@ -18,6 +18,7 @@ from ..models import (
     ExternalVideo,
     ExternalVideoMetric,
     MonitoredAccount,
+    MonitoredAccountDrama,
     PromotionDramaPool,
     RadarQuotaUsage,
     RadarEvent,
@@ -182,6 +183,55 @@ def _match_account(session: Session, channel_id: str, channel_name: str, channel
     )).first()
 
 
+def _matches_theater_account(theater: str, channel_name: str, channel_url: str) -> bool:
+    """Match a branded theater account without treating generic words as brands."""
+    brand = normalize_account_name(theater)
+    if len(brand) < 5:
+        return False
+    return brand in normalize_account_name(channel_name) or brand in normalize_account_name(channel_url)
+
+
+def _recognize_theater_official(
+    session: Session,
+    drama: Drama,
+    account: MonitoredAccount | None,
+    channel_id: str,
+    channel_name: str,
+    channel_url: str,
+) -> MonitoredAccount | None:
+    if not _matches_theater_account(drama.theater, channel_name, channel_url):
+        return account
+    if account is None:
+        account = MonitoredAccount(
+            platform="youtube",
+            platform_account_id=channel_id,
+            display_name=channel_name or drama.theater,
+            profile_url=channel_url,
+            normalized_profile_url=normalize_profile_url(channel_url),
+            normalized_name=normalize_account_name(channel_name),
+            relationship_type="own_official",
+            authorization_status="authorized",
+            company_name=drama.theater,
+            allowed_full_series=True,
+            source="theater_match",
+            notes=f"系统根据剧场 {drama.theater} 自动识别",
+        )
+        session.add(account)
+        session.flush()
+    link = session.exec(select(MonitoredAccountDrama).where(
+        MonitoredAccountDrama.account_id == account.id,
+        MonitoredAccountDrama.drama_id == drama.id,
+    )).first()
+    if link is None:
+        link = MonitoredAccountDrama(account_id=account.id, drama_id=drama.id)
+    link.relationship_override = "own_official"
+    link.authorization_status_override = "authorized"
+    link.allowed_full_series_override = True
+    link.notes = f"剧场名称匹配：{drama.theater}"
+    session.add(link)
+    return account
+
+
 def ensure_owned_monitored_account(session: Session, platform: str, account_id: str, display_name: str, profile_url: str = "") -> MonitoredAccount | None:
     if platform != "youtube" or not account_id:
         return None
@@ -322,7 +372,14 @@ def scan_drama(session: Session, drama_id: int, user: AppUser | None = None, for
                 item = videos.get(video_id, {}); snippet = item.get("snippet", {}); stats = item.get("statistics", {}); content = item.get("contentDetails", {})
                 channel_id = snippet.get("channelId", ""); channel = channels.get(channel_id, {}); channel_snippet = channel.get("snippet", {}); channel_stats = channel.get("statistics", {})
                 channel_name = snippet.get("channelTitle", channel_snippet.get("title", "")); channel_url = f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
-                account = _match_account(session, channel_id, channel_name, channel_url)
+                account = _recognize_theater_official(
+                    session,
+                    drama,
+                    _match_account(session, channel_id, channel_name, channel_url),
+                    channel_id,
+                    channel_name,
+                    channel_url,
+                )
                 published_at = _published(snippet.get("publishedAt")); duration_seconds = _duration(content.get("duration", ""))
                 full_candidate = duration_seconds >= 20 * 60 and bool(re.search(r"\b(full|complete|all episodes?)\b", snippet.get("title", ""), re.I))
                 authorization = authorization_for(session, account, drama_id, query.region, published_at, full_candidate)

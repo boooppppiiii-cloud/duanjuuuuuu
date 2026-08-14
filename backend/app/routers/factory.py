@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 
@@ -238,7 +239,7 @@ def import_local_analysis(
 
 @router.post("/{drama_id}/analyze")
 def run_script_analysis(
-    drama_id: int, background_tasks: BackgroundTasks, payload: FactoryAnalysisStartRequest | None = None,
+    drama_id: int, payload: FactoryAnalysisStartRequest | None = None,
     session: Session = Depends(get_session), user: AppUser = Depends(get_current_user),
 ):
     drama = get_drama(drama_id, session)
@@ -266,12 +267,19 @@ def run_script_analysis(
         queued_resume_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
         if resume else queued_analysis(Path(drama.file_dir), drama.id, drama.title, drama.episode_count)
     )
-    background_tasks.add_task(
-        _run_analysis_as_user, user.id, Path(drama.file_dir), drama.id, drama.title, settings, words, resume,
-        ai_analyzer=analyzer,
-    )
+    # The local assistant must keep the analysis alive after the HTTP response has
+    # completed. FastAPI response background tasks could be lost when the browser
+    # retried or the helper request was cancelled, leaving a permanent "queued"
+    # record with no worker. A daemon worker is owned by the helper process instead.
+    threading.Thread(
+        target=_run_analysis_as_user,
+        args=(user.id, Path(drama.file_dir), drama.id, drama.title, settings, words, resume),
+        kwargs={"ai_analyzer": analyzer},
+        name=f"factory-analysis-{drama.id}",
+        daemon=True,
+    ).start()
     record_usage("内容识别", user_id=user.id, event_kind="feature", cache_hit=False, details={"drama_id": drama_id, "resume": resume})
-    return result
+    return {**result, "is_active": True}
 
 
 @router.patch("/{drama_id}/analysis/review")

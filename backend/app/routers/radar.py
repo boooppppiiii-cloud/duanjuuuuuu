@@ -27,10 +27,10 @@ from ..models import (
     VideoMatchEvidence,
 )
 from ..services.auth import get_current_user
-from ..services.radar_accounts import normalize_account_name, normalize_profile_url
+from ..services.radar_accounts import authorization_for, normalize_account_name, normalize_profile_url
 from ..services.radar_evidence import build_evidence_package
 from ..services.radar_pool import deactivate_promotion_drama, ensure_promotion_drama
-from ..services.radar_search import query_suggestions, quota_status, scan_drama, sync_queries
+from ..services.radar_search import _recognize_theater_official, query_suggestions, quota_status, scan_drama, sync_queries
 
 
 router = APIRouter(prefix="/api/radar", tags=["传播雷达"])
@@ -315,11 +315,26 @@ def search_live(drama_id: int, query_id: int | None = None, snapshot_id: int | N
     snapshot = session.get(SearchSnapshot, snapshot_id) if snapshot_id else (session.exec(select(SearchSnapshot).where(SearchSnapshot.drama_id == drama_id, SearchSnapshot.query_id == query.id, SearchSnapshot.collection_status == "success").order_by(SearchSnapshot.captured_at.desc())).first() if query else None)
     results = session.exec(select(SearchResult).where(SearchResult.snapshot_id == snapshot.id).order_by(SearchResult.rank)).all() if snapshot else []
     items = []
+    theater_matches_updated = False
     for result in results:
         video = session.exec(select(ExternalVideo).where(ExternalVideo.platform == result.platform, ExternalVideo.platform_video_id == result.platform_video_id)).first()
+        account = session.get(MonitoredAccount, video.matched_account_id) if video and video.matched_account_id else None
+        recognized = _recognize_theater_official(session, drama, account, result.channel_id, result.channel_name, result.channel_url) if result.relationship_type not in {"own_official", "own_creator"} else account
+        if recognized and result.relationship_type not in {"own_official", "own_creator"}:
+            authorization = authorization_for(session, recognized, drama.id, query.region if query else "US", result.published_at, False)
+            result.matched_account_id = recognized.id
+            result.relationship_type = authorization["relationship_type"]
+            result.authorization_status = authorization["authorization_status"]
+            session.add(result)
+            if video:
+                video.matched_account_id = recognized.id
+                session.add(video)
+            theater_matches_updated = True
         latest_metric = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video.id).order_by(ExternalVideoMetric.captured_at.desc())).first() if video else None
         previous_metric = session.exec(select(ExternalVideoMetric).where(ExternalVideoMetric.external_video_id == video.id, ExternalVideoMetric.id != latest_metric.id).order_by(ExternalVideoMetric.captured_at.desc())).first() if video and latest_metric else None
         items.append({**result.model_dump(), "external_video_id": video.id if video else None, "classification": video.classification if video else "unknown", "review_status": video.review_status if video else "pending", "view_growth": max(0, latest_metric.views - previous_metric.views) if latest_metric and previous_metric else None})
+    if theater_matches_updated:
+        session.commit()
     counts = {"own": 0, "authorized": 0, "unknown": 0, "risk": 0}
     for item in items[:10]:
         if item["relationship_type"] in {"own_official", "own_creator"}: counts["own"] += 1
