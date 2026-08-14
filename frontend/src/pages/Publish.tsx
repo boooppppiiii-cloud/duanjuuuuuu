@@ -7,8 +7,9 @@ import {
  Space,Switch,Table,Tag,Typography,Upload,message,type UploadFile,
 } from 'antd'
 import dayjs from 'dayjs'
-import { useEffect,useMemo,useState } from 'react'
+import { useEffect,useMemo,useRef,useState } from 'react'
 import { useNavigate,useSearchParams } from 'react-router-dom'
+import type { TextAreaRef } from 'antd/es/input/TextArea'
 import { api,type Account,type AccountStrategy,type Clip,type Drama,type IntegrationConfig,type Post,type PublishJob,type TitleCandidate } from '../api'
 import { PlatformBadge,PlatformOption } from '../components/PlatformBrand'
 import { useAuth } from '../auth'
@@ -26,7 +27,8 @@ const theaterTag=(theater='')=>`#${theater.trim().replace(/^#+/,'').replace(/\s+
 const preferredCover=(drama?:Drama):CoverKind|undefined=>drama?.cover_horizontal_path?'horizontal':undefined
 const blankDraft=(clipId:number):ContentDraft=>({clipId,title:'',caption:'',hashtags:[],firstComment:'',formula:1,hitWords:[]})
 const composerEmojis=['🔥','✨','😍','😱','💔','👉','🎬','❤️','🥹','👏','🤯','💫']
-const normalizeTag=(value:string)=>{const clean=value.trim().replace(/^#+/,'').replace(/\s+/g,'');return clean?`#${clean}`:''}
+const normalizeTag=(value:string)=>{const clean=value.trim().replace(/^#+/,'').replace(/[^\p{L}\p{N}_]+/gu,'');return clean?`#${clean}`:''}
+const extractTags=(value:string)=>Array.from(new Set(Array.from(value.matchAll(/#[\p{L}\p{N}_]+/gu),match=>normalizeTag(match[0])).filter(Boolean)))
 const captionWithTags=(caption:string,tags:string[])=>{
  const missing=tags.map(normalizeTag).filter(Boolean).filter(tag=>!caption.toLocaleLowerCase().includes(tag.toLocaleLowerCase()))
  return missing.length?`${caption.trim()}\n${missing.join(' ')}`:caption.trim()
@@ -43,6 +45,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const[includeTheaterTag,setIncludeTheaterTag]=useState(true)
  const[drafts,setDrafts]=useState<ContentDraft[]>([]);const[provider,setProvider]=useState('');const[coverKind,setCoverKind]=useState<CoverKind>()
  const[aiAssistOpen,setAiAssistOpen]=useState(false);const[toolPicker,setToolPicker]=useState<{clipId:number;kind:'emoji'|'tag'}>()
+ const[tagInputs,setTagInputs]=useState<Record<number,string>>({});const captionRefs=useRef<Record<number,TextAreaRef|null>>({})
  const[mode,setMode]=useState<'now'|'schedule'>('now');const[generating,setGenerating]=useState(false);const[working,setWorking]=useState(false)
  const[uploadOpen,setUploadOpen]=useState(false);const[uploadFiles,setUploadFiles]=useState<UploadFile[]>([]);const[uploadProgress,setUploadProgress]=useState<Record<string,number>>({})
  const[uploading,setUploading]=useState(false);const[checking,setChecking]=useState<number|null>(null)
@@ -92,14 +95,34 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   setGenerating(true)
   try{
    const results=await Promise.all(selectedClips.map(id=>api.generateTitles(id,account.account_type,language,'auto',account.id,[],selectedStrategy,includeTheaterTag)))
-   setDrafts(rows=>selectedClips.map((clipId,index)=>{const previous=rows.find(row=>row.clipId===clipId)||blankDraft(clipId);const candidate=results[index].candidates.find(x=>!x.hit_words.length)||results[index].candidates[0];return{...previous,title:candidate.title,caption:candidate.caption,hashtags:candidate.hashtags,formula:candidate.formula,hitWords:candidate.hit_words}}))
+   setDrafts(rows=>selectedClips.map((clipId,index)=>{const previous=rows.find(row=>row.clipId===clipId)||blankDraft(clipId);const candidate=results[index].candidates.find(x=>!x.hit_words.length)||results[index].candidates[0];return{...previous,title:candidate.title,caption:captionWithTags(candidate.caption,candidate.hashtags),hashtags:candidate.hashtags.map(normalizeTag).filter(Boolean),formula:candidate.formula,hitWords:candidate.hit_words}}))
    setProvider(Array.from(new Set(results.map(x=>x.provider))).join(' / '));msg.success(`已生成 ${results.length} 组可编辑内容`)
   }catch(e){msg.error((e as Error).message)}finally{setGenerating(false)}
  }
  const editDraft=(clipId:number,patch:Partial<ContentDraft>)=>setDrafts(rows=>selectedClips.map(id=>{const row=rows.find(item=>item.clipId===id)||blankDraft(id);return id===clipId?{...row,...patch}:row}))
- const appendEmoji=(draft:ContentDraft,emoji:string)=>editDraft(draft.clipId,{caption:`${draft.caption}${draft.caption&& !draft.caption.endsWith(' ')?' ':''}${emoji}`})
- const addTag=(draft:ContentDraft,value:string)=>{const tag=normalizeTag(value);if(tag&&!draft.hashtags.some(item=>item.toLocaleLowerCase()===tag.toLocaleLowerCase()))editDraft(draft.clipId,{hashtags:[...draft.hashtags,tag]});setToolPicker(undefined)}
- const removeTag=(draft:ContentDraft,value:string)=>editDraft(draft.clipId,{hashtags:draft.hashtags.filter(item=>item!==value)})
+ const insertIntoCaption=(draft:ContentDraft,text:string,nextTags=draft.hashtags)=>{
+  const textarea=captionRefs.current[draft.clipId]?.resizableTextArea?.textArea
+  const start=textarea?.selectionStart??draft.caption.length;const end=textarea?.selectionEnd??start
+  const before=draft.caption.slice(0,start);const after=draft.caption.slice(end)
+  const lead=before&&!/\s$/.test(before)?' ':'';const tail=after&&!/^\s/.test(after)?' ':''
+  const insertion=`${lead}${text}${tail}`;const next=`${before}${insertion}${after}`;const cursor=start+insertion.length
+  editDraft(draft.clipId,{caption:next,hashtags:nextTags})
+  requestAnimationFrame(()=>{const node=captionRefs.current[draft.clipId]?.resizableTextArea?.textArea;node?.focus();node?.setSelectionRange(cursor,cursor)})
+ }
+ const appendEmoji=(draft:ContentDraft,emoji:string)=>insertIntoCaption(draft,emoji)
+ const addTags=(draft:ContentDraft,value:string)=>{
+  const incoming=value.split(/[\s,，]+/).map(normalizeTag).filter(Boolean)
+  const additions=incoming.filter(tag=>!draft.hashtags.some(item=>item.toLocaleLowerCase()===tag.toLocaleLowerCase()))
+  if(!additions.length){msg.info(incoming.length?'标签已存在':'请输入标签');return}
+  const nextTags=[...draft.hashtags,...additions]
+  insertIntoCaption(draft,additions.join(' '),nextTags)
+  setTagInputs(old=>({...old,[draft.clipId]:''}))
+ }
+ const removeTag=(draft:ContentDraft,value:string)=>{
+  const escaped=value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')
+  const caption=draft.caption.replace(new RegExp(`(^|\\s)${escaped}(?=\\s|$)`,'giu'),'$1').replace(/[ \t]{2,}/g,' ').trim()
+  editDraft(draft.clipId,{caption,hashtags:draft.hashtags.filter(item=>item!==value)})
+ }
 
  const submit=async(values:any)=>{
   if(!drama||!selectedClips.length||!selectedAccounts.length){msg.error('请先完成视频与账号选择');return}
@@ -146,7 +169,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
 
     <Card className="publish-flow-card publish-composer-card" title="发布内容">
      {!!selectedAccountRows.length&&<div className="publish-account-strip">{selectedAccountRows.map(x=><span key={x.id}><PlatformBadge platform={x.platform} size={20}/>{x.name}</span>)}</div>}
-     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="手动输入发布标题"/></Form.Item><Form.Item label="文案" required><Input.TextArea className="publish-caption-editor" autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value})} placeholder="输入发布文案"/></Form.Item><div className="publish-editor-tools"><Popover open={toolPicker?.clipId===draft.clipId&&toolPicker.kind==='emoji'} onOpenChange={open=>setToolPicker(open?{clipId:draft.clipId,kind:'emoji'}:undefined)} trigger="click" placement="bottomLeft" content={<div className="publish-emoji-grid">{composerEmojis.map(emoji=><button type="button" key={emoji} onClick={()=>{appendEmoji(draft,emoji);setToolPicker(undefined)}}>{emoji}</button>)}</div>}><Button type="text" size="small" icon={<SmileOutlined/>}>表情</Button></Popover><Popover open={toolPicker?.clipId===draft.clipId&&toolPicker.kind==='tag'} onOpenChange={open=>setToolPicker(open?{clipId:draft.clipId,kind:'tag'}:undefined)} trigger="click" placement="bottomLeft" content={<div className="publish-tag-popover"><Input.Search size="small" placeholder="输入自定义标签" enterButton="添加" onSearch={value=>addTag(draft,value)}/><div className="publish-tag-suggestions">{composerTags.map(value=><button type="button" key={value} onClick={()=>addTag(draft,value)}>{value}</button>)}</div></div>}><Button type="text" size="small" icon={<TagOutlined/>}>添加标签</Button></Popover><Button type={aiAssistOpen?'default':'text'} size="small" icon={<ThunderboltOutlined/>} onClick={()=>setAiAssistOpen(open=>!open)}>AI 辅助</Button>{draft.hashtags.map(value=><Tag closable onClose={event=>{event.preventDefault();removeTag(draft,value)}} key={value}>{value}</Tag>)}</div><Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="可选，发布后作为真实首条评论发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请选择发布视频':'暂无可发布视频'}/>}
+     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="手动输入发布标题"/></Form.Item><Form.Item label="文案" required><Input.TextArea ref={node=>{captionRefs.current[draft.clipId]=node}} className="publish-caption-editor" autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value,hashtags:extractTags(e.target.value)})} placeholder="输入发布文案"/></Form.Item><div className="publish-editor-tools"><Button type={toolPicker?.clipId===draft.clipId&&toolPicker.kind==='emoji'?'default':'text'} size="small" icon={<SmileOutlined/>} onClick={()=>setToolPicker(current=>current?.clipId===draft.clipId&&current.kind==='emoji'?undefined:{clipId:draft.clipId,kind:'emoji'})}>表情</Button><Button type={toolPicker?.clipId===draft.clipId&&toolPicker.kind==='tag'?'default':'text'} size="small" icon={<TagOutlined/>} onClick={()=>setToolPicker(current=>current?.clipId===draft.clipId&&current.kind==='tag'?undefined:{clipId:draft.clipId,kind:'tag'})}>添加标签</Button><Button type={aiAssistOpen?'default':'text'} size="small" icon={<ThunderboltOutlined/>} onClick={()=>setAiAssistOpen(open=>!open)}>AI 辅助</Button>{draft.hashtags.map(value=><Tag closable onClose={event=>{event.preventDefault();removeTag(draft,value)}} key={value}>{value}</Tag>)}</div>{toolPicker?.clipId===draft.clipId&&<div className="publish-composer-tool-panel">{toolPicker.kind==='emoji'?<div className="publish-emoji-grid">{composerEmojis.map(emoji=><button type="button" key={emoji} onClick={()=>appendEmoji(draft,emoji)}>{emoji}</button>)}</div>:<div className="publish-tag-popover"><Space.Compact block><Input value={tagInputs[draft.clipId]||''} onChange={event=>setTagInputs(old=>({...old,[draft.clipId]:event.target.value}))} onPressEnter={event=>{event.preventDefault();addTags(draft,tagInputs[draft.clipId]||'')}} placeholder="输入标签，可用空格分隔"/><Button type="primary" onClick={()=>addTags(draft,tagInputs[draft.clipId]||'')}>添加</Button></Space.Compact><div className="publish-tag-suggestions">{composerTags.map(value=><button type="button" key={value} onClick={()=>addTags(draft,value)}>{value}</button>)}</div></div>}</div>}<Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="可选，发布后作为真实首条评论发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请选择发布视频':'暂无可发布视频'}/>}
      {aiAssistOpen&&<div className="publish-ai-assist">
       <div className="publish-ai-assist-heading"><ThunderboltOutlined/><div><b>AI 辅助撰写</b><span>按剧情、账号策略和参考样本生成，生成后仍可继续编辑</span></div></div>
       <div className="publish-ai-assist-settings"><Select allowClear value={strategyId} onChange={setStrategyId} placeholder="选择运营策略（可选）" options={strategies.filter(x=>x.confirmed).map(x=>({value:x.id,label:x.name}))}/><Input value={language} onChange={e=>setLanguage(e.target.value)} placeholder="目标语言"/>{drama?.theater&&<label><Switch size="small" checked={includeTheaterTag} onChange={setIncludeTheaterTag}/><span>{theaterTag(drama.theater)}</span></label>}</div>
