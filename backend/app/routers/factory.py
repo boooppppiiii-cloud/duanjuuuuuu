@@ -160,6 +160,18 @@ def _analysis_task_for_payload(
     return task
 
 
+def _public_analysis_payload(payload: dict | None) -> dict:
+    """Remove private resume state and keep progress responses small."""
+    public = dict(payload or {})
+    public.pop("window_checkpoints", None)
+    episodes = public.get("episodes")
+    completed = len(episodes) if isinstance(episodes, list) else 0
+    public["completed_episode_count"] = completed
+    if public.get("status") != "completed" or not isinstance(episodes, list):
+        public["episodes"] = []
+    return public
+
+
 def _delete_analysis_files(folder: Path) -> None:
     for name in ("factory_analysis.json", "manual_sensitive.json"):
         (folder / name).unlink(missing_ok=True)
@@ -262,7 +274,7 @@ def get_script_analysis(
         and (base.get("provider") not in {"gemini", "qwen"} or int(base.get("analysis_version", 0)) != ANALYSIS_VERSION)
     )
     return {
-        **base, "ai_ready": ai_ready, "configured_provider": provider, "configured_model": model,
+        **_public_analysis_payload(base), "ai_ready": ai_ready, "configured_provider": provider, "configured_model": model,
         "requires_reanalysis": requires_reanalysis, "is_active": factory_analysis_pipeline.is_active(drama_id),
     }
 
@@ -328,7 +340,7 @@ def run_script_analysis(
         except FactoryAIUnavailableError as exc:
             raise HTTPException(422, str(exc)) from exc
     if factory_analysis_pipeline.is_active(drama_id):
-        return read_analysis(Path(drama.file_dir))
+        return _public_analysis_payload(read_analysis(Path(drama.file_dir)))
     words = [item.word for item in session.exec(select(EmotionWord).where(EmotionWord.enabled == True)).all()]  # noqa: E712
     previous = read_analysis(Path(drama.file_dir)) or {}
     if previous.get("status") == "completed" and int(previous.get("analysis_version", 0)) == ANALYSIS_VERSION:
@@ -366,7 +378,7 @@ def run_script_analysis(
         daemon=True,
     ).start()
     record_usage("内容识别", user_id=user.id, event_kind="feature", cache_hit=False, details={"drama_id": drama_id, "resume": resume})
-    return {**result, "is_active": True}
+    return {**_public_analysis_payload(result), "is_active": True}
 
 
 @router.get("/task-history", response_model=list[FactoryTaskHistoryView])

@@ -68,7 +68,10 @@ def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
         user=SimpleNamespace(id=23),
     )
 
-    assert result == {"status": "queued", "progress": 0, "task_id": 91, "is_active": True}
+    assert result == {
+        "status": "queued", "progress": 0, "task_id": 91,
+        "completed_episode_count": 0, "episodes": [], "is_active": True,
+    }
     assert started["started"] is True
     assert started["target"] is factory._run_analysis_as_user
     assert started["name"] == "factory-analysis-7"
@@ -100,3 +103,31 @@ def test_analysis_rejects_missing_video_before_creating_task(monkeypatch, tmp_pa
 
     assert caught.value.status_code == 422
     assert "选择本地文件夹" in str(caught.value.detail)
+
+
+def test_processing_analysis_payload_is_compact_but_preserves_completed_count():
+    payload = {
+        "status": "processing",
+        "progress": 48,
+        "episodes": [{"episode": "Episode1.mp4", "segments": [{"text": "long transcript"}]}],
+        "window_checkpoints": {"Episode2.mp4": {"windows": {"0-60": {"data": {"summary": "private"}}}}},
+    }
+
+    result = factory._public_analysis_payload(payload)
+
+    assert result["completed_episode_count"] == 1
+    assert result["episodes"] == []
+    assert "window_checkpoints" not in result
+    assert payload["episodes"]
+    assert "window_checkpoints" in payload
+
+
+def test_completed_analysis_payload_keeps_review_data_without_private_cache():
+    episode = {"episode": "Episode1.mp4", "segments": [], "high_energy": [], "sensitive": []}
+    result = factory._public_analysis_payload({
+        "status": "completed", "episodes": [episode], "window_checkpoints": {"unused": {}},
+    })
+
+    assert result["completed_episode_count"] == 1
+    assert result["episodes"] == [episode]
+    assert "window_checkpoints" not in result

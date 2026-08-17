@@ -554,6 +554,14 @@ def failed_analysis(folder: Path, drama_id: int, title: str, error: Exception) -
     return write_analysis(folder, {
         **previous, "status": "failed", "current_step": "识别中断，可从已完成剧集继续",
         "error_message": str(error)[-2000:], "drama_id": drama_id, "title": title, "updated_at": utc_timestamp(),
+        "episodes": previous.get("episodes") if isinstance(previous.get("episodes"), list) else [],
+        "episode_count": int(previous.get("episode_count", 0) or 0),
+        "total_duration": float(previous.get("total_duration", 0) or 0),
+        "segment_count": int(previous.get("segment_count", 0) or 0),
+        "high_energy_count": int(previous.get("high_energy_count", 0) or 0),
+        "sensitive_count": int(previous.get("sensitive_count", 0) or 0),
+        "sampled_frame_count": int(previous.get("sampled_frame_count", 0) or 0),
+        "api_call_count": int(previous.get("api_call_count", 0) or 0),
     })
 
 

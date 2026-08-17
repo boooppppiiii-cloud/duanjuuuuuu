@@ -259,6 +259,8 @@ button,a,input,textarea,.ant-select-selector { transition:border-color .18s ease
 .publish-settings-card .platform-setting-row .ant-form-item,.publish-settings-card .platform-setting-block .ant-form-item { margin-bottom:0; }
 .publish-settings-card>.ant-card-body>.ant-btn:last-child { display:block; width:auto; min-width:180px; margin-left:auto; padding-inline:24px; }
 .route-loading { min-height:58vh; display:grid; place-content:center; place-items:center; gap:12px; color:var(--muted); }
+.workspace-error-state { min-height:58vh; display:grid; place-content:center; justify-items:center; gap:18px; padding:32px; }
+.workspace-error-state .ant-alert { width:min(620px,calc(100vw - 64px)); }
 .overview-section { display:grid; gap:14px; padding:0; border:0; border-radius:0; background:transparent; }
 .overview-pager-row { display:flex; align-items:center; justify-content:flex-start; }
 .overview-pager { width:min(100%,560px); padding:4px; background:#edf3e9; }

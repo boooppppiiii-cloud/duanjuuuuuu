@@ -4,6 +4,7 @@ import { Button,Layout,Menu,Spin,Tooltip } from 'antd'
 import { Navigate,Route,Routes,useLocation,useNavigate } from 'react-router-dom'
 import { PlatformLogo } from './components/PlatformBrand'
 import { JushuLogo } from './components/JushuLogo'
+import { WorkspaceErrorBoundary } from './components/WorkspaceErrorBoundary'
 import { api,type AuthUser } from './api'
 import { AuthContext } from './auth'
 import AuthPage from './pages/AuthPage'
@@ -55,11 +56,11 @@ export default function App(){
     <div className="sidebar-account"><div><b>{collapsed?user.email[0].toUpperCase():user.email.split('@')[0]}</b>{!collapsed&&<span>{user.email}</span>}</div><Tooltip title="退出登录"><Button type="text" icon={<LogoutOutlined/>} onClick={logout}/></Tooltip></div>
   </Layout.Sider>
   <Layout className="main-layout">
-   <Layout.Content className="content"><Suspense fallback={<div className="route-loading"><Spin size="large"/><span>正在加载工作区…</span></div>}><Routes>
+   <Layout.Content className="content"><WorkspaceErrorBoundary resetKey={location.pathname}><Suspense fallback={<div className="route-loading"><Spin size="large"/><span>正在加载工作区…</span></div>}><Routes>
      <Route path="/" element={<DashboardPage/>}/><Route path="/dramas" element={<DramaLibrary/>}/><Route path="/dramas/:id" element={<DramaDetail/>}/><Route path="/radar" element={<Radar/>}/><Route path="/radar/dramas/:id" element={<Radar/>}/><Route path="/radar/accounts" element={<Radar/>}/><Route path="/radar/cases" element={<Radar/>}/><Route path="/factory" element={<ContentFactory/>}/><Route path="/publishing" element={<PublishingCenter/>}/><Route path="/management" element={<Management/>}/><Route path="/meta-delivery" element={<MetaDelivery/>}/>
      <Route path="/developer" element={user.is_developer?<DeveloperAnalytics/>:<Navigate to="/" replace/>}/>
     <Route path="/production" element={<Navigate to="/factory" replace/>}/><Route path="/visual-moderation" element={<Navigate to="/factory" replace/>}/><Route path="/creative" element={<Navigate to="/publishing" replace/>}/><Route path="/publish" element={<Navigate to="/publishing" replace/>}/><Route path="/matrix" element={<Navigate to="/management" replace/>}/><Route path="/strategies" element={<Navigate to="/management" replace/>}/><Route path="/metrics" element={<Navigate to="/" replace/>}/><Route path="/engagement" element={<Navigate to="/" replace/>}/><Route path="/library" element={<Navigate to="/dramas" replace/>}/><Route path="/operations" element={<Navigate to="/management" replace/>}/><Route path="*" element={<Navigate to="/" replace/>}/>
-   </Routes></Suspense></Layout.Content>
+   </Routes></Suspense></WorkspaceErrorBoundary></Layout.Content>
   </Layout>
   </Layout></AuthContext.Provider>
 }
