@@ -1,5 +1,5 @@
 import {
- CalendarOutlined,CheckCircleOutlined,ClockCircleOutlined,EditOutlined,FolderOpenOutlined,InboxOutlined,LinkOutlined,
+ CalendarOutlined,CheckCircleOutlined,ClockCircleOutlined,CopyOutlined,EditOutlined,FolderOpenOutlined,InboxOutlined,LinkOutlined,
  PictureOutlined,ReloadOutlined,RocketOutlined,SafetyCertificateOutlined,SmileOutlined,SyncOutlined,TagOutlined,ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
@@ -43,6 +43,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const[strategyId,setStrategyId]=useState<number>();const[language,setLanguage]=useState('English')
  const[includeTheaterTag,setIncludeTheaterTag]=useState(true)
  const[drafts,setDrafts]=useState<ContentDraft[]>([]);const[provider,setProvider]=useState('');const[coverKind,setCoverKind]=useState<CoverKind>()
+ const[contentSourceClipId,setContentSourceClipId]=useState<number>()
  const[aiAssistOpen,setAiAssistOpen]=useState(false);const captionRefs=useRef<Record<number,TextAreaRef|null>>({})
  const[mode,setMode]=useState<'now'|'schedule'>('now');const[generating,setGenerating]=useState(false);const[working,setWorking]=useState(false)
  const[uploadOpen,setUploadOpen]=useState(false);const[uploadFiles,setUploadFiles]=useState<UploadFile[]>([]);const[uploadProgress,setUploadProgress]=useState<Record<string,number>>({})
@@ -52,7 +53,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const load=async(force=false)=>{
   const[d,c,a,p,j,i]=await Promise.all([api.list(force),api.clips(undefined,force),api.accounts(force),api.posts(force),api.publishJobs(force),api.integrationConfig(force)])
   setDramas(d);setClips(c);setAccounts(a);setStrategies(getLocalStrategies(user.id));setBindings(getLocalBindings(user.id));setPosts(p);setJobs(j);setIntegration(i)
-  if(!dramaId){const requested=Number(params.get('drama'));const picked=d.find(x=>x.id===requested)||d[0];if(picked){const latest=c.find(x=>x.drama_id===picked.id&&x.status==='approved');setDramaId(picked.id);setCoverKind(preferredCover(picked));form.setFieldValue('ai_disclosure',picked.is_ai_generated);if(latest){setSelectedClips([latest.id]);setDrafts([blankDraft(latest.id)])}}}
+  if(!dramaId){const requested=Number(params.get('drama'));const picked=d.find(x=>x.id===requested)||d[0];if(picked){const latest=c.find(x=>x.drama_id===picked.id&&x.status==='approved');setDramaId(picked.id);setCoverKind(preferredCover(picked));form.setFieldValue('ai_disclosure',picked.is_ai_generated);if(latest){setSelectedClips([latest.id]);setDrafts([blankDraft(latest.id)]);setContentSourceClipId(latest.id)}}}
  }
  useEffect(()=>{load().catch(e=>msg.error(e.message))},[])
 
@@ -71,10 +72,11 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const coverChoices=useMemo(()=>drama?.cover_horizontal_path?[{kind:'horizontal' as const,title:'横版封面',ratio:'16:9',path:drama.cover_horizontal_path}]:[],[drama])
  const overallUploadPercent=useMemo(()=>uploadFiles.length?Math.round(uploadFiles.reduce((sum,file)=>sum+(uploadProgress[file.uid]||0),0)/uploadFiles.length):0,[uploadFiles,uploadProgress])
 
- const changeDrama=(id:number)=>{const next=dramas.find(x=>x.id===id);const latest=clips.find(x=>x.drama_id===id&&x.status==='approved');setDramaId(id);setSelectedClips(latest?[latest.id]:[]);setDrafts(latest?[blankDraft(latest.id)]:[]);setClipAccounts({});setBulkAccounts([]);setProvider('');setIncludeTheaterTag(true);setAiAssistOpen(false);setCoverKind(preferredCover(next));form.setFieldValue('ai_disclosure',Boolean(next?.is_ai_generated))}
+ const changeDrama=(id:number)=>{const next=dramas.find(x=>x.id===id);const latest=clips.find(x=>x.drama_id===id&&x.status==='approved');setDramaId(id);setSelectedClips(latest?[latest.id]:[]);setDrafts(latest?[blankDraft(latest.id)]:[]);setContentSourceClipId(latest?.id);setClipAccounts({});setBulkAccounts([]);setProvider('');setIncludeTheaterTag(true);setAiAssistOpen(false);setCoverKind(preferredCover(next));form.setFieldValue('ai_disclosure',Boolean(next?.is_ai_generated))}
  const changeClips=(ids:number[])=>{
   setSelectedClips(ids)
   setDrafts(rows=>ids.map(id=>rows.find(x=>x.clipId===id)||blankDraft(id)))
+  setContentSourceClipId(current=>current&&ids.includes(current)?current:ids[0])
   setClipAccounts(rows=>Object.fromEntries(ids.filter(id=>rows[id]?.length).map(id=>[id,rows[id]])))
  }
  const syncAccountSettings=async(ids:number[])=>{
@@ -112,6 +114,19 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   }catch(e){msg.error((e as Error).message)}finally{setGenerating(false)}
  }
  const editDraft=(clipId:number,patch:Partial<ContentDraft>)=>setDrafts(rows=>selectedClips.map(id=>{const row=rows.find(item=>item.clipId===id)||blankDraft(id);return id===clipId?{...row,...patch}:row}))
+ const applyContentToAll=()=>{
+  if(selectedClips.length<2){msg.info('请先选择至少两个视频');return}
+  const sourceId=contentSourceClipId??selectedClips[0]
+  const source=selectedDrafts.find(draft=>draft.clipId===sourceId)
+  if(!source?.title.trim()&&!source?.caption.trim()&&!source?.firstComment.trim()){msg.info('请先填写作为模板的视频内容');return}
+  setDrafts(selectedClips.map(clipId=>({
+   ...source,
+   clipId,
+   hashtags:[...source.hashtags],
+   hitWords:[...source.hitWords],
+  })))
+  msg.success(`已将发布内容应用到 ${selectedClips.length} 个视频`)
+ }
  const insertIntoCaption=(draft:ContentDraft,text:string)=>{
   const textarea=captionRefs.current[draft.clipId]?.resizableTextArea?.textArea
   const start=textarea?.selectionStart??draft.caption.length;const end=textarea?.selectionEnd??start
@@ -176,6 +191,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
 
     <Card className="publish-flow-card publish-composer-card" title="发布内容">
      {!!selectedAccountRows.length&&<div className="publish-account-strip">{selectedAccountRows.map(x=><span key={x.id}><PlatformBadge platform={x.platform} size={20}/>{x.name}</span>)}</div>}
+     {selectedDrafts.length>1&&<div className="publish-copy-toolbar"><div><CopyOutlined/><span><b>复用发布内容</b><small>复制标题、文案、标签和首条评论，不改变账号匹配</small></span></div><Space.Compact><Select value={contentSourceClipId??selectedClips[0]} onChange={setContentSourceClipId} optionFilterProp="label" options={selectedDrafts.map((draft,index)=>({value:draft.clipId,label:`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`}))}/><Button icon={<CopyOutlined/>} onClick={applyContentToAll}>应用到全部视频</Button></Space.Compact></div>}
      {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-targets"><span>发布到</span><Space wrap>{(clipAccounts[draft.clipId]||[]).map(id=>{const account=accounts.find(x=>x.id===id);return account?<span key={id}><PlatformBadge platform={account.platform} size={15}/>{account.name}</span>:null})}{!(clipAccounts[draft.clipId]?.length)&&<Tag color="red">尚未匹配账号</Tag>}</Space></div><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="手动输入发布标题"/></Form.Item><Form.Item label="文案" required><Input.TextArea ref={node=>{captionRefs.current[draft.clipId]=node}} className="publish-caption-editor" autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value,hashtags:extractTags(e.target.value)})} placeholder="输入发布文案"/></Form.Item><div className="publish-editor-tools"><Button type="text" size="small" icon={<SmileOutlined/>} onClick={()=>focusForSystemEmoji(draft)} title="Windows：Win + .；macOS：Control + Command + 空格">表情 · Win + .</Button><Button type="text" size="small" icon={<TagOutlined/>} onClick={()=>insertIntoCaption(draft,'#')}>添加标签</Button><Button type={aiAssistOpen?'default':'text'} size="small" icon={<ThunderboltOutlined/>} onClick={()=>setAiAssistOpen(open=>!open)}>AI 辅助</Button></div><Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="可选，发布后作为真实首条评论发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请选择发布视频':'暂无可发布视频'}/>}
      {aiAssistOpen&&<div className="publish-ai-assist">
       <div className="publish-ai-assist-heading"><ThunderboltOutlined/><div><b>AI 辅助撰写</b><span>按剧情、账号策略和参考样本生成，生成后仍可继续编辑</span></div></div>
