@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,16 +16,20 @@ from ..config import Settings, get_settings
 from .drama_library import episode_files
 from .factory_multimodal import (
     FactoryAIUnavailableError,
+    FrameSample,
     analyze_window,
     choose_frame_times,
+    extract_frame_pool,
     extract_frames,
     provider_name,
+    select_frames,
 )
 from .hook_recommender import loudness_peaks, media_duration
 
 
 DEFAULT_ENERGY_WORDS = ["打脸", "离婚", "背叛", "真相", "复仇", "后悔", "秘密", "竟然", "居然", "身份"]
 ANALYSIS_VERSION = 6
+ANALYSIS_CACHE_VERSION = 1
 MAX_HIGH_ENERGY_CANDIDATES = 10
 MIN_HIGH_ENERGY_SECONDS = 15.0
 MAX_HIGH_ENERGY_SECONDS = 30.0
@@ -49,6 +57,27 @@ def analysis_file(folder: Path) -> Path:
 
 def manual_sensitive_file(folder: Path) -> Path:
     return folder / "manual_sensitive.json"
+
+
+def source_file_fingerprint(path: Path, chunk_size: int = 64 * 1024) -> str:
+    """Fast content fingerprint that survives moving a source folder."""
+    size = path.stat().st_size
+    digest = hashlib.sha256()
+    digest.update(str(size).encode("ascii"))
+    with path.open("rb") as stream:
+        offsets = (0, max(0, size // 2 - chunk_size // 2), max(0, size - chunk_size))
+        for offset in offsets:
+            stream.seek(offset)
+            digest.update(stream.read(chunk_size))
+    return digest.hexdigest()
+
+
+def source_set_fingerprint(videos: list[Path], fingerprints: dict[str, str] | None = None) -> str:
+    values = fingerprints or {video.name: source_file_fingerprint(video) for video in videos}
+    digest = hashlib.sha256()
+    for video in videos:
+        digest.update(values[video.name].encode("ascii"))
+    return digest.hexdigest()
 
 
 def _reason_list(value: Any) -> list[str]:
@@ -658,6 +687,34 @@ def _local_test_result(segments: list[dict[str, Any]], window_start: float, wind
     }
 
 
+def _merge_model_results(primary: dict[str, Any], dense: dict[str, Any]) -> dict[str, Any]:
+    result = dict(primary)
+    for key in ("sensitive", "high_energy"):
+        result[key] = [*(primary.get(key) or []), *(dense.get(key) or [])]
+    summaries = [str(value).strip() for value in (primary.get("summary"), dense.get("summary")) if str(value or "").strip()]
+    result["summary"] = " ".join(dict.fromkeys(summaries))
+    return result
+
+
+def _needs_dense_review(data: dict[str, Any], transcript: list[dict[str, Any]]) -> bool:
+    """Escalate suspicious windows while normal windows stay on the cheap pass."""
+    sensitive = [row for row in data.get("sensitive", []) or [] if isinstance(row, dict)]
+    high_energy = [row for row in data.get("high_energy", []) or [] if isinstance(row, dict)]
+    if sensitive or any(float(row.get("score", 0) or 0) >= 70 for row in high_energy):
+        return True
+    text = " ".join([
+        str(data.get("summary") or ""),
+        *[str(row.get("text") or "") for row in transcript],
+    ]).casefold()
+    risk_terms = {
+        *SEXUAL_SIGNAL_TERMS,
+        *[word for values in SENSITIVE_TERMS.values() for word in values],
+        "bed", "bedroom", "underwear", "lingerie", "naked", "nude", "kiss", "touch",
+        "grope", "thrust", "skirt", "moan", "religion", "church", "temple", "god", "priest",
+    }
+    return any(term.casefold() in text for term in risk_terms)
+
+
 def analyze_drama(
     folder: Path,
     drama_id: int,
@@ -723,13 +780,24 @@ def analyze_drama(
         except Exception as exc:
             raise RuntimeError(f"本地语音识别模型加载失败：{exc}") from exc
 
+    run_started = time.perf_counter()
     video_names = {video.name for video in videos}
+    fingerprints = {video.name: source_file_fingerprint(video) for video in videos}
+    source_fingerprint = source_set_fingerprint(videos, fingerprints)
     completed_by_name = {
         str(item.get("episode")): item for item in (previous or {}).get("episodes", [])
-        if isinstance(item, dict) and item.get("episode") in video_names
+        if isinstance(item, dict)
+        and item.get("episode") in video_names
+        and (not item.get("source_fingerprint") or item.get("source_fingerprint") == fingerprints[str(item.get("episode"))])
     }
+    cache_matches_source = bool(
+        resume
+        and (previous or {}).get("source_fingerprint") in {None, "", source_fingerprint}
+        and int((previous or {}).get("analysis_cache_version", ANALYSIS_CACHE_VERSION)) == ANALYSIS_CACHE_VERSION
+    )
+    window_checkpoints: dict[str, Any] = deepcopy((previous or {}).get("window_checkpoints", {})) if cache_matches_source else {}
     frame_dir = folder / "analysis_frames"
-    if frame_dir.is_dir() and not resume:
+    if frame_dir.is_dir() and (not resume or not cache_matches_source):
         shutil.rmtree(frame_dir)
     frame_dir.mkdir(parents=True, exist_ok=True)
     active_words = sorted({*DEFAULT_ENERGY_WORDS, *[word for word in energy_words if word]})
@@ -740,16 +808,35 @@ def analyze_drama(
     total_duration = sum(float(item.get("duration", 0)) for item in episode_results)
     sampled_frame_count = int((previous or {}).get("sampled_frame_count", 0)) if resume else 0
     api_call_count = int((previous or {}).get("api_call_count", 0)) if resume else 0
+    cached_window_count = 0
     window_seconds = max(30, int(getattr(settings, "factory_analysis_window_seconds", 60)))
     window_overlap = max(0, int(getattr(settings, "factory_analysis_window_overlap_seconds", 15)))
     max_frames = max(8, min(48, int(getattr(settings, "factory_analysis_frames_per_window", 36))))
+    initial_frames = max(8, min(max_frames, int(getattr(settings, "factory_analysis_initial_frames_per_window", 12))))
+    window_concurrency = max(1, min(2, int(getattr(settings, "factory_analysis_window_concurrency", 1))))
+    two_stage_enabled = bool(getattr(settings, "factory_analysis_two_stage_enabled", False))
+    batch_frames_enabled = bool(getattr(settings, "factory_analysis_batch_frames_enabled", False))
+    frame_interval = max(1.0, min(5.0, float(getattr(settings, "factory_analysis_frame_interval_seconds", 2.0))))
     beam_size = max(1, min(5, int(getattr(settings, "factory_whisper_beam_size", 1))))
     video_order = {video.name: index for index, video in enumerate(videos)}
+    previous_timings = (previous or {}).get("stage_timings") or {}
+    stage_timings = {
+        "transcription_seconds": float(previous_timings.get("transcription_seconds", 0)) if resume else 0.0,
+        "frame_extraction_seconds": float(previous_timings.get("frame_extraction_seconds", 0)) if resume else 0.0,
+        "ai_review_seconds": float(previous_timings.get("ai_review_seconds", 0)) if resume else 0.0,
+    }
+    previous_total_seconds = float(previous_timings.get("total_seconds", 0)) if resume else 0.0
+    completed_window_count = sum(int(item.get("window_count", 0)) for item in episode_results)
+    total_window_count = completed_window_count
 
     def ordered_results() -> list[dict[str, Any]]:
         return sorted(episode_results, key=lambda item: video_order.get(str(item.get("episode")), len(videos)))
 
     def checkpoint(progress: float, step: str) -> dict[str, Any]:
+        timings = {
+            **{key: round(value, 2) for key, value in stage_timings.items()},
+            "total_seconds": round(previous_total_seconds + time.perf_counter() - run_started, 2),
+        }
         return write_analysis(folder, {
             **(previous or {}), "task_id": task_id,
             "status": "processing", "progress": min(99, max(1, round(progress))),
@@ -759,6 +846,10 @@ def analyze_drama(
             "total_duration": round(total_duration, 2), "segment_count": total_segments,
             "high_energy_count": total_high_energy, "sensitive_count": total_sensitive,
             "sampled_frame_count": sampled_frame_count, "api_call_count": api_call_count,
+            "cached_window_count": cached_window_count,
+            "completed_window_count": completed_window_count, "total_window_count": total_window_count,
+            "stage_timings": timings, "source_fingerprint": source_fingerprint,
+            "analysis_cache_version": ANALYSIS_CACHE_VERSION, "window_checkpoints": window_checkpoints,
             "started_at": started_at, "updated_at": utc_timestamp(), "resume_count": resume_count,
             "analysis_version": ANALYSIS_VERSION,
         })
@@ -773,16 +864,32 @@ def analyze_drama(
         episode_base = 5 + completed_count / max(1, len(videos)) * 90
         episode_share = 90 / max(1, len(videos))
         checkpoint(episode_base, f"本地转写 {completed_count + 1}/{len(videos)} · {video.name}")
+        episode_cache = window_checkpoints.get(video.name)
+        if not isinstance(episode_cache, dict) or episode_cache.get("source_fingerprint") != fingerprints[video.name]:
+            episode_cache = {
+                "source_fingerprint": fingerprints[video.name], "windows": {},
+                "analysis_cache_version": ANALYSIS_CACHE_VERSION,
+            }
+            window_checkpoints[video.name] = episode_cache
         try:
-            duration = media_duration(settings.ffprobe_binary, video)
-            peaks = loudness_peaks(settings.ffmpeg_binary, video)
-            try:
-                transcript, _ = model.transcribe(
-                    str(video), vad_filter=True, beam_size=beam_size, condition_on_previous_text=False,
-                )
-            except TypeError:
-                transcript, _ = model.transcribe(str(video), vad_filter=True)
-            segments = [row for segment in transcript if (row := _segment_row(segment, peaks, active_words))]
+            if isinstance(episode_cache.get("segments"), list) and episode_cache.get("duration") is not None:
+                duration = float(episode_cache["duration"])
+                peaks = [(float(row[0]), float(row[1])) for row in episode_cache.get("peaks", [])]
+                segments = list(episode_cache["segments"])
+            else:
+                transcription_started = time.perf_counter()
+                duration = media_duration(settings.ffprobe_binary, video)
+                peaks = loudness_peaks(settings.ffmpeg_binary, video)
+                try:
+                    transcript, _ = model.transcribe(
+                        str(video), vad_filter=True, beam_size=beam_size, condition_on_previous_text=False,
+                    )
+                except TypeError:
+                    transcript, _ = model.transcribe(str(video), vad_filter=True)
+                segments = [row for segment in transcript if (row := _segment_row(segment, peaks, active_words))]
+                stage_timings["transcription_seconds"] += time.perf_counter() - transcription_started
+                episode_cache.update({"duration": duration, "peaks": peaks, "segments": segments})
+                checkpoint(episode_base + episode_share * .4, f"转写结果已保存 · {video.name}")
         except Exception as exc:
             raise RuntimeError(f"{video.name} 脚本拆解失败：{exc}") from exc
         checkpoint(episode_base + episode_share * .42, f"转写完成，准备抽帧 · {video.name}")
@@ -790,36 +897,130 @@ def analyze_drama(
         episode_high: list[dict[str, Any]] = []
         episode_sensitive: list[dict[str, Any]] = []
         summaries: list[str] = []
-        episode_sampled_frames = episode_api_calls = 0
+        episode_sampled_frames = int(episode_cache.get("frame_pool_size", 0)) if episode_cache.get("frame_pool_counted") else 0
+        episode_api_calls = 0
         windows = _analysis_windows(duration, window_seconds, window_overlap)
         window_count = len(windows)
+        total_window_count += window_count
+        cached_windows = episode_cache.setdefault("windows", {})
+        pending: list[tuple[int, float, float, list[dict[str, Any]], str]] = []
+        cached_results: list[dict[str, Any]] = []
         for window_index, (window_start, window_end) in enumerate(windows):
-            window_segments = [row for row in segments if row["end"] >= window_start and row["start"] <= window_end]
-            checkpoint(
-                episode_base + episode_share * (.42 + .5 * window_index / window_count),
-                f"抽取证据帧 {completed_count + 1}/{len(videos)} · 窗口 {window_index + 1}/{window_count}",
-            )
-            times = choose_frame_times(window_start, window_end, peaks, max_frames)
-            frames = extract_frames(settings, video, frame_dir, episode_index, times)
-            sampled_frame_count += len(frames)
-            episode_sampled_frames += len(frames)
-            checkpoint(
-                episode_base + episode_share * (.48 + .44 * window_index / window_count),
-                f"AI 审查 {completed_count + 1}/{len(videos)} · 窗口 {window_index + 1}/{window_count}",
-            )
-            if ai_analyzer:
-                raw = ai_analyzer(video.name, window_start, window_end, window_segments, frames)
-                if isinstance(raw, tuple):
-                    data, provider, provider_model = raw
-                else:
-                    data = raw
-            elif production_ai:
-                data, provider, provider_model = analyze_window(settings, video.name, window_start, window_end, window_segments, frames)
+            window_key = f"{window_start:.2f}-{window_end:.2f}"
+            cached = cached_windows.get(window_key)
+            if isinstance(cached, dict) and isinstance(cached.get("data"), dict):
+                cached_results.append({**cached, "window_index": window_index, "window_start": window_start, "window_end": window_end, "cached": True})
             else:
-                data = _local_test_result(window_segments, window_start, window_end)
-            api_call_count += int(production_ai or ai_analyzer is not None)
-            episode_api_calls += int(production_ai or ai_analyzer is not None)
-            high, sensitive = _model_candidates(data, segments, frames, window_start, window_end, provider)
+                window_segments = [row for row in segments if row["end"] >= window_start and row["start"] <= window_end]
+                pending.append((window_index, window_start, window_end, window_segments, window_key))
+
+        frame_pool = []
+        if pending and batch_frames_enabled:
+            extraction_started = time.perf_counter()
+            frame_pool = extract_frame_pool(settings, video, frame_dir, episode_index, duration, frame_interval)
+            stage_timings["frame_extraction_seconds"] += time.perf_counter() - extraction_started
+            if not episode_cache.get("frame_pool_counted"):
+                sampled_frame_count += len(frame_pool)
+                episode_sampled_frames += len(frame_pool)
+                episode_cache["frame_pool_counted"] = True
+                episode_cache["frame_pool_size"] = len(frame_pool)
+            checkpoint(
+                episode_base + episode_share * .48,
+                f"批量抽帧完成 {completed_count + 1}/{len(videos)} · {len(frame_pool)} 帧",
+            )
+
+        def run_window(item: tuple[int, float, float, list[dict[str, Any]], str]) -> dict[str, Any]:
+            window_index, window_start, window_end, window_segments, window_key = item
+            frame_seconds = 0.0
+            base_times = choose_frame_times(window_start, window_end, peaks, initial_frames)
+            if batch_frames_enabled:
+                base_frames = select_frames(frame_pool, base_times)
+            else:
+                extraction_started = time.perf_counter()
+                base_frames = extract_frames(settings, video, frame_dir, episode_index, base_times)
+                frame_seconds += time.perf_counter() - extraction_started
+            review_started = time.perf_counter()
+
+            def call_model(frames: list[Any]) -> tuple[dict[str, Any], str, str]:
+                if ai_analyzer:
+                    raw = ai_analyzer(video.name, window_start, window_end, window_segments, frames)
+                    if isinstance(raw, tuple):
+                        return raw
+                    return raw, provider, provider_model
+                if production_ai:
+                    return analyze_window(settings, video.name, window_start, window_end, window_segments, frames)
+                return _local_test_result(window_segments, window_start, window_end), provider, provider_model
+
+            data, used_provider, used_model = call_model(base_frames)
+            calls = int(production_ai or ai_analyzer is not None)
+            all_frames = base_frames
+            dense_review = two_stage_enabled and max_frames > initial_frames and _needs_dense_review(data, window_segments)
+            if dense_review:
+                dense_times = choose_frame_times(window_start, window_end, peaks, max_frames)
+                if batch_frames_enabled:
+                    dense_frames = select_frames(frame_pool, dense_times)
+                else:
+                    extraction_started = time.perf_counter()
+                    dense_frames = extract_frames(settings, video, frame_dir, episode_index, dense_times)
+                    frame_seconds += time.perf_counter() - extraction_started
+                dense_data, used_provider, used_model = call_model(dense_frames)
+                data = _merge_model_results(data, dense_data)
+                all_frames = dense_frames
+                calls += int(production_ai or ai_analyzer is not None)
+            return {
+                "window_index": window_index, "window_start": window_start, "window_end": window_end,
+                "window_key": window_key, "data": data, "provider": used_provider, "model": used_model,
+                "frame_files": [frame.path.name for frame in all_frames],
+                "frame_seconds": [frame.second for frame in all_frames], "frame_count": len(all_frames),
+                "api_calls": calls, "dense_review": dense_review,
+                "frame_extraction_seconds": frame_seconds,
+                "ai_review_seconds": time.perf_counter() - review_started,
+                "cached": False,
+            }
+
+        window_results = list(cached_results)
+        if pending:
+            checkpoint(
+                episode_base + episode_share * .5,
+                f"AI 双窗口并行审查 {completed_count + 1}/{len(videos)} · 待处理 {len(pending)} 个窗口",
+            )
+            review_batch_started = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=min(window_concurrency, len(pending)), thread_name_prefix="factory-window") as executor:
+                futures = {executor.submit(copy_context().run, run_window, item): item for item in pending}
+                for future in as_completed(futures):
+                    row = future.result()
+                    window_results.append(row)
+                    provider, provider_model = str(row["provider"]), str(row["model"])
+                    api_call_count += int(row["api_calls"])
+                    episode_api_calls += int(row["api_calls"])
+                    stage_timings["frame_extraction_seconds"] += float(row["frame_extraction_seconds"])
+                    if not batch_frames_enabled:
+                        sampled_frame_count += int(row["frame_count"])
+                        episode_sampled_frames += int(row["frame_count"])
+                    cached_windows[str(row["window_key"])] = {
+                        key: row[key] for key in (
+                            "data", "provider", "model", "frame_files", "frame_seconds", "frame_count",
+                            "api_calls", "dense_review", "frame_extraction_seconds", "ai_review_seconds",
+                        )
+                    }
+                    completed_window_count += 1
+                    checkpoint(
+                        episode_base + episode_share * (.5 + .42 * completed_window_count / max(1, total_window_count)),
+                        f"AI 审查 {completed_count + 1}/{len(videos)} · 本集 {len(window_results)}/{window_count} 个窗口",
+                    )
+            stage_timings["ai_review_seconds"] += time.perf_counter() - review_batch_started
+
+        for row in sorted(window_results, key=lambda item: int(item["window_index"])):
+            if row.get("cached"):
+                cached_window_count += 1
+                completed_window_count += 1
+                episode_api_calls += int(row.get("api_calls", 0))
+            frames = [
+                FrameSample(index=index, second=float(second), path=frame_dir / filename)
+                for index, (filename, second) in enumerate(zip(row.get("frame_files", []), row.get("frame_seconds", [])), start=1)
+            ]
+            data = row["data"]
+            high, sensitive = _model_candidates(data, segments, frames, float(row["window_start"]), float(row["window_end"]), str(row.get("provider") or provider))
             episode_high.extend(high)
             episode_sensitive.extend(sensitive)
             if data.get("summary"):
@@ -832,8 +1033,10 @@ def analyze_drama(
             "episode": video.name, "duration": round(duration, 2), "segment_count": len(segments),
             "segments": segments, "high_energy": episode_high, "sensitive": episode_sensitive,
             "summary": " ".join(summaries), "sampled_frame_count": episode_sampled_frames,
-            "api_call_count": episode_api_calls,
+            "api_call_count": episode_api_calls, "window_count": window_count,
+            "source_fingerprint": fingerprints[video.name],
         })
+        window_checkpoints.pop(video.name, None)
         completed_by_name[video.name] = episode_results[-1]
         total_duration += duration
         total_segments += len(segments)
@@ -850,7 +1053,14 @@ def analyze_drama(
         "total_duration": round(total_duration, 2),
         "segment_count": total_segments, "high_energy_count": total_high_energy,
         "sensitive_count": total_sensitive, "sampled_frame_count": sampled_frame_count,
-        "api_call_count": api_call_count, "episodes": ordered_results(), "started_at": started_at,
+        "api_call_count": api_call_count, "cached_window_count": cached_window_count,
+        "completed_window_count": completed_window_count, "total_window_count": total_window_count,
+        "stage_timings": {
+            **{key: round(value, 2) for key, value in stage_timings.items()},
+            "total_seconds": round(previous_total_seconds + time.perf_counter() - run_started, 2),
+        },
+        "source_fingerprint": source_fingerprint, "analysis_cache_version": ANALYSIS_CACHE_VERSION,
+        "episodes": ordered_results(), "started_at": started_at,
         "updated_at": utc_timestamp(), "resume_count": resume_count,
         "analysis_version": ANALYSIS_VERSION,
     }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -80,6 +81,89 @@ def extract_frames(
         if result.returncode == 0 and target.is_file() and target.stat().st_size:
             samples.append(FrameSample(index=index, second=round(second, 2), path=target))
     return samples
+
+
+def extract_frame_pool(
+    settings: Settings,
+    video: Path,
+    frame_dir: Path,
+    episode_index: int,
+    duration: float,
+    interval_seconds: float = 2.0,
+) -> list[FrameSample]:
+    """Decode one dense frame pool with a single FFmpeg process.
+
+    The previous implementation started FFmpeg once for every requested frame.
+    A 60-second analysis window could therefore start 30 processes.  This pool
+    keeps equivalent chronological coverage while paying decoder startup only
+    once per episode.  Persisted, timestamped JPEGs are also reusable after a
+    task interruption.
+    """
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    marker = frame_dir / f".E{episode_index:03d}_pool_complete"
+    if marker.is_file():
+        existing = sorted(
+            (
+                FrameSample(index=index, second=int(path.stem.rsplit("_", 1)[1]) / 1000, path=path)
+                for index, path in enumerate(frame_dir.glob(f"E{episode_index:03d}_*.jpg"), start=1)
+                if "_pool_" not in path.stem
+            ),
+            key=lambda item: item.second,
+        )
+        if existing:
+            return existing
+
+    interval_seconds = max(1.0, min(5.0, float(interval_seconds)))
+    temporary = frame_dir / f".E{episode_index:03d}_pool"
+    if temporary.is_dir():
+        shutil.rmtree(temporary)
+    temporary.mkdir(parents=True, exist_ok=True)
+    pattern = temporary / "frame_%06d.jpg"
+    result = subprocess.run(
+        [
+            settings.ffmpeg_binary, "-y", "-i", str(video),
+            "-vf", f"fps=1/{interval_seconds:.3f},scale=512:-2",
+            "-q:v", "4", str(pattern),
+        ],
+        capture_output=True,
+        timeout=max(120, int(max(1.0, duration) * 2)),
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="ignore")[-600:]
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise RuntimeError(f"批量抽帧失败：{detail or 'FFmpeg 未生成画面'}")
+
+    samples: list[FrameSample] = []
+    raw_frames = sorted(temporary.glob("frame_*.jpg"))
+    for index, source in enumerate(raw_frames, start=1):
+        second = min(max(0.05, (index - 1) * interval_seconds), max(0.05, duration - 0.05))
+        target = frame_dir / f"E{episode_index:03d}_{round(second * 1000):010d}.jpg"
+        if target.exists():
+            target.unlink()
+        source.replace(target)
+        if target.stat().st_size:
+            samples.append(FrameSample(index=index, second=round(second, 2), path=target))
+    shutil.rmtree(temporary, ignore_errors=True)
+    if not samples:
+        raise RuntimeError("批量抽帧完成，但没有得到可用画面")
+    marker.write_text(str(len(samples)), encoding="ascii")
+    return samples
+
+
+def select_frames(frame_pool: list[FrameSample], times: list[float]) -> list[FrameSample]:
+    """Select the nearest unique pool frames and re-index for model prompts."""
+    if not frame_pool or not times:
+        return []
+    selected: list[FrameSample] = []
+    used: set[Path] = set()
+    for second in times:
+        nearest = min(frame_pool, key=lambda item: abs(item.second - second))
+        if nearest.path in used:
+            continue
+        used.add(nearest.path)
+        selected.append(nearest)
+    selected.sort(key=lambda item: item.second)
+    return [FrameSample(index=index, second=item.second, path=item.path) for index, item in enumerate(selected, start=1)]
 
 
 def _strip_fences(value: str) -> str:

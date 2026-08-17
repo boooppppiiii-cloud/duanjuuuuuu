@@ -1,7 +1,10 @@
 from pathlib import Path
 from types import SimpleNamespace
+import threading
+import time
 
 from app.services import script_analysis
+from app.services.factory_multimodal import FrameSample
 
 
 class FakeModel:
@@ -20,6 +23,125 @@ class CountingModel:
     def transcribe(self, source: str, **_kwargs):
         self.calls.append(Path(source).name)
         return iter([SimpleNamespace(start=0.0, end=3.0, text="突然揭晓身份")]), {}
+
+
+def _frame_pool(tmp_path: Path, count: int = 50) -> list[FrameSample]:
+    return [FrameSample(index=index + 1, second=index * 2.0, path=tmp_path / f"frame-{index}.jpg") for index in range(count)]
+
+
+def test_optimized_analysis_runs_two_windows_concurrently(monkeypatch, tmp_path: Path):
+    episode = tmp_path / "Episode1.mp4"; episode.write_bytes(b"video")
+    monkeypatch.setattr(script_analysis, "episode_files", lambda _folder: [episode])
+    monkeypatch.setattr(script_analysis, "media_duration", lambda *_: 100.0)
+    monkeypatch.setattr(script_analysis, "loudness_peaks", lambda *_: [])
+    monkeypatch.setattr(script_analysis, "extract_frame_pool", lambda *_: _frame_pool(tmp_path))
+    guard = threading.Lock(); active = 0; maximum_active = 0
+
+    def analyzer(*_args):
+        nonlocal active, maximum_active
+        with guard:
+            active += 1; maximum_active = max(maximum_active, active)
+        time.sleep(.04)
+        with guard:
+            active -= 1
+        return {"summary": "普通剧情", "high_energy": [], "sensitive": []}
+
+    settings = SimpleNamespace(
+        ffprobe_binary="ffprobe", ffmpeg_binary="ffmpeg",
+        factory_analysis_window_seconds=60, factory_analysis_window_overlap_seconds=15,
+        factory_analysis_frames_per_window=30, factory_analysis_initial_frames_per_window=12,
+        factory_analysis_window_concurrency=2, factory_analysis_two_stage_enabled=True,
+        factory_analysis_batch_frames_enabled=True, factory_analysis_frame_interval_seconds=2,
+    )
+    result = script_analysis.analyze_drama(tmp_path, 1, "测试剧", settings, [], model=CountingModel(), ai_analyzer=analyzer)
+
+    assert maximum_active == 2
+    assert result["api_call_count"] == 2
+    assert result["completed_window_count"] == result["total_window_count"] == 2
+    assert result["stage_timings"]["ai_review_seconds"] > 0
+
+
+def test_suspicious_window_escalates_from_twelve_to_thirty_frames(monkeypatch, tmp_path: Path):
+    episode = tmp_path / "Episode1.mp4"; episode.write_bytes(b"video")
+    monkeypatch.setattr(script_analysis, "episode_files", lambda _folder: [episode])
+    monkeypatch.setattr(script_analysis, "media_duration", lambda *_: 60.0)
+    monkeypatch.setattr(script_analysis, "loudness_peaks", lambda *_: [])
+    monkeypatch.setattr(script_analysis, "extract_frame_pool", lambda *_: _frame_pool(tmp_path, 30))
+    frame_counts: list[int] = []
+
+    def analyzer(_episode, _start, _end, _segments, frames):
+        frame_counts.append(len(frames))
+        return {
+            "summary": "检测到暴力冲突", "high_energy": [],
+            "sensitive": [{"start": 10, "end": 20, "category": "暴力", "confidence": .9, "reasons": ["打斗"], "frame_indices": [1]}],
+        }
+
+    settings = SimpleNamespace(
+        ffprobe_binary="ffprobe", ffmpeg_binary="ffmpeg",
+        factory_analysis_window_seconds=60, factory_analysis_frames_per_window=30,
+        factory_analysis_initial_frames_per_window=12, factory_analysis_window_concurrency=2,
+        factory_analysis_two_stage_enabled=True, factory_analysis_batch_frames_enabled=True,
+        factory_analysis_frame_interval_seconds=2,
+    )
+    result = script_analysis.analyze_drama(tmp_path, 1, "测试剧", settings, [], model=CountingModel(), ai_analyzer=analyzer)
+
+    assert frame_counts == [12, 30]
+    assert result["api_call_count"] == 2
+    assert result["sensitive_count"] == 1
+
+
+def test_resume_reuses_completed_window_and_transcript(monkeypatch, tmp_path: Path):
+    episode = tmp_path / "Episode1.mp4"; episode.write_bytes(b"video")
+    monkeypatch.setattr(script_analysis, "episode_files", lambda _folder: [episode])
+    monkeypatch.setattr(script_analysis, "media_duration", lambda *_: 100.0)
+    monkeypatch.setattr(script_analysis, "loudness_peaks", lambda *_: [])
+    monkeypatch.setattr(script_analysis, "extract_frame_pool", lambda *_: _frame_pool(tmp_path))
+    first_model = CountingModel(); calls = 0
+
+    def interrupted(*_args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("temporary model failure")
+        return {"summary": "第一窗口", "high_energy": [], "sensitive": []}
+
+    settings = SimpleNamespace(
+        ffprobe_binary="ffprobe", ffmpeg_binary="ffmpeg",
+        factory_analysis_window_seconds=60, factory_analysis_window_overlap_seconds=15,
+        factory_analysis_frames_per_window=30, factory_analysis_initial_frames_per_window=12,
+        factory_analysis_window_concurrency=1, factory_analysis_two_stage_enabled=False,
+        factory_analysis_batch_frames_enabled=True, factory_analysis_frame_interval_seconds=2,
+    )
+    try:
+        script_analysis.analyze_drama(tmp_path, 1, "测试剧", settings, [], model=first_model, ai_analyzer=interrupted)
+    except RuntimeError as exc:
+        assert "temporary model failure" in str(exc)
+    else:
+        raise AssertionError("first run should be interrupted")
+
+    resumed_calls = 0
+    resumed_model = CountingModel()
+
+    def resumed(*_args):
+        nonlocal resumed_calls
+        resumed_calls += 1
+        return {"summary": "第二窗口", "high_energy": [], "sensitive": []}
+
+    result = script_analysis.analyze_drama(tmp_path, 1, "测试剧", settings, [], model=resumed_model, ai_analyzer=resumed, resume=True)
+
+    assert first_model.calls == [episode.name]
+    assert resumed_model.calls == []
+    assert resumed_calls == 1
+    assert result["cached_window_count"] == 1
+    assert result["api_call_count"] == 2
+
+
+def test_source_fingerprint_survives_folder_and_filename_change(tmp_path: Path):
+    first = tmp_path / "Episode1.mp4"; first.write_bytes(b"same-video-bytes")
+    moved = tmp_path / "renamed.mp4"; moved.write_bytes(first.read_bytes())
+
+    assert script_analysis.source_file_fingerprint(first) == script_analysis.source_file_fingerprint(moved)
+    assert script_analysis.source_set_fingerprint([first]) == script_analysis.source_set_fingerprint([moved])
 
 
 def test_script_analysis_is_saved_from_real_signals(monkeypatch, tmp_path: Path):

@@ -50,7 +50,7 @@ from .app.services.drama_library import IMAGE_SUFFIXES, VIDEO_SUFFIXES, episode_
 from .app.services.factory_processing import resume_factory_jobs
 from .app.services.local_storage import LocalStorageEntry, list_local_storage, remove_storage_entry
 from .app.services.meta_package_processing import ACTIVE_STATUSES as META_ACTIVE_STATUSES, resume_meta_packages
-from .app.services.script_analysis import factory_analysis_pipeline, write_analysis
+from .app.services.script_analysis import factory_analysis_pipeline, source_set_fingerprint, write_analysis
 from .app.services.windows_folder_picker import (
     FolderPickerBusy,
     FolderPickerCancelled,
@@ -360,12 +360,12 @@ app.include_router(meta_sfs_router)
 @app.get("/api/local/health")
 def health():
     picker = folder_picker_environment()
-    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "legacy_server_import_v1", "factory_cancel_v1", "factory_sensitive_policy_v3", "factory_analysis_worker_v1", "factory_analysis_worker_v2", "factory_task_history_v1", "local_storage_manager_v1", "factory_model_proxy_v1", "meta_duration_guard_v1", "meta_metadata_guard_v1", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
+    capabilities = ["meta_direct_local_v2", "meta_progress", "meta_cover_sync", "legacy_server_import_v1", "factory_cancel_v1", "factory_sensitive_policy_v3", "factory_analysis_worker_v1", "factory_analysis_worker_v2", "factory_analysis_worker_v3", "factory_task_history_v1", "local_storage_manager_v1", "factory_model_proxy_v1", "meta_duration_guard_v1", "meta_metadata_guard_v1", "native_folder_picker_v1", "native_folder_picker_v2", "native_folder_picker_v3"]
     return {
         "status": "ok",
         "ffmpeg_ready": bool(shutil.which(get_settings().ffmpeg_binary)),
         "workspace_root": str(APP_DIR),
-        "version": "1.14.0",
+        "version": "1.15.0",
         "picker_backend": "IFileOpenDialog",
         "picker_ready": picker.ready,
         "picker_reason": picker.reason,
@@ -492,11 +492,21 @@ def import_shared_analysis(drama_id: int, payload: dict):
         episodes = payload.get("episodes")
         if payload.get("status") != "completed" or not isinstance(episodes, list):
             raise HTTPException(422, "只能复用已完成的共享识别结果")
-        local_names = {path.name for path in episode_files(Path(drama.file_dir))}
+        local_videos = episode_files(Path(drama.file_dir))
+        local_names = {path.name for path in local_videos}
         analysis_names = {str(item.get("episode", "")) for item in episodes if isinstance(item, dict)}
-        if local_names != analysis_names:
-            raise HTTPException(409, "共享识别结果与当前本地文件名不一致，请重新识别")
+        shared_fingerprint = str(payload.get("source_fingerprint") or "")
+        if shared_fingerprint and source_set_fingerprint(local_videos) != shared_fingerprint:
+            raise HTTPException(409, "共享识别结果对应的源视频内容不同，请重新识别")
         imported = dict(payload)
+        imported_episodes = [dict(item) for item in episodes if isinstance(item, dict)]
+        if local_names != analysis_names:
+            if not shared_fingerprint or len(imported_episodes) != len(local_videos):
+                raise HTTPException(409, "共享识别结果与当前本地文件不一致，请重新识别")
+            for item, video in zip(imported_episodes, local_videos):
+                item["episode"] = video.name
+            imported["episodes"] = imported_episodes
+            imported["source_files"] = [video.name for video in local_videos]
         imported.pop("task_id", None)
         imported.pop("owner_user_id", None)
         imported["drama_id"] = drama_id

@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import json
 import pytest
+import shutil
+import subprocess
 
 from app.services import factory_multimodal, script_analysis
 from app.services.factory_multimodal import FrameSample, choose_frame_times
@@ -15,6 +17,43 @@ class FakeWhisper:
             SimpleNamespace(start=0.0, end=4.0, text="她发现了真正身份"),
             SimpleNamespace(start=4.0, end=8.0, text="冲突突然爆发"),
         ]), {}
+
+
+def test_batch_frame_pool_uses_one_ffmpeg_process(monkeypatch, tmp_path: Path):
+    video = tmp_path / "Episode1.mp4"; video.write_bytes(b"video")
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        pattern = Path(command[-1])
+        pattern.parent.mkdir(parents=True, exist_ok=True)
+        for index in range(1, 4):
+            Path(str(pattern).replace("%06d", f"{index:06d}")).write_bytes(b"jpeg")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(factory_multimodal.subprocess, "run", run)
+    settings = SimpleNamespace(ffmpeg_binary="ffmpeg")
+    result = factory_multimodal.extract_frame_pool(settings, video, tmp_path / "frames", 1, 6.0, 2.0)
+
+    assert len(calls) == 1
+    assert len(result) == 3
+    assert [row.second for row in result] == [.05, 2.0, 4.0]
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg is not installed")
+def test_batch_frame_pool_decodes_a_real_video(tmp_path: Path):
+    video = tmp_path / "sample.mp4"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=360x640:rate=25", "-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video),
+    ], check=True, timeout=30)
+
+    result = factory_multimodal.extract_frame_pool(
+        SimpleNamespace(ffmpeg_binary="ffmpeg"), video, tmp_path / "frames", 1, 6.0, 2.0,
+    )
+
+    assert len(result) == 3
+    assert all(row.path.is_file() and row.path.stat().st_size > 0 for row in result)
 
 
 def test_frame_sampling_combines_coverage_and_loudness_peaks():

@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     factory_analysis_window_seconds: int = 60
     factory_analysis_window_overlap_seconds: int = 15
     factory_analysis_frames_per_window: int = 30
+    factory_analysis_initial_frames_per_window: int = 12
+    factory_analysis_window_concurrency: int = 2
+    factory_analysis_two_stage_enabled: bool = True
+    factory_analysis_frame_interval_seconds: float = 2.0
+    factory_analysis_batch_frames_enabled: bool = True
     factory_analysis_request_timeout_seconds: int = 120
     factory_analysis_api_retries: int = 2
     factory_model_proxy_enabled: bool = False
