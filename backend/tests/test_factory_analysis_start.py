@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from app.routers import factory
 
 
@@ -49,6 +52,7 @@ def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
         run_with_analyzer=run_with_analyzer,
     )
     monkeypatch.setattr(factory, "get_drama", lambda _drama_id, _session: drama)
+    monkeypatch.setattr(factory, "episode_files", lambda _folder: [tmp_path / "Episode1.mp4"])
     monkeypatch.setattr(factory, "get_settings", lambda: SimpleNamespace())
     monkeypatch.setattr(factory, "provider_name", lambda _settings: "gemini")
     monkeypatch.setattr(factory, "factory_analysis_pipeline", pipeline)
@@ -79,3 +83,20 @@ def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
     started["target"](*started["args"], **started["kwargs"])
     assert executed["args"] == (tmp_path, 7, "Worker Drama", factory.get_settings(), [])
     assert executed["kwargs"] == {"resume": False, "ai_analyzer": None}
+
+
+def test_analysis_rejects_missing_video_before_creating_task(monkeypatch, tmp_path):
+    drama = SimpleNamespace(id=7, title="Missing Video", episode_count=8, file_dir=str(tmp_path))
+    monkeypatch.setattr(factory, "get_drama", lambda _drama_id, _session: drama)
+    monkeypatch.setattr(factory, "episode_files", lambda _folder: [])
+
+    with pytest.raises(HTTPException) as caught:
+        factory.run_script_analysis(
+            7,
+            payload=None,
+            session=_Session(),
+            user=SimpleNamespace(id=23),
+        )
+
+    assert caught.value.status_code == 422
+    assert "选择本地文件夹" in str(caught.value.detail)

@@ -311,6 +311,11 @@ def run_script_analysis(
     session: Session = Depends(get_session), user: AppUser = Depends(get_current_user),
 ):
     drama = get_drama(drama_id, session)
+    if not episode_files(Path(drama.file_dir)):
+        raise HTTPException(
+            422,
+            "当前设备未连接该剧目的源视频，请先选择本地文件夹后再开始识别",
+        )
     settings = get_settings()
     analyzer = None
     if payload and payload.proxy_origin and payload.proxy_token:
