@@ -20,7 +20,7 @@ const riskScoreLabel:Record<string,string>={body_focus:'人体聚焦',action:'�
 const FACTORY_CANCEL_CAPABILITY='factory_cancel_v1'
 const FACTORY_MODEL_PROXY_CAPABILITY='factory_model_proxy_v1'
 const FACTORY_SENSITIVE_POLICY_CAPABILITY='factory_sensitive_policy_v3'
-const FACTORY_ANALYSIS_WORKER_CAPABILITY='factory_analysis_worker_v1'
+const FACTORY_ANALYSIS_WORKER_CAPABILITY='factory_analysis_worker_v2'
 const FACTORY_TASK_HISTORY_CAPABILITY='factory_task_history_v1'
 type AnalysisDeleteTarget={kind:'current'}|{kind:'history';row:FactoryTaskHistory}
 

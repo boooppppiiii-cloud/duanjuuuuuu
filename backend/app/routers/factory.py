@@ -32,10 +32,12 @@ from ..services.usage import record_usage
 router = APIRouter(prefix="/api/factory", tags=["内容工厂"])
 
 
-def _run_analysis_as_user(user_id: int, *args, ai_analyzer=None) -> None:
+def _run_analysis_as_user(user_id: int, *args, resume: bool = False, ai_analyzer=None) -> None:
     token = bind_current_user(user_id)
     try:
-        factory_analysis_pipeline.run_with_analyzer(*args, ai_analyzer=ai_analyzer)
+        factory_analysis_pipeline.run_with_analyzer(
+            *args, resume=resume, ai_analyzer=ai_analyzer,
+        )
     finally:
         reset_current_user(token)
 
@@ -351,8 +353,8 @@ def run_script_analysis(
     # record with no worker. A daemon worker is owned by the helper process instead.
     threading.Thread(
         target=_run_analysis_as_user,
-        args=(user.id, Path(drama.file_dir), drama.id, drama.title, settings, words, resume),
-        kwargs={"ai_analyzer": analyzer},
+        args=(user.id, Path(drama.file_dir), drama.id, drama.title, settings, words),
+        kwargs={"resume": resume, "ai_analyzer": analyzer},
         name=f"factory-analysis-{drama.id}",
         daemon=True,
     ).start()

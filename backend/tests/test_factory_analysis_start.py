@@ -31,6 +31,7 @@ class _Session:
 
 def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
     started: dict[str, object] = {}
+    executed: dict[str, object] = {}
 
     class ThreadProbe:
         def __init__(self, *, target, args, kwargs, name, daemon):
@@ -40,7 +41,13 @@ def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
             started["started"] = True
 
     drama = SimpleNamespace(id=7, title="Worker Drama", episode_count=12, file_dir=str(tmp_path))
-    pipeline = SimpleNamespace(is_active=lambda _drama_id: False)
+    def run_with_analyzer(*args, **kwargs):
+        executed.update(args=args, kwargs=kwargs)
+
+    pipeline = SimpleNamespace(
+        is_active=lambda _drama_id: False,
+        run_with_analyzer=run_with_analyzer,
+    )
     monkeypatch.setattr(factory, "get_drama", lambda _drama_id, _session: drama)
     monkeypatch.setattr(factory, "get_settings", lambda: SimpleNamespace())
     monkeypatch.setattr(factory, "provider_name", lambda _settings: "gemini")
@@ -63,3 +70,12 @@ def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
     assert started["name"] == "factory-analysis-7"
     assert started["daemon"] is True
     assert started["args"][0] == 23
+    assert len(started["args"]) == 6
+    assert started["kwargs"] == {"resume": False, "ai_analyzer": None}
+
+    # Execute the exact target/arguments captured by the thread probe. This
+    # catches keyword-only argument regressions that otherwise leave a queued
+    # analysis record behind while the worker exits immediately.
+    started["target"](*started["args"], **started["kwargs"])
+    assert executed["args"] == (tmp_path, 7, "Worker Drama", factory.get_settings(), [])
+    assert executed["kwargs"] == {"resume": False, "ai_analyzer": None}
