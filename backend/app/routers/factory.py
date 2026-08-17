@@ -212,6 +212,8 @@ def analyze_local_window(payload: FactoryAnalysisWindowRequest, authorization: s
                 )
             except FactoryAIUnavailableError as exc:
                 raise HTTPException(503, str(exc)) from exc
+            except RuntimeError as exc:
+                raise HTTPException(503, f"多模态模型暂时不可用：{exc}") from exc
             return {"result": result, "provider": provider, "model": model}
     finally:
         reset_current_user(token)

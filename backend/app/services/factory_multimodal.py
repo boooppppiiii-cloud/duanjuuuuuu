@@ -91,6 +91,81 @@ def _strip_fences(value: str) -> str:
     return text.strip()
 
 
+def _decode_json_object(value: str) -> dict[str, Any]:
+    """Decode a model JSON object while tolerating harmless prose/fence suffixes."""
+    text = _strip_fences(value)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        if start < 0:
+            raise
+        payload, _ = json.JSONDecoder().raw_decode(text[start:])
+    if not isinstance(payload, dict):
+        raise ValueError("模型返回的内容不是 JSON 对象")
+    return payload
+
+
+def _evenly_sample_frames(frames: list[FrameSample], maximum: int) -> list[FrameSample]:
+    """Keep chronological coverage while reducing retry upload size."""
+    if maximum <= 0 or len(frames) <= maximum:
+        return list(frames)
+    if maximum == 1:
+        return [frames[len(frames) // 2]]
+    indices = [round(index * (len(frames) - 1) / (maximum - 1)) for index in range(maximum)]
+    return [frames[index] for index in dict.fromkeys(indices)]
+
+
+_FACTORY_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["summary", "sensitive", "high_energy"],
+    "properties": {
+        "summary": {"type": "string"},
+        "sensitive": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["start", "end", "category", "confidence", "overall_risk_score", "risk_scores", "reasons", "frame_indices"],
+                "properties": {
+                    "start": {"type": "number"},
+                    "end": {"type": "number"},
+                    "category": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "overall_risk_score": {"type": "number"},
+                    "risk_scores": {
+                        "type": "object",
+                        "properties": {
+                            key: {"type": "number"} for key in (
+                                "body_focus", "action", "dialogue_context", "expression_audio",
+                                "scene_context", "religious_context",
+                            )
+                        },
+                    },
+                    "religions": {"type": "array", "items": {"type": "string"}},
+                    "taboo_types": {"type": "array", "items": {"type": "string"}},
+                    "reasons": {"type": "array", "items": {"type": "string"}},
+                    "frame_indices": {"type": "array", "items": {"type": "integer"}},
+                },
+            },
+        },
+        "high_energy": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["start", "end", "score", "reasons", "frame_indices"],
+                "properties": {
+                    "start": {"type": "number"},
+                    "end": {"type": "number"},
+                    "score": {"type": "number"},
+                    "reasons": {"type": "array", "items": {"type": "string"}},
+                    "frame_indices": {"type": "array", "items": {"type": "integer"}},
+                },
+            },
+        },
+    },
+}
+
+
 def build_window_prompt(episode: str, window_start: float, window_end: float, transcript: list[dict[str, Any]], frames: list[FrameSample]) -> str:
     transcript_text = "\n".join(
         f"[{row['start']:.2f}-{row['end']:.2f}] {str(row.get('text', ''))[:400]}" for row in transcript
@@ -155,10 +230,22 @@ def _gemini(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple
     response = client.models.generate_content(
         model=model,
         contents=contents,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=_FACTORY_RESPONSE_SCHEMA,
+            max_output_tokens=8192,
+            temperature=0.1,
+        ),
     )
     record_model_usage("gemini", model, response, feature="内容识别")
-    return json.loads(_strip_fences(response.text)), model
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict):
+        return parsed, model
+    if hasattr(parsed, "model_dump"):
+        dumped = parsed.model_dump()
+        if isinstance(dumped, dict):
+            return dumped, model
+    return _decode_json_object(response.text), model
 
 
 def _qwen(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple[dict[str, Any], str]:
@@ -184,7 +271,51 @@ def _qwen(settings: Settings, prompt: str, frames: list[FrameSample]) -> tuple[d
     payload = response.json()
     record_model_usage("qwen", settings.qwen_vision_model, payload, feature="内容识别")
     text = payload["choices"][0]["message"]["content"]
-    return json.loads(_strip_fences(text)), settings.qwen_vision_model
+    return _decode_json_object(text), settings.qwen_vision_model
+
+
+def _is_non_retryable_provider_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+    if status in {400, 401, 403}:
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in (
+        "invalid api key", "api key not valid", "unauthorized", "permission denied",
+        "authentication failed", "incorrect api key",
+    ))
+
+
+def _manual_review_fallback(
+    window_start: float,
+    window_end: float,
+    frames: list[FrameSample],
+) -> dict[str, Any]:
+    frame_indices = [frame.index for frame in _evenly_sample_frames(frames, 4)]
+    return {
+        "summary": "模型服务在该窗口暂时不可用，系统已保留完整窗口供人工复核，并继续识别后续内容。",
+        "sensitive": [{
+            "start": window_start,
+            "end": window_end,
+            "category": "其他",
+            "confidence": 0.59,
+            "overall_risk_score": 59,
+            "risk_scores": {
+                "body_focus": 0,
+                "action": 0,
+                "dialogue_context": 59,
+                "expression_audio": 0,
+                "scene_context": 59,
+                "religious_context": 0,
+            },
+            "religions": [],
+            "taboo_types": [],
+            "reasons": ["AI 临时未完成该窗口的多模态判断；为避免漏审，必须人工复核完整窗口。"],
+            "frame_indices": frame_indices,
+        }],
+        "high_energy": [],
+    }
 
 
 def analyze_window(
@@ -195,24 +326,32 @@ def analyze_window(
     transcript: list[dict[str, Any]],
     frames: list[FrameSample],
 ) -> tuple[dict[str, Any], str, str]:
-    prompt = build_window_prompt(episode, window_start, window_end, transcript, frames)
     errors: list[str] = []
     retries = max(1, min(3, int(getattr(settings, "factory_analysis_api_retries", 2))))
     for attempt in range(retries):
+        frame_limit = len(frames) if attempt == 0 else max(8, min(16, math.ceil(len(frames) / 2)))
+        attempt_frames = _evenly_sample_frames(frames, frame_limit)
+        prompt = build_window_prompt(episode, window_start, window_end, transcript, attempt_frames)
         if settings.gemini_api_key:
             try:
-                data, model = _gemini(settings, prompt, frames)
+                data, model = _gemini(settings, prompt, attempt_frames)
                 return data, "gemini", model
             except Exception as exc:
+                if _is_non_retryable_provider_error(exc):
+                    raise RuntimeError(f"Gemini 凭证或权限错误：{exc}") from exc
                 errors.append(f"Gemini {type(exc).__name__}")
         if settings.qwen_api_key:
             try:
-                data, model = _qwen(settings, prompt, frames)
+                qwen_frames = _evenly_sample_frames(attempt_frames, 10)
+                qwen_prompt = build_window_prompt(episode, window_start, window_end, transcript, qwen_frames)
+                data, model = _qwen(settings, qwen_prompt, qwen_frames)
                 return data, "qwen", model
             except Exception as exc:
+                if _is_non_retryable_provider_error(exc):
+                    raise RuntimeError(f"Qwen 凭证或权限错误：{exc}") from exc
                 errors.append(f"Qwen {type(exc).__name__}")
         if attempt + 1 < retries:
             time.sleep(1.5 * (attempt + 1))
     if errors:
-        raise RuntimeError("；".join(errors))
+        return _manual_review_fallback(window_start, window_end, frames), "manual_review_fallback", "transient_model_failure"
     raise FactoryAIUnavailableError("内容识别需要多模态模型，请配置 GEMINI_API_KEY 或 QWEN_API_KEY")

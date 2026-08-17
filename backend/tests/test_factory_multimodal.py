@@ -1,6 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import json
+import pytest
+
 from app.services import factory_multimodal, script_analysis
 from app.services.factory_multimodal import FrameSample, choose_frame_times
 
@@ -135,6 +138,70 @@ def test_analysis_falls_back_to_qwen_when_gemini_fails(monkeypatch):
     assert data == {"summary": "ok"}
     assert provider == "qwen"
     assert model == "qwen3-vl-plus"
+
+
+def test_model_json_decoder_tolerates_fences_and_trailing_prose():
+    payload = factory_multimodal._decode_json_object(
+        '```json\n{"summary":"ok","sensitive":[],"high_energy":[]}\n```\ncompleted'
+    )
+
+    assert payload["summary"] == "ok"
+
+
+def test_analysis_retry_reduces_frame_payload(monkeypatch, tmp_path: Path):
+    settings = SimpleNamespace(
+        gemini_api_key="gemini", qwen_api_key="", factory_analysis_api_retries=2,
+    )
+    frames = [FrameSample(index=index, second=float(index), path=tmp_path / f"{index}.jpg") for index in range(30)]
+    frame_counts: list[int] = []
+
+    def fake_gemini(_settings, _prompt, attempt_frames):
+        frame_counts.append(len(attempt_frames))
+        if len(frame_counts) == 1:
+            raise json.JSONDecodeError("truncated", "{", 1)
+        return {"summary": "ok", "sensitive": [], "high_energy": []}, "gemini-test"
+
+    monkeypatch.setattr(factory_multimodal, "_gemini", fake_gemini)
+    monkeypatch.setattr(factory_multimodal.time, "sleep", lambda *_: None)
+
+    data, provider, _ = factory_multimodal.analyze_window(settings, "episode", 0, 60, [], frames)
+
+    assert data["summary"] == "ok"
+    assert provider == "gemini"
+    assert frame_counts == [30, 15]
+
+
+def test_transient_provider_failure_marks_full_window_for_manual_review(monkeypatch, tmp_path: Path):
+    settings = SimpleNamespace(
+        gemini_api_key="gemini", qwen_api_key="qwen", factory_analysis_api_retries=2,
+    )
+    frames = [FrameSample(index=index, second=float(index), path=tmp_path / f"{index}.jpg") for index in range(20)]
+    monkeypatch.setattr(factory_multimodal, "_gemini", lambda *_: (_ for _ in ()).throw(TimeoutError("timeout")))
+    monkeypatch.setattr(factory_multimodal, "_qwen", lambda *_: (_ for _ in ()).throw(TimeoutError("timeout")))
+    monkeypatch.setattr(factory_multimodal.time, "sleep", lambda *_: None)
+
+    data, provider, model = factory_multimodal.analyze_window(settings, "episode", 15, 75, [], frames)
+
+    assert provider == "manual_review_fallback"
+    assert model == "transient_model_failure"
+    assert data["sensitive"][0]["start"] == 15
+    assert data["sensitive"][0]["end"] == 75
+    assert data["sensitive"][0]["overall_risk_score"] == 59
+    assert "人工复核" in data["sensitive"][0]["reasons"][0]
+
+
+def test_provider_authentication_failure_is_not_silently_downgraded(monkeypatch):
+    settings = SimpleNamespace(
+        gemini_api_key="invalid", qwen_api_key="qwen", factory_analysis_api_retries=2,
+    )
+
+    class AuthenticationError(RuntimeError):
+        status_code = 401
+
+    monkeypatch.setattr(factory_multimodal, "_gemini", lambda *_: (_ for _ in ()).throw(AuthenticationError("invalid api key")))
+
+    with pytest.raises(RuntimeError, match="Gemini"):
+        factory_multimodal.analyze_window(settings, "episode", 0, 60, [], [])
 
 
 def test_script_and_frames_are_merged_into_reviewable_candidates(monkeypatch, tmp_path: Path):
