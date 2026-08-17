@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from ..database import get_session
 from ..config import get_settings
 from ..models import Account, AccountStrategy, AppUser, Clip, Drama, Post, PublishJob
-from ..schemas import AccountConfigureRequest, AccountCreateRequest, AccountStrategyPayload, BatchPublishRequest, PublishJobCreateRequest, PublishJobUpdateRequest, RecurringPublishRequest, StrategySummaryRequest
+from ..schemas import AccountConfigureRequest, AccountCreateRequest, AccountStrategyPayload, BatchPublishRequest, MappedBatchPublishRequest, PublishJobCreateRequest, PublishJobUpdateRequest, RecurringPublishRequest, StrategySummaryRequest
 from ..services.credentials import sanitized_credentials, store_secret_fields
 from ..services.publisher import execute_publish_job, refresh_publish_status
 from ..services.public_media import verify_public_video_signature
@@ -418,6 +418,59 @@ def create_batch(payload: BatchPublishRequest, session: Session = Depends(get_se
             session.add(job); created.append(job)
     session.commit()
     for job in created: session.refresh(job)
+    if payload.run_now:
+        for job in created:
+            execute_publish_job(session, job)
+    return created
+
+
+@router.post("/jobs/mapped-batch", response_model=list[PublishJob])
+def create_mapped_batch(payload: MappedBatchPublishRequest, session: Session = Depends(get_session), user: AppUser = Depends(get_current_user)):
+    assignment_map: dict[int, list[int]] = {}
+    for item in payload.assignments:
+        targets = assignment_map.setdefault(item.post_id, [])
+        targets.extend(account_id for account_id in item.account_ids if account_id not in targets)
+    assignments = list(assignment_map.items())
+    total_jobs = sum(len(account_ids) for _, account_ids in assignments)
+    if total_jobs > 100:
+        raise HTTPException(422, "一次最多创建 100 个发布任务")
+
+    account_ids = list(dict.fromkeys(account_id for _, ids in assignments for account_id in ids))
+    accounts = {account_id: session.get(Account, account_id) for account_id in account_ids}
+    missing = [str(account_id) for account_id, account in accounts.items() if account is None]
+    if missing:
+        raise HTTPException(404, f"发布账号不存在：{'、'.join(missing)}")
+    disconnected = [account.name for account in accounts.values() if account.status != "connected"]
+    if disconnected:
+        raise HTTPException(422, f"以下账号尚未通过真实连接检测：{'、'.join(disconnected)}")
+
+    validated: list[tuple[int, Account, int, Drama]] = []
+    for post_id, target_account_ids in assignments:
+        drama = related_drama(session, post_id)
+        post = session.get(Post, post_id)
+        owner_id = _request_user_id(user, post.owner_user_id if post else None)
+        if not drama or not post or post.owner_user_id != owner_id:
+            raise HTTPException(404, f"成品不存在：{post_id}")
+        for account_id in target_account_ids:
+            account = accounts[account_id]
+            require_platform_publish_cover(drama, account, payload.publish_options)
+            validated.append((post_id, account, owner_id, drama))
+
+    created: list[PublishJob] = []
+    for post_id, account, owner_id, drama in validated:
+        job = PublishJob(
+            post_id=post_id,
+            account_id=account.id,
+            scheduled_at=payload.scheduled_at,
+            ai_disclosure=drama.is_ai_generated or payload.ai_disclosure,
+            publish_options=payload.publish_options,
+            owner_user_id=owner_id,
+        )
+        session.add(job)
+        created.append(job)
+    session.commit()
+    for job in created:
+        session.refresh(job)
     if payload.run_now:
         for job in created:
             execute_publish_job(session, job)

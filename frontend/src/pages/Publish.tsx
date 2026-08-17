@@ -39,7 +39,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const[strategies,setStrategies]=useState<AccountStrategy[]>([]);const[posts,setPosts]=useState<Post[]>([]);const[jobs,setJobs]=useState<PublishJob[]>([])
  const[bindings,setBindings]=useState<Record<string,number>>({})
  const[integration,setIntegration]=useState<IntegrationConfig>();const[view,setView]=useState<'workflow'|'records'>('workflow')
- const[dramaId,setDramaId]=useState<number>();const[selectedClips,setSelectedClips]=useState<number[]>([]);const[selectedAccounts,setSelectedAccounts]=useState<number[]>([])
+ const[dramaId,setDramaId]=useState<number>();const[selectedClips,setSelectedClips]=useState<number[]>([]);const[clipAccounts,setClipAccounts]=useState<Record<number,number[]>>({});const[bulkAccounts,setBulkAccounts]=useState<number[]>([])
  const[strategyId,setStrategyId]=useState<number>();const[language,setLanguage]=useState('English')
  const[includeTheaterTag,setIncludeTheaterTag]=useState(true)
  const[drafts,setDrafts]=useState<ContentDraft[]>([]);const[provider,setProvider]=useState('');const[coverKind,setCoverKind]=useState<CoverKind>()
@@ -59,25 +59,38 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  const drama=dramas.find(x=>x.id===dramaId)
  const readyClips=clips.filter(x=>x.drama_id===dramaId&&x.status==='approved')
  const connected=accounts.filter(x=>x.status==='connected')
+ const selectedAccounts=Array.from(new Set(selectedClips.flatMap(id=>clipAccounts[id]||[])))
  const selectedAccountRows=accounts.filter(x=>selectedAccounts.includes(x.id))
  const platforms=new Set(selectedAccountRows.map(x=>x.platform))
  const requiresHorizontalCover=platforms.has('youtube')
  const selectedDrafts=selectedClips.map(id=>drafts.find(x=>x.clipId===id)||blankDraft(id))
+ const mappedJobCount=selectedClips.reduce((total,id)=>total+(clipAccounts[id]?.length||0),0)
+ const allClipsAssigned=selectedClips.length>0&&selectedClips.every(id=>(clipAccounts[id]?.length||0)>0)
  const selectedStrategy=strategies.find(x=>x.id===strategyId)
- const aiUnavailableReason=!selectedClips.length?'请先选择视频':!selectedAccounts.length?'请先选择发布账号':''
+ const aiUnavailableReason=!selectedClips.length?'请先选择视频':!allClipsAssigned?'请为每个视频匹配账号':''
  const coverChoices=useMemo(()=>drama?.cover_horizontal_path?[{kind:'horizontal' as const,title:'横版封面',ratio:'16:9',path:drama.cover_horizontal_path}]:[],[drama])
  const overallUploadPercent=useMemo(()=>uploadFiles.length?Math.round(uploadFiles.reduce((sum,file)=>sum+(uploadProgress[file.uid]||0),0)/uploadFiles.length):0,[uploadFiles,uploadProgress])
 
- const changeDrama=(id:number)=>{const next=dramas.find(x=>x.id===id);const latest=clips.find(x=>x.drama_id===id&&x.status==='approved');setDramaId(id);setSelectedClips(latest?[latest.id]:[]);setDrafts(latest?[blankDraft(latest.id)]:[]);setProvider('');setIncludeTheaterTag(true);setAiAssistOpen(false);setCoverKind(preferredCover(next));form.setFieldValue('ai_disclosure',Boolean(next?.is_ai_generated))}
+ const changeDrama=(id:number)=>{const next=dramas.find(x=>x.id===id);const latest=clips.find(x=>x.drama_id===id&&x.status==='approved');setDramaId(id);setSelectedClips(latest?[latest.id]:[]);setDrafts(latest?[blankDraft(latest.id)]:[]);setClipAccounts({});setBulkAccounts([]);setProvider('');setIncludeTheaterTag(true);setAiAssistOpen(false);setCoverKind(preferredCover(next));form.setFieldValue('ai_disclosure',Boolean(next?.is_ai_generated))}
  const changeClips=(ids:number[])=>{
   setSelectedClips(ids)
   setDrafts(rows=>ids.map(id=>rows.find(x=>x.clipId===id)||blankDraft(id)))
+  setClipAccounts(rows=>Object.fromEntries(ids.filter(id=>rows[id]?.length).map(id=>[id,rows[id]])))
  }
- const changeAccounts=async(ids:number[])=>{
-  setSelectedAccounts(ids);const first=accounts.find(x=>x.id===ids[0]);setStrategyId(first?bindings[String(first.id)]:undefined)
+ const syncAccountSettings=async(ids:number[])=>{
+  const first=accounts.find(x=>x.id===ids[0]);setStrategyId(first?bindings[String(first.id)]:undefined)
   const includesYouTube=accounts.some(x=>ids.includes(x.id)&&x.platform==='youtube');setCoverKind(includesYouTube?preferredCover(drama):undefined)
   const tiktok=accounts.filter(x=>ids.includes(x.id)&&x.platform==='tiktok');if(!tiktok.length){setTikTokPrivacy([]);return}
   try{const info=await Promise.all(tiktok.map(x=>api.creatorInfo(x.id)));const available=info.map(x=>x.privacy_level_options).reduce((a,b)=>a.filter(x=>b.includes(x)));setTikTokPrivacy(available);if(available.length===1)form.setFieldValue('tiktok_privacy',available[0])}catch(e){setTikTokPrivacy([]);msg.error((e as Error).message)}
+ }
+ const changeClipAccounts=(clipId:number,ids:number[])=>{
+  const next={...clipAccounts,[clipId]:ids};setClipAccounts(next)
+  void syncAccountSettings(Array.from(new Set(selectedClips.flatMap(id=>next[id]||[]))))
+ }
+ const applyBulkAccounts=()=>{
+  if(!selectedClips.length){msg.info('请先选择视频');return}
+  if(!bulkAccounts.length){msg.info('请选择要批量应用的账号');return}
+  const next=Object.fromEntries(selectedClips.map(id=>[id,bulkAccounts]));setClipAccounts(next);void syncAccountSettings(bulkAccounts);msg.success(`已为 ${selectedClips.length} 个视频匹配账号`)
  }
  const uploadLocalFiles=async()=>{
   if(!drama||!uploadFiles.length){msg.error(drama?'请选择本地视频':'请先选择剧目');return}
@@ -90,10 +103,10 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   }catch(e){msg.error((e as Error).message)}finally{setUploading(false);setUploadProgress({})}
  }
  const generate=async()=>{
-  const account=selectedAccountRows[0];if(!account||!selectedClips.length){msg.error('请先选择视频和发布账号');return}
+  if(!allClipsAssigned){msg.error('请先为每个视频匹配发布账号');return}
   setGenerating(true)
   try{
-   const results=await Promise.all(selectedClips.map(id=>api.generateTitles(id,account.account_type,language,'auto',account.id,[],selectedStrategy,includeTheaterTag)))
+   const results=await Promise.all(selectedClips.map(id=>{const account=accounts.find(x=>x.id===(clipAccounts[id]||[])[0])!;return api.generateTitles(id,account.account_type,language,'auto',account.id,[],selectedStrategy,includeTheaterTag)}))
    setDrafts(rows=>selectedClips.map((clipId,index)=>{const previous=rows.find(row=>row.clipId===clipId)||blankDraft(clipId);const candidate=results[index].candidates.find(x=>!x.hit_words.length)||results[index].candidates[0];return{...previous,title:candidate.title,caption:captionWithTags(candidate.caption,candidate.hashtags),hashtags:candidate.hashtags.map(normalizeTag).filter(Boolean),formula:candidate.formula,hitWords:candidate.hit_words}}))
    setProvider(Array.from(new Set(results.map(x=>x.provider))).join(' / '));msg.success(`已生成 ${results.length} 组可编辑内容`)
   }catch(e){msg.error((e as Error).message)}finally{setGenerating(false)}
@@ -115,26 +128,27 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
  }
 
  const submit=async(values:any)=>{
-  if(!drama||!selectedClips.length||!selectedAccounts.length){msg.error('请先完成视频与账号选择');return}
+  if(!drama||!selectedClips.length||!allClipsAssigned){msg.error('请为每个视频至少匹配一个发布账号');return}
   if(requiresHorizontalCover&&(!drama.cover_horizontal_path||coverKind!=='horizontal')){msg.error('发布到 YouTube 前，请先在剧库上传 16:9 横版封面');return}
   if(selectedDrafts.length!==selectedClips.length){msg.error('请先生成全部标题和文案');return}
   if(selectedDrafts.some(x=>!x.title.trim()||!x.caption.trim())){msg.error('标题和文案不能为空');return}
-  const missingInstagram=platforms.has('instagram')&&!integration?.public_media_ready&&selectedDrafts.some(x=>!String(values[`instagram_url_${x.clipId}`]||'').startsWith('https://'))
+  const instagramDrafts=selectedDrafts.filter(draft=>(clipAccounts[draft.clipId]||[]).some(id=>accounts.find(account=>account.id===id)?.platform==='instagram'))
+  const missingInstagram=!integration?.public_media_ready&&instagramDrafts.some(x=>!String(values[`instagram_url_${x.clipId}`]||'').startsWith('https://'))
   if(missingInstagram){msg.error('Instagram 需要每个视频的公网 HTTPS 地址');return}
   const time=mode==='now'?new Date().toISOString():values.scheduled_at.toISOString()
   Modal.confirm({width:620,title:'确认创建发布任务？',icon:<SafetyCertificateOutlined/>,okText:mode==='now'?'确认发布':'确认排期',content:<Descriptions bordered size="small" column={1} items={[
-   {key:'content',label:'发布内容',children:`${selectedDrafts.length} 个视频 × ${selectedAccounts.length} 个账号`},
-   {key:'accounts',label:'目标账号',children:<Space wrap>{selectedAccountRows.map(x=><PlatformOption key={x.id} platform={x.platform} label={x.name}/>)}</Space>},
+   {key:'content',label:'批量任务',children:`${selectedDrafts.length} 个视频，共 ${mappedJobCount} 个发布任务`},
+   {key:'accounts',label:'视频与账号',children:<div className="publish-confirm-mapping">{selectedDrafts.map(draft=><div key={draft.clipId}><b>{filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}</b><Space wrap>{(clipAccounts[draft.clipId]||[]).map(id=>{const account=accounts.find(x=>x.id===id);return account?<PlatformOption key={id} platform={account.platform} label={account.name}/>:null})}</Space></div>)}</div>},
    {key:'cover',label:'发布封面',children:requiresHorizontalCover?(coverChoices.find(x=>x.kind===coverKind)?.title||'未选择'):'平台自动取视频帧'},
    {key:'time',label:'执行时间',children:new Date(time).toLocaleString()},
   ]}/>,onOk:async()=>{
    setWorking(true)
    try{
-    const accountType=selectedAccountRows[0]?.account_type||'official'
     const created:Post[]=[]
-    for(const draft of selectedDrafts){const candidate:TitleCandidate={formula:draft.formula,title:draft.title.trim(),caption:captionWithTags(draft.caption,draft.hashtags),hashtags:draft.hashtags,hit_words:draft.hitWords};created.push(await api.createPost(draft.clipId,accountType,candidate))}
+    for(const draft of selectedDrafts){const account=accounts.find(x=>x.id===(clipAccounts[draft.clipId]||[])[0]);const candidate:TitleCandidate={formula:draft.formula,title:draft.title.trim(),caption:captionWithTags(draft.caption,draft.hashtags),hashtags:draft.hashtags,hit_words:draft.hitWords};created.push(await api.createPost(draft.clipId,account?.account_type||'official',candidate))}
     const options:Record<string,unknown>={cover_kind:requiresHorizontalCover?coverKind:undefined,youtube_privacy:values.youtube_privacy||'private',made_for_kids:Boolean(values.made_for_kids),tiktok_privacy:values.tiktok_privacy,disable_duet:Boolean(values.disable_duet),disable_comment:Boolean(values.disable_comment),disable_stitch:Boolean(values.disable_stitch),facebook_published:values.facebook_published!==false,instagram_video_urls:Object.fromEntries(created.map((post,index)=>[String(post.id),values[`instagram_url_${selectedDrafts[index].clipId}`]||''])),first_comments:Object.fromEntries(created.map((post,index)=>[String(post.id),selectedDrafts[index].firstComment.trim()]))}
-    await api.batchPublish(created.map(x=>x.id),selectedAccounts,time,mode==='now',Boolean(values.ai_disclosure),options)
+    const assignments=created.map((post,index)=>({post_id:post.id,account_ids:clipAccounts[selectedDrafts[index].clipId]||[]}))
+    await api.mappedBatchPublish(assignments,time,mode==='now',Boolean(values.ai_disclosure),options)
     setPosts(old=>[...created.reverse(),...old]);await load();setView('records');msg.success(mode==='now'?'已提交平台，正在任务记录中跟踪':'发布排期已保存')
    }catch(e){msg.error((e as Error).message);throw e}finally{setWorking(false)}
   }})
@@ -147,8 +161,12 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
   <div className="workflow-view-switch"><Segmented value={view} onChange={v=>setView(v as typeof view)} options={[{label:'创建发布',value:'workflow',icon:<RocketOutlined/>},{label:'任务记录',value:'records',icon:<ClockCircleOutlined/>}]}/></div>
   {view==='workflow'?<>
    <Form form={form} layout="vertical" onFinish={submit} initialValues={{ai_disclosure:false,youtube_privacy:'private',facebook_published:true}}>
-    <Card className="publish-flow-card publish-source-card" title="发布素材与账号">
-     <div className="publish-source-account-grid"><Form.Item label="发布视频"><Select mode="multiple" value={selectedClips} onChange={changeClips} optionFilterProp="label" placeholder="选择内容工厂成品或本地上传" options={readyClips.map(x=>({value:x.id,label:`${filename(x.file_path)}${x.template_name==='local_upload'?' · 本地上传':''}`}))}/></Form.Item><Form.Item name="account_ids" label="发布账号" rules={[{required:true,message:'请选择账号'}]}><Select mode="multiple" optionFilterProp="label" onChange={changeAccounts} placeholder="选择一个或多个账号" options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/></Form.Item></div>
+    <Card className="publish-flow-card publish-source-card" title="批量发布清单" extra={mappedJobCount?<Tag color="green">{mappedJobCount} 个发布任务</Tag>:undefined}>
+     <Form.Item label="选择发布视频"><Select mode="multiple" value={selectedClips} onChange={changeClips} optionFilterProp="label" placeholder="选择内容工厂成品或本地上传" options={readyClips.map(x=>({value:x.id,label:`${filename(x.file_path)}${x.template_name==='local_upload'?' · 本地上传':''}`}))}/></Form.Item>
+     {!!selectedClips.length&&<div className="publish-mapping-panel">
+      <div className="publish-mapping-toolbar"><div><b>视频与账号匹配</b><span>每个视频可以选择一个或多个发布账号</span></div><Space.Compact className="publish-bulk-assign"><Select mode="multiple" value={bulkAccounts} onChange={setBulkAccounts} optionFilterProp="label" placeholder="批量选择账号" options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/><Button onClick={applyBulkAccounts}>应用到全部</Button></Space.Compact></div>
+      <div className="publish-mapping-list">{selectedClips.map((clipId,index)=><div className="publish-mapping-row" key={clipId}><span className="publish-mapping-index">{String(index+1).padStart(2,'0')}</span><div className="publish-mapping-video"><b>{filename(clips.find(x=>x.id===clipId)?.file_path||'视频')}</b><small>{clips.find(x=>x.id===clipId)?.template_name==='local_upload'?'本地上传':'内容工厂成品'}</small></div><Select mode="multiple" value={clipAccounts[clipId]||[]} onChange={ids=>changeClipAccounts(clipId,ids)} optionFilterProp="label" status={(clipAccounts[clipId]?.length||0)?undefined:'error'} placeholder="选择该视频的发布账号" options={connected.map(x=>({value:x.id,label:<PlatformOption platform={x.platform} label={x.name}/>}))}/></div>)}</div>
+     </div>}
      <div className="publish-cover-title"><PictureOutlined/><b>发布封面</b>{requiresHorizontalCover&&<Tag color="red">YouTube · 16:9 横版</Tag>}<Button type="link" size="small" icon={<EditOutlined/>} onClick={()=>navigate(`/dramas/${drama?.id??''}`)}>管理封面</Button></div>
      {requiresHorizontalCover&&(coverChoices.length
       ?<Radio.Group className="publish-cover-picker is-required" value={coverKind} onChange={e=>setCoverKind(e.target.value)}>{coverChoices.map(item=><Radio.Button value={item.kind} key={item.kind}><Image preview={false} src={`/api/dramas/${drama?.id}/covers/${item.kind}`}/><span>{item.title}<small>{item.ratio}</small></span></Radio.Button>)}</Radio.Group>
@@ -158,7 +176,7 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
 
     <Card className="publish-flow-card publish-composer-card" title="发布内容">
      {!!selectedAccountRows.length&&<div className="publish-account-strip">{selectedAccountRows.map(x=><span key={x.id}><PlatformBadge platform={x.platform} size={20}/>{x.name}</span>)}</div>}
-     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="手动输入发布标题"/></Form.Item><Form.Item label="文案" required><Input.TextArea ref={node=>{captionRefs.current[draft.clipId]=node}} className="publish-caption-editor" autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value,hashtags:extractTags(e.target.value)})} placeholder="输入发布文案"/></Form.Item><div className="publish-editor-tools"><Button type="text" size="small" icon={<SmileOutlined/>} onClick={()=>focusForSystemEmoji(draft)} title="Windows：Win + .；macOS：Control + Command + 空格">表情 · Win + .</Button><Button type="text" size="small" icon={<TagOutlined/>} onClick={()=>insertIntoCaption(draft,'#')}>添加标签</Button><Button type={aiAssistOpen?'default':'text'} size="small" icon={<ThunderboltOutlined/>} onClick={()=>setAiAssistOpen(open=>!open)}>AI 辅助</Button></div><Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="可选，发布后作为真实首条评论发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请选择发布视频':'暂无可发布视频'}/>}
+     {selectedDrafts.length?<div className="publish-draft-list">{selectedDrafts.map((draft,index)=><Card size="small" key={draft.clipId} title={`${index+1}. ${filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')}`} extra={draft.hitWords.map(x=><Tag color="red" key={x}>{x}</Tag>)}><div className="publish-draft-targets"><span>发布到</span><Space wrap>{(clipAccounts[draft.clipId]||[]).map(id=>{const account=accounts.find(x=>x.id===id);return account?<span key={id}><PlatformBadge platform={account.platform} size={15}/>{account.name}</span>:null})}{!(clipAccounts[draft.clipId]?.length)&&<Tag color="red">尚未匹配账号</Tag>}</Space></div><Form.Item label="标题" required><Input showCount maxLength={99} value={draft.title} onChange={e=>editDraft(draft.clipId,{title:e.target.value})} placeholder="手动输入发布标题"/></Form.Item><Form.Item label="文案" required><Input.TextArea ref={node=>{captionRefs.current[draft.clipId]=node}} className="publish-caption-editor" autoSize={{minRows:5,maxRows:14}} value={draft.caption} onChange={e=>editDraft(draft.clipId,{caption:e.target.value,hashtags:extractTags(e.target.value)})} placeholder="输入发布文案"/></Form.Item><div className="publish-editor-tools"><Button type="text" size="small" icon={<SmileOutlined/>} onClick={()=>focusForSystemEmoji(draft)} title="Windows：Win + .；macOS：Control + Command + 空格">表情 · Win + .</Button><Button type="text" size="small" icon={<TagOutlined/>} onClick={()=>insertIntoCaption(draft,'#')}>添加标签</Button><Button type={aiAssistOpen?'default':'text'} size="small" icon={<ThunderboltOutlined/>} onClick={()=>setAiAssistOpen(open=>!open)}>AI 辅助</Button></div><Form.Item label="首条评论"><Input.TextArea autoSize={{minRows:2,maxRows:5}} value={draft.firstComment} onChange={e=>editDraft(draft.clipId,{firstComment:e.target.value})} placeholder="可选，发布后作为真实首条评论发送"/></Form.Item></Card>)}</div>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readyClips.length?'请选择发布视频':'暂无可发布视频'}/>}
      {aiAssistOpen&&<div className="publish-ai-assist">
       <div className="publish-ai-assist-heading"><ThunderboltOutlined/><div><b>AI 辅助撰写</b><span>按剧情、账号策略和参考样本生成，生成后仍可继续编辑</span></div></div>
       <div className="publish-ai-assist-settings"><Select allowClear value={strategyId} onChange={setStrategyId} placeholder="选择运营策略（可选）" options={strategies.filter(x=>x.confirmed).map(x=>({value:x.id,label:x.name}))}/><Input value={language} onChange={e=>setLanguage(e.target.value)} placeholder="目标语言"/>{drama?.theater&&<label><Switch size="small" checked={includeTheaterTag} onChange={setIncludeTheaterTag}/><span>{theaterTag(drama.theater)}</span></label>}</div>
@@ -172,9 +190,9 @@ export default function Publish({embedded=false}:{embedded?:boolean}){
       {platforms.has('youtube')&&<div className="platform-setting-row"><PlatformBadge platform="youtube" size={22}/><Form.Item name="youtube_privacy" label="可见性"><Select options={['private','unlisted','public'].map(x=>({value:x,label:x}))}/></Form.Item><Form.Item name="made_for_kids" label="儿童内容" valuePropName="checked"><Switch/></Form.Item></div>}
       {platforms.has('tiktok')&&<div className="platform-setting-block"><div className="platform-setting-row"><PlatformBadge platform="tiktok" size={22}/><Form.Item name="tiktok_privacy" label="可见性" rules={[{required:true}]}><Select options={tiktokPrivacy.map(x=>({value:x,label:x}))}/></Form.Item></div><Space wrap><Form.Item name="disable_comment" valuePropName="checked"><Checkbox>关闭评论</Checkbox></Form.Item><Form.Item name="disable_duet" valuePropName="checked"><Checkbox>关闭 Duet</Checkbox></Form.Item><Form.Item name="disable_stitch" valuePropName="checked"><Checkbox>关闭 Stitch</Checkbox></Form.Item></Space></div>}
       {platforms.has('facebook')&&<div className="platform-setting-row"><PlatformBadge platform="facebook" size={22}/><Form.Item name="facebook_published" label="立即公开" valuePropName="checked"><Switch/></Form.Item></div>}
-      {platforms.has('instagram')&&<div className="platform-setting-block"><Space><PlatformBadge platform="instagram" size={22}/><b>Instagram 视频地址</b></Space>{selectedDrafts.map(draft=><Form.Item key={draft.clipId} name={`instagram_url_${draft.clipId}`} label={filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')} rules={[{required:!integration?.public_media_ready},{type:'url',message:'请输入 HTTPS 地址'}]}><Input prefix={<LinkOutlined/>} placeholder={integration?.public_media_ready?'可留空，由系统生成':'https://cdn.example.com/video.mp4'}/></Form.Item>)}</div>}
+      {platforms.has('instagram')&&<div className="platform-setting-block"><Space><PlatformBadge platform="instagram" size={22}/><b>Instagram 视频地址</b></Space>{selectedDrafts.filter(draft=>(clipAccounts[draft.clipId]||[]).some(id=>accounts.find(account=>account.id===id)?.platform==='instagram')).map(draft=><Form.Item key={draft.clipId} name={`instagram_url_${draft.clipId}`} label={filename(clips.find(x=>x.id===draft.clipId)?.file_path||'视频')} rules={[{required:!integration?.public_media_ready},{type:'url',message:'请输入 HTTPS 地址'}]}><Input prefix={<LinkOutlined/>} placeholder={integration?.public_media_ready?'可留空，由系统生成':'https://cdn.example.com/video.mp4'}/></Form.Item>)}</div>}
      </div>}
-     <Button size="large" block type="primary" htmlType="submit" loading={working} disabled={!selectedDrafts.length||!connected.length} icon={mode==='now'?<RocketOutlined/>:<CalendarOutlined/>}>{mode==='now'?'确认并发布':'确认定时任务'}</Button>
+     <Button size="large" block type="primary" htmlType="submit" loading={working} disabled={!allClipsAssigned||!connected.length} icon={mode==='now'?<RocketOutlined/>:<CalendarOutlined/>}>{mode==='now'?`确认并发布 ${mappedJobCount} 个任务`:`确认 ${mappedJobCount} 个定时任务`}</Button>
     </Card>
    </Form>
   </>:<Card className="table-card" title="任务记录" extra={<Button icon={<ReloadOutlined/>} onClick={()=>load(true)}>刷新</Button>} styles={{body:{padding:0}}}><Table rowKey="id" dataSource={jobs} scroll={{x:1180}} locale={{emptyText:<Empty description="暂无发布任务"/>}} columns={[

@@ -8,8 +8,8 @@ from PIL import Image
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import Account, Clip, Drama, Post, PublishJob
-from app.routers.publish import create_job, update_job
-from app.schemas import PublishJobCreateRequest, PublishJobUpdateRequest
+from app.routers.publish import create_job, create_mapped_batch, update_job
+from app.schemas import MappedBatchPublishRequest, MappedPublishAssignment, PublishJobCreateRequest, PublishJobUpdateRequest
 from app.services.publish.base import PublishResult
 from app.services.publisher import execute_publish_job, prepare_publish_cover
 
@@ -73,6 +73,35 @@ def test_youtube_publish_requires_horizontal_cover(tmp_path: Path):
         session.add(drama); session.add(account); session.commit()
         with pytest.raises(HTTPException, match="YouTube"):
             create_job(PublishJobCreateRequest(post_id=post.id, account_id=account.id, scheduled_at=datetime.now(), ai_disclosure=True, publish_options={}), session)
+
+
+def test_mapped_batch_creates_only_explicit_video_account_pairs(tmp_path: Path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'mapped-batch.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        drama, _, first_post, first_account = seed(session, tmp_path, ai=False)
+        second_video = tmp_path / "second.mp4"; second_video.write_bytes(b"video-2")
+        second_clip = Clip(drama_id=drama.id, template_name="clean", file_path=str(second_video), status="approved")
+        session.add(second_clip); session.commit(); session.refresh(second_clip)
+        second_post = Post(clip_id=second_clip.id, title="第二条", caption="正文")
+        second_account = Account(platform="facebook", name="官方号", account_type="official", status="connected")
+        session.add(second_post); session.add(second_account); session.commit(); session.refresh(second_post); session.refresh(second_account)
+
+        jobs = create_mapped_batch(MappedBatchPublishRequest(
+            assignments=[
+                MappedPublishAssignment(post_id=first_post.id, account_ids=[first_account.id]),
+                MappedPublishAssignment(post_id=second_post.id, account_ids=[first_account.id, second_account.id]),
+                MappedPublishAssignment(post_id=second_post.id, account_ids=[second_account.id]),
+            ],
+            scheduled_at=datetime.now(),
+        ), session)
+
+        assert {(job.post_id, job.account_id) for job in jobs} == {
+            (first_post.id, first_account.id),
+            (second_post.id, first_account.id),
+            (second_post.id, second_account.id),
+        }
+        assert len(jobs) == 3
 
 
 def test_disconnected_account_is_blocked_without_fake_success(monkeypatch, tmp_path: Path):

@@ -642,6 +642,19 @@ class BatchPublishRequest(BaseModel):
     publish_options: dict = Field(default_factory=dict)
 
 
+class MappedPublishAssignment(BaseModel):
+    post_id: int
+    account_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class MappedBatchPublishRequest(BaseModel):
+    assignments: list[MappedPublishAssignment] = Field(min_length=1, max_length=100)
+    scheduled_at: datetime
+    ai_disclosure: bool = False
+    run_now: bool = False
+    publish_options: dict = Field(default_factory=dict)
+
+
 class CommentSyncRequest(BaseModel):
     account_ids: list[int] = Field(default_factory=list)
     max_comments: int = Field(default=100, ge=1, le=500)
