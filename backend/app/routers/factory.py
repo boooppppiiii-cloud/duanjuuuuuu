@@ -19,7 +19,7 @@ from sqlmodel import Session, select
 
 from ..config import get_settings
 from ..database import get_session
-from ..models import AppUser, Clip, CloudAsset, Drama, EmotionWord, FactoryAnalysisTask, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob
+from ..models import AppUser, Clip, CloudAsset, Drama, EmotionWord, FactoryAnalysisTask, FactoryJob, GeneratedAsset, HookAsset, MetricSnapshot, Post, PublishJob, SharedFactoryAnalysis
 from ..schemas import CloudAssetView, FactoryAnalysisFrameRequest, FactoryAnalysisReviewRequest, FactoryAnalysisStartRequest, FactoryAnalysisWindowRequest, FactoryJobView, FactoryManualSensitiveRequest, FactoryProcessRequest, FactoryTaskHistoryView, GeneratedAssetView, HookAssetView
 from ..services.factory_multimodal import FactoryAIUnavailableError, FrameSample, analyze_window, provider_name
 from ..services.script_analysis import ANALYSIS_VERSION, add_manual_sensitive, factory_analysis_pipeline, queued_analysis, queued_resume_analysis, read_analysis, update_review, write_analysis
@@ -32,12 +32,17 @@ from ..services.usage import record_usage
 router = APIRouter(prefix="/api/factory", tags=["内容工厂"])
 
 
-def _run_analysis_as_user(user_id: int, *args, resume: bool = False, ai_analyzer=None) -> None:
+def _run_analysis_as_user(
+    user_id: int, *args, resume: bool = False, ai_analyzer=None,
+    sync_origin: str = "", sync_token: str = "",
+) -> None:
     token = bind_current_user(user_id)
     try:
         factory_analysis_pipeline.run_with_analyzer(
             *args, resume=resume, ai_analyzer=ai_analyzer,
         )
+        if sync_origin and sync_token:
+            _push_completed_analysis(sync_origin, sync_token, Path(args[0]))
     finally:
         reset_current_user(token)
 
@@ -172,6 +177,130 @@ def _public_analysis_payload(payload: dict | None) -> dict:
     return public
 
 
+def _payload_timestamp(payload: dict | None) -> float:
+    value = str((payload or {}).get("updated_at") or (payload or {}).get("generated_at") or "")
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _shared_analysis_row(session: Session, drama_id: int) -> SharedFactoryAnalysis | None:
+    return session.exec(
+        select(SharedFactoryAnalysis).where(SharedFactoryAnalysis.drama_id == drama_id)
+    ).first()
+
+
+def _shared_payload(row: SharedFactoryAnalysis | None) -> dict | None:
+    if not row:
+        return None
+    payload = dict(row.payload_json or {})
+    payload.update({
+        "shared": True,
+        "storage_mode": "cloud_shared",
+        "shared_revision": row.revision,
+        "shared_updated_at": row.updated_at.isoformat(),
+        "synced_by_user_id": row.synced_by_user_id,
+    })
+    return payload
+
+
+def _store_shared_analysis(
+    session: Session, drama: Drama, user_id: int, payload: dict,
+) -> tuple[dict, bool]:
+    """Upsert the canonical team result and ignore stale devices safely."""
+    if payload.get("status") != "completed" or int(payload.get("drama_id", -1)) != int(drama.id):
+        raise HTTPException(422, "只能同步当前剧目已完成的识别结果")
+    episodes = payload.get("episodes")
+    if not isinstance(episodes, list) or not episodes or len(episodes) > 5000:
+        raise HTTPException(422, "识别结果的剧集清单不合法")
+
+    cleaned = _public_analysis_payload(payload)
+    for key in (
+        "task_id", "owner_user_id", "window_checkpoints", "is_active", "ai_ready",
+        "configured_provider", "configured_model", "requires_reanalysis",
+        "cloud_sync_error", "cloud_sync_status",
+    ):
+        cleaned.pop(key, None)
+    cleaned["drama_id"] = int(drama.id)
+    cleaned["title"] = drama.title
+    cleaned["shared"] = True
+    cleaned["storage_mode"] = "cloud_shared"
+    cleaned["source_files"] = [
+        str(item.get("episode", ""))[:500] for item in episodes if isinstance(item, dict)
+    ]
+    serialized_size = len(json.dumps(cleaned, ensure_ascii=False).encode("utf-8"))
+    if serialized_size > 25 * 1024 * 1024:
+        raise HTTPException(413, "识别结果超过 25MB，请减少冗余脚本后重试")
+
+    row = _shared_analysis_row(session, int(drama.id))
+    existing = _shared_payload(row)
+    if existing and _payload_timestamp(cleaned) + 0.001 < _payload_timestamp(existing):
+        return existing, False
+
+    now = datetime.utcnow()
+    if row is None:
+        row = SharedFactoryAnalysis(
+            drama_id=int(drama.id), synced_by_user_id=user_id,
+            updated_by_user_id=user_id, created_at=now, updated_at=now,
+        )
+        session.add(row)
+        revision = 1
+    else:
+        revision = int(row.revision or 0) + 1
+        row.updated_by_user_id = user_id
+        row.updated_at = now
+    row.revision = revision
+    cleaned.update({
+        "shared_revision": revision,
+        "shared_updated_at": now.isoformat(),
+        "synced_by_user_id": row.synced_by_user_id or user_id,
+        "cloud_sync_status": "completed",
+        "cloud_synced_at": now.isoformat(),
+    })
+    row.payload_json = cleaned
+    row.source_fingerprint = str(cleaned.get("source_fingerprint") or "")[:128]
+    row.analysis_version = int(cleaned.get("analysis_version") or 0)
+    row.provider = str(cleaned.get("provider") or "")[:120]
+    row.model = str(cleaned.get("model") or "")[:200]
+    row.episode_count = len(episodes)
+    row.segment_count = int(cleaned.get("segment_count") or 0)
+    row.high_energy_count = int(cleaned.get("high_energy_count") or 0)
+    row.sensitive_count = int(cleaned.get("sensitive_count") or 0)
+    session.add(row)
+    session.flush()
+    return cleaned, True
+
+
+def _push_completed_analysis(origin: str, token: str, folder: Path) -> None:
+    """Best-effort local-helper push; browser sync remains as a compatibility fallback."""
+    payload = read_analysis(folder) or {}
+    if payload.get("status") != "completed":
+        return
+    try:
+        response = httpx.put(
+            f"{origin.rstrip('/')}/api/factory/analysis-sync",
+            json=_public_analysis_payload(payload),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=180,
+        )
+        response.raise_for_status()
+        shared = response.json()
+        payload.update({
+            "shared": True,
+            "shared_revision": shared.get("shared_revision"),
+            "shared_updated_at": shared.get("shared_updated_at"),
+            "cloud_sync_status": "completed",
+            "cloud_synced_at": shared.get("cloud_synced_at") or shared.get("shared_updated_at"),
+            "cloud_sync_error": "",
+        })
+    except Exception as exc:
+        payload.update({"cloud_sync_status": "failed", "cloud_sync_error": str(exc)[-1000:]})
+    write_analysis(folder, payload)
+
+
 def _delete_analysis_files(folder: Path) -> None:
     for name in ("factory_analysis.json", "manual_sensitive.json"):
         (folder / name).unlink(missing_ok=True)
@@ -231,6 +360,42 @@ def analyze_local_window(payload: FactoryAnalysisWindowRequest, authorization: s
         reset_current_user(token)
 
 
+@router.put("/analysis-sync")
+def sync_completed_local_analysis(
+    payload: dict,
+    authorization: str = Header(default=""),
+    session: Session = Depends(get_session),
+):
+    """Receive a completed local result without receiving any source video."""
+    user_id = _analysis_token_user(authorization)
+    user = session.get(AppUser, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(401, "识别结果同步授权已失效，请重新登录")
+    try:
+        drama_id = int(payload.get("drama_id") or 0)
+    except (TypeError, ValueError):
+        drama_id = 0
+    drama = get_drama(drama_id, session)
+    result, changed = _store_shared_analysis(session, drama, user_id, payload)
+    if changed:
+        write_analysis(Path(drama.file_dir), result)
+        drama.episode_count = len(result.get("episodes") or [])
+        session.add(drama)
+        session.commit()
+        sync_hook_assets(session, drama)
+        record_usage(
+            "内容识别",
+            user_id=user_id,
+            event_kind="feature",
+            success=True,
+            client_event_id=f"analysis-sync:{user_id}:{drama_id}:{result.get('generated_at') or result.get('updated_at') or result.get('shared_revision')}",
+            details={"drama_id": drama_id, "storage_mode": "cloud_shared", "episodes": len(result.get("episodes") or [])},
+        )
+    else:
+        session.commit()
+    return result
+
+
 @router.get("/{drama_id}/analysis")
 def get_script_analysis(
     drama_id: int,
@@ -238,7 +403,13 @@ def get_script_analysis(
     user: AppUser = Depends(get_current_user),
 ):
     drama = get_drama(drama_id, session)
-    result = read_analysis(Path(drama.file_dir))
+    file_result = read_analysis(Path(drama.file_dir))
+    shared_row = None if _local_workspace_mode() else _shared_analysis_row(session, drama_id)
+    result = _shared_payload(shared_row) or file_result
+    if not _local_workspace_mode() and shared_row is None and file_result and file_result.get("status") == "completed":
+        # One-time migration for results created before the shared-result table existed.
+        result, _ = _store_shared_analysis(session, drama, int(user.id), file_result)
+        session.commit()
     settings = get_settings()
     try:
         provider, model = provider_name(settings)
@@ -264,7 +435,7 @@ def get_script_analysis(
         "sampled_frame_count": 0,
         "api_call_count": 0,
     }
-    if result:
+    if result and (_local_workspace_mode() or not result.get("shared")):
         task = _analysis_task_for_payload(session, drama, user, base)
         if task:
             write_analysis(Path(drama.file_dir), base)
@@ -290,31 +461,22 @@ def import_local_analysis(
     drama = get_drama(drama_id, session)
     if payload.get("status") != "completed" or int(payload.get("drama_id", -1)) != drama_id:
         raise HTTPException(422, "只能同步当前剧目已完成的本地识别结果")
-    episodes = payload.get("episodes")
-    if not isinstance(episodes, list) or not episodes or len(episodes) > 5000:
-        raise HTTPException(422, "本地识别结果的剧集清单不合法")
-    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 25 * 1024 * 1024:
-        raise HTTPException(413, "识别结果超过 25MB，请减少冗余脚本后重试")
-    cleaned = dict(payload)
-    cleaned.pop("task_id", None)
-    cleaned.pop("owner_user_id", None)
-    cleaned["drama_id"] = drama_id
-    cleaned["title"] = drama.title
-    cleaned["storage_mode"] = "local_workspace"
-    cleaned["synced_by_user_id"] = user.id
-    cleaned["source_files"] = [str(item.get("episode", ""))[:500] for item in episodes if isinstance(item, dict)]
-    result = write_analysis(Path(drama.file_dir), cleaned)
+    result, changed = _store_shared_analysis(session, drama, int(user.id), payload)
+    episodes = result.get("episodes") or []
+    if changed:
+        write_analysis(Path(drama.file_dir), result)
     drama.episode_count = len(episodes)
     session.add(drama)
     session.commit()
-    sync_hook_assets(session, drama)
+    if changed:
+        sync_hook_assets(session, drama)
     record_usage(
         "内容识别",
         user_id=user.id,
         event_kind="feature",
         success=True,
         client_event_id=f"local-analysis:{user.id}:{drama_id}:{payload.get('generated_at') or payload.get('updated_at') or 'completed'}",
-        details={"drama_id": drama_id, "storage_mode": "local_workspace", "episodes": len(episodes)},
+        details={"drama_id": drama_id, "storage_mode": "cloud_shared", "episodes": len(episodes), "updated": changed},
     )
     return result
 
@@ -373,7 +535,12 @@ def run_script_analysis(
     threading.Thread(
         target=_run_analysis_as_user,
         args=(user.id, Path(drama.file_dir), drama.id, drama.title, settings, words),
-        kwargs={"resume": resume, "ai_analyzer": analyzer},
+        kwargs={
+            "resume": resume,
+            "ai_analyzer": analyzer,
+            "sync_origin": payload.proxy_origin if payload else "",
+            "sync_token": payload.proxy_token if payload else "",
+        },
         name=f"factory-analysis-{drama.id}",
         daemon=True,
     ).start()
@@ -445,12 +612,17 @@ def delete_current_analysis(
     user: AppUser = Depends(get_current_user),
 ):
     drama = get_drama(drama_id, session)
+    shared = None if _local_workspace_mode() else _shared_analysis_row(session, drama_id)
+    if shared and not user.is_developer:
+        raise HTTPException(403, "团队共享识别结果仅开发者可以删除")
     if factory_analysis_pipeline.is_active(drama_id):
         raise HTTPException(409, "识别仍在运行，请等待当前步骤停止后再删除")
     payload = read_analysis(Path(drama.file_dir)) or {}
     task = _analysis_task_for_payload(session, drama, user, payload, create=False)
     if task:
         session.delete(task)
+    if shared:
+        session.delete(shared)
     stale_hooks = session.exec(select(HookAsset).where(
         HookAsset.drama_id == drama_id,
         HookAsset.source == "analysis",
@@ -484,24 +656,48 @@ def delete_analysis_task(
 
 
 @router.patch("/{drama_id}/analysis/review")
-def review_analysis(drama_id: int, payload: FactoryAnalysisReviewRequest, session: Session = Depends(get_session)):
+def review_analysis(
+    drama_id: int, payload: FactoryAnalysisReviewRequest,
+    session: Session = Depends(get_session), user: AppUser = Depends(get_current_user),
+):
     drama = get_drama(drama_id, session)
     try:
-        return update_review(
+        if not _local_workspace_mode():
+            shared = _shared_payload(_shared_analysis_row(session, drama_id))
+            if shared:
+                write_analysis(Path(drama.file_dir), shared)
+        result = update_review(
             Path(drama.file_dir), payload.episode, payload.kind, payload.start, payload.end,
             payload.decision, payload.new_start, payload.new_end,
         )
+        if not _local_workspace_mode():
+            result, _ = _store_shared_analysis(session, drama, int(user.id), result)
+            write_analysis(Path(drama.file_dir), result)
+            session.commit()
+        return result
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/{drama_id}/analysis/sensitive/manual")
-def mark_manual_sensitive(drama_id: int, payload: FactoryManualSensitiveRequest, session: Session = Depends(get_session)):
+def mark_manual_sensitive(
+    drama_id: int, payload: FactoryManualSensitiveRequest,
+    session: Session = Depends(get_session), user: AppUser = Depends(get_current_user),
+):
     drama = get_drama(drama_id, session)
     try:
-        return add_manual_sensitive(
+        if not _local_workspace_mode():
+            shared = _shared_payload(_shared_analysis_row(session, drama_id))
+            if shared:
+                write_analysis(Path(drama.file_dir), shared)
+        result = add_manual_sensitive(
             Path(drama.file_dir), payload.episode, payload.start, payload.end, payload.category, payload.note,
         )
+        if not _local_workspace_mode():
+            result, _ = _store_shared_analysis(session, drama, int(user.id), result)
+            write_analysis(Path(drama.file_dir), result)
+            session.commit()
+        return result
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 

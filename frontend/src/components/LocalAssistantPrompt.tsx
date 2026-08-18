@@ -1,8 +1,8 @@
 ﻿import { Button,Modal,Space } from 'antd'
 import { DownloadOutlined,ReloadOutlined } from '@ant-design/icons'
 
-export const LOCAL_ASSISTANT_DOWNLOAD_URL='/downloads/Jushu-Local-Assistant-Windows-v15.zip?v=20260817-factory-analysis-speed-v3'
-export const LOCAL_ASSISTANT_DOWNLOAD_FILENAME='Jushu-Local-Assistant-Windows-v15.zip'
+export const LOCAL_ASSISTANT_DOWNLOAD_URL='/downloads/Jushu-Local-Assistant-Windows-v16.zip?v=20260818-shared-analysis-v1'
+export const LOCAL_ASSISTANT_DOWNLOAD_FILENAME='Jushu-Local-Assistant-Windows-v16.zip'
 
 export function downloadLocalAssistantInstaller(){
   const link=document.createElement('a')

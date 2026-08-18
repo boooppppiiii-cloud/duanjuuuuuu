@@ -201,6 +201,33 @@ class FactoryAnalysisTask(SQLModel, table=True):
     completed_at: Optional[datetime] = None
 
 
+class SharedFactoryAnalysis(SQLModel, table=True):
+    """Canonical team-wide recognition result for one drama.
+
+    Source videos and processing checkpoints deliberately stay on the operator's
+    computer.  Only the completed, reusable JSON result is stored here.
+    """
+
+    __table_args__ = (UniqueConstraint("drama_id", name="uq_shared_factory_analysis_drama"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    drama_id: int = Field(foreign_key="drama.id", index=True)
+    payload_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    source_fingerprint: str = Field(default="", index=True)
+    analysis_version: int = 0
+    provider: str = ""
+    model: str = ""
+    episode_count: int = 0
+    segment_count: int = 0
+    high_energy_count: int = 0
+    sensitive_count: int = 0
+    revision: int = 1
+    synced_by_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="appuser.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class GeneratedAsset(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     factory_job_id: int = Field(foreign_key="factoryjob.id", index=True)

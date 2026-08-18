@@ -232,6 +232,7 @@ def test_local_workspace_syncs_metadata_and_analysis_without_video_upload(tmp_pa
         analysis = {
             "status": "completed", "progress": 100, "current_step": "识别完成", "error_message": "",
             "drama_id": drama["id"], "title": drama["title"], "provider": "gemini", "model": "test",
+            "updated_at": "2026-08-18T10:00:00+00:00",
             "episode_count": 2, "total_duration": 240, "segment_count": 0, "high_energy_count": 0,
             "sensitive_count": 0, "sampled_frame_count": 12, "api_call_count": 4,
             "episodes": [
@@ -241,9 +242,28 @@ def test_local_workspace_syncs_metadata_and_analysis_without_video_upload(tmp_pa
         }
         synced = client.put(f"/api/factory/{drama['id']}/analysis/local", json=analysis)
         assert synced.status_code == 200, synced.text
-        assert synced.json()["storage_mode"] == "local_workspace"
+        assert synced.json()["storage_mode"] == "cloud_shared"
+        assert synced.json()["shared"] is True
+        assert synced.json()["shared_revision"] == 1
         assert (Path(drama["file_dir"]) / "factory_analysis.json").is_file()
         assert list((Path(drama["file_dir"]) / "episodes").glob("*.mp4")) == []
+
+        with TestClient(app.main.app) as teammate:
+            registered = teammate.post("/api/auth/register", json={
+                "email": "shared-analysis@example.com", "password": "correct-horse-2",
+            })
+            assert registered.status_code == 200, registered.text
+            shared = teammate.get(f"/api/factory/{drama['id']}/analysis")
+            assert shared.status_code == 200, shared.text
+            assert shared.json()["shared"] is True
+            assert shared.json()["episodes"][0]["episode"] == "Episode1.mp4"
+            assert shared.json()["storage_mode"] == "cloud_shared"
+
+            stale = {**analysis, "model": "stale-device", "updated_at": "2026-08-18T09:00:00+00:00"}
+            ignored = teammate.put(f"/api/factory/{drama['id']}/analysis/local", json=stale)
+            assert ignored.status_code == 200, ignored.text
+            assert ignored.json()["model"] == "test"
+            assert ignored.json()["shared_revision"] == 1
 
 
 def test_task_metadata_cover_upload_and_approved_asset_library(tmp_path: Path):

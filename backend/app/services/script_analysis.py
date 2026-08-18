@@ -522,6 +522,7 @@ def add_manual_sensitive(folder: Path, episode_name: str, start: float, end: flo
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     _merge_manual_sensitive(folder, analysis)
     _consolidate_existing_sensitive(analysis)
+    analysis["updated_at"] = utc_timestamp()
     return write_analysis(folder, analysis)
 
 
@@ -1103,6 +1104,7 @@ def update_review(
     target["review_status"] = decision
     if kind == "sensitive":
         _consolidate_existing_sensitive(data)
+    data["updated_at"] = utc_timestamp()
     return write_analysis(folder, data)
 
 

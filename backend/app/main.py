@@ -94,7 +94,7 @@ async def authentication_and_metering(request: Request, call_next):
     path = request.url.path
     public = (
         request.method == "OPTIONS"
-        or path in {"/api/health", "/api/auth/login", "/api/auth/register", "/api/factory/analysis-window", "/docs", "/openapi.json", "/favicon.ico"}
+        or path in {"/api/health", "/api/auth/login", "/api/auth/register", "/api/factory/analysis-window", "/api/factory/analysis-sync", "/docs", "/openapi.json", "/favicon.ico"}
         or path.startswith("/api/publish/media/")
         or path.startswith("/api/meta-sfs/legacy-assets/")
     )

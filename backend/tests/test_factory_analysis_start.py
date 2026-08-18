@@ -78,7 +78,9 @@ def test_analysis_uses_process_owned_worker(monkeypatch, tmp_path):
     assert started["daemon"] is True
     assert started["args"][0] == 23
     assert len(started["args"]) == 6
-    assert started["kwargs"] == {"resume": False, "ai_analyzer": None}
+    assert started["kwargs"] == {
+        "resume": False, "ai_analyzer": None, "sync_origin": "", "sync_token": "",
+    }
 
     # Execute the exact target/arguments captured by the thread probe. This
     # catches keyword-only argument regressions that otherwise leave a queued
@@ -131,3 +133,38 @@ def test_completed_analysis_payload_keeps_review_data_without_private_cache():
     assert result["completed_episode_count"] == 1
     assert result["episodes"] == [episode]
     assert "window_checkpoints" not in result
+
+
+def test_completed_local_analysis_is_pushed_to_the_shared_cloud(monkeypatch, tmp_path):
+    payload = {
+        "status": "completed", "drama_id": 7, "updated_at": "2026-08-18T10:00:00+00:00",
+        "episodes": [{"episode": "Episode1.mp4", "segments": [], "high_energy": [], "sensitive": []}],
+        "window_checkpoints": {"Episode1.mp4": {"private": True}},
+    }
+    factory.write_analysis(tmp_path, payload)
+    called: dict[str, object] = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "shared_revision": 3,
+                "shared_updated_at": "2026-08-18T10:00:01",
+                "cloud_synced_at": "2026-08-18T10:00:01",
+            }
+
+    def fake_put(url, **kwargs):
+        called.update(url=url, **kwargs)
+        return Response()
+
+    monkeypatch.setattr(factory.httpx, "put", fake_put)
+    factory._push_completed_analysis("https://app.duanju.chat", "sync-token", tmp_path)
+
+    assert called["url"] == "https://app.duanju.chat/api/factory/analysis-sync"
+    assert called["headers"] == {"Authorization": "Bearer sync-token"}
+    assert "window_checkpoints" not in called["json"]
+    saved = factory.read_analysis(tmp_path)
+    assert saved["cloud_sync_status"] == "completed"
+    assert saved["shared_revision"] == 3
